@@ -1,0 +1,2 @@
+chatbot_llm:
+  launch: "chatbot_llm chatbot_llm.launch.py"
