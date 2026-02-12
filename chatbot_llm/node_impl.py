@@ -33,6 +33,30 @@ from rclpy.action import CancelResponse
 from rclpy.action.server import ServerGoalHandle
 from rclpy.callback_groups import ReentrantCallbackGroup
 
+from pydantic import BaseModel
+from typing import Literal
+from hri_actions_msgs.msg import Intent
+
+# Define the data models for the chatbot response and the user intent
+class IntentModel(BaseModel):
+    type: Literal[Intent.BRING_OBJECT,
+                  Intent.GRAB_OBJECT,
+                  Intent.PLACE_OBJECT,
+                  Intent.GUIDE,
+                  Intent.MOVE_TO,
+                  Intent.SAY,
+                  Intent.GREET,
+                  Intent.START_ACTIVITY,
+                  ]
+    object: str | None
+    recipient: str | None
+    input: str | None
+    goal: str | None
+
+class ChatbotResponse(BaseModel):
+    verbal_ack: str | None
+    user_intent: IntentModel | None
+
 
 class LLMChatbot(Node):
     """
@@ -107,6 +131,8 @@ class LLMChatbot(Node):
         json_data = json.dumps({
             "model": model,
             "messages": messages,
+
+            "format": ChatbotResponse.model_json_schema() if hasattr(ChatbotResponse, "model_json_schema") else ChatbotResponse.schema_json()
         })
 
         try:
@@ -256,109 +282,33 @@ class LLMChatbot(Node):
         if not llm_response:
             return
 
-        # clean-up the raw LLM answer
-        content = self.preprocess_llm_response(llm_response['message']['content'])
-        llm_response['message']['content'] = content
+        raw_response = self.preprocess_llm_response(llm_response['message']['content'])
+        self.get_logger().info(f"Raw LLM response: {raw_response}")
 
-        self._msgs_history.append(llm_response['message'])
+        if hasattr(ChatbotResponse, "model_validate_json"):
+            json_res = ChatbotResponse.model_validate_json(raw_response)
+        else:
+            #try:
+            json_res = json.loads(raw_response)
+            #except...
 
-        raw_response = llm_response['message']['content']
 
-        self.get_logger().info(f"LLM response: {raw_response}")
+        if json_res:
+            self.get_logger().info(f"Parsed LLM response: {json_res}")
 
-        # here, we need to retrieve the user intent, and map it to the
-        # Intent.msg semantics.
-        valid = True
-        response = {}
-        try:
-            # use YAML instead of JSON to parse the LLM response, as
-            # YAML is more permissive and can handle JSON as well.
-            response = yaml.safe_load(raw_response)
-        except yaml.parser.ParserError as e:
-            self.get_logger().error(f"Error while decoding LLM response: {e}. "
-                                    "Not valid YAML/JSON. Falling back to raw response.")
-            valid = False
+            if "verbal_ack" in json_res:
+                verbal_ack = json_res["verbal_ack"]
+                # if we have a verbal acknowledgement, add it to the dialogue history,
+                # and send it to the user
+                self._msgs_history.append({"role": "assistant", "content": verbal_ack})
+                chatbot_response.response = verbal_ack
 
-        if not isinstance(response, dict):
-            self.get_logger().error("Error while decoding LLM response: "
-                                    "response is not a dictionary. Falling back to raw response.")
-            valid = False
-
-        intent = response.get("next_action", {})
-        suggested_response = response.get("suggested_response_to_user", "")
-
-        type = ""
-        if intent:
-            if not isinstance(intent, dict):
-                self.get_logger().warn("Error while decoding LLM response: 'next_action' "
-                                       "is not a dictionary. Falling back to raw response.")
-                valid = False
-            else:
-                type = intent.get("type", None).upper()
-                if not type:
-                    self.get_logger().warn("Error while decoding LLM response: 'next_action' "
-                                           "is not specified. Falling back to raw response.")
-                    valid = False
-
-        if valid:
-            if type == "GREET":
-                self.get_logger().warn("I think the user want to greet me. "
-                                       "Sending a GREET intent")
-                intent = Intent(intent=Intent.GREET,
-                                source=user_id,
-                                modality=Intent.MODALITY_SPEECH,
-                                confidence=.8,
-                                data=json.dumps({"suggested_response": suggested_response}))
-
-            elif type == "SAY":
-                self.get_logger().warn("I think the user want to say/answer something. "
-                                       "Sending a SAY intent")
-                intent = Intent(intent=Intent.SAY,
-                                source=user_id,
-                                modality=Intent.MODALITY_SPEECH,
-                                confidence=.8,
-                                data=json.dumps({"object": suggested_response}))
-            elif type == "START_ACTIVITY":
-                self.get_logger().warn("I think the user want to start an activity. "
-                                       "Sending a START_ACTIVITY intent")
-                data = {"object": intent.get("object", "unknown"),
-                        "suggested_response": suggested_response}
-                intent = Intent(intent=Intent.START_ACTIVITY,
-                                source=user_id,
-                                modality=Intent.MODALITY_SPEECH,
-                                confidence=.8,
-                                data=json.dumps(data))
-            elif type == "STOP_ACTIVITY":
-                self.get_logger().warn("I think the user want to stop an activity. "
-                                       "Sending a STOP_ACTIVITY intent")
-                data = {"object": intent.get("object", ""),
-                        "suggested_response": suggested_response}
-                intent = Intent(intent=Intent.STOP_ACTIVITY,
-                                source=user_id,
-                                modality=Intent.MODALITY_SPEECH,
-                                confidence=.8,
-                                data=json.dumps(data))
-
-            elif type == "PICK_OBJECT":
-                self.get_logger().warn("I think the user want to pick up an object. "
-                                       "Sending a GRAB_OBJECT intent")
-                data = {"object": intent.get("object", "unknown"),
-                        "suggested_response": suggested_response}
-                intent = Intent(intent=Intent.GRAB_OBJECT,
-                                source=user_id,
-                                modality=Intent.MODALITY_SPEECH,
-                                confidence=.8,
-                                data=json.dumps(data))
-
-            else:
-                self.get_logger().warn(f"Intent '{type}' not handled. "
-                                       "Forwarding a 'RAW_USER_INPUT' instead.")
-                intent = Intent(intent=Intent.RAW_USER_INPUT,
-                                source=user_id,
-                                modality=Intent.MODALITY_SPEECH,
-                                confidence=1.0,
-                                data='{ {"input": "' + input + '", ' + '"suggested_response": "' +
-                                     self.escape_json(raw_response) + '"} }')
+            if "user_intent" in json_res:
+                user_intent = json_res["user_intent"]
+                chatbot_response.intents = [Intent(
+                    intent=user_intent["type"],
+                    data=json.dumps(user_intent)
+                )]
 
         else:
             self.get_logger().warn("Unable to process user input. Forwarding a 'RAW_USER_INPUT'")
@@ -369,8 +319,8 @@ class LLMChatbot(Node):
                             data='{ {"input": "' + input + '", ' + '"suggested_response": "' +
                                  self.escape_json(raw_response) + '"} }')
 
-        chatbot_response.response = suggested_response
-        chatbot_response.intents = [intent]
+            chatbot_response.response = suggested_response
+            chatbot_response.intents = [intent]
 
         return chatbot_response
 
@@ -426,6 +376,7 @@ class LLMChatbot(Node):
 
         tpl = Template(system_prompt)
         rendered_system_prompt = tpl.safe_substitute(
+                                                user_id="a human",
                                                 action_list=self.make_action_list(),
                                                 environment=self.get_environment_description())
         self._system_prompt_msg = {'role': 'system', 'content': rendered_system_prompt}
