@@ -2,12 +2,12 @@
 <package format="3">
     <name>chatbot_llm</name>
     <version>0.1.1</version>
-    <description>A ollama-based LLM bridge for robotic applications</description>
+    <description>Lifecycle chatbot backend aligned to the ROS4HRI Dialogue contract.</description>
 
   <!-- One maintainer tag required, multiple allowed, one person per tag -->
   <!-- Example:  -->
   <!-- <maintainer email="jane.doe@example.com">Jane Doe</maintainer> -->
-  <maintainer email="todo@todo.todo">TODO</maintainer>
+  <maintainer email="juanbeck@icloud.com">juanbeck</maintainer>
 
   <!-- One license tag required, multiple allowed, one license per tag -->
   <!-- Commonly used license strings: -->
@@ -30,11 +30,13 @@
   <!-- Dependencies can be catkin packages or system dependencies -->
   <depend>rclpy</depend>
   <depend>lifecycle_msgs</depend>
+  <exec_depend>ament_index_python</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>launch_pal</exec_depend>
 
   <exec_depend>python3-requests</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
   <exec_depend>hri_actions_msgs</exec_depend>
   <exec_depend>i18n_msgs</exec_depend>
   <exec_depend>chatbot_msgs</exec_depend>

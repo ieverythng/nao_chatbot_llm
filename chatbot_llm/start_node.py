@@ -23,12 +23,12 @@
 
 import rclpy
 
-from rclpy.executors import MultiThreadedExecutor
-
 import chatbot_llm.node_impl
+from rclpy.executors import MultiThreadedExecutor
 
 
 def main():
+    """Start the lifecycle chatbot backend with a multithreaded executor."""
     rclpy.init()
 
     node = chatbot_llm.node_impl.LLMChatbot()
@@ -38,9 +38,10 @@ def main():
     try:
         node_executor.spin()
     except (KeyboardInterrupt, rclpy.executors.ExternalShutdownException):
-        print("Goodbye!")
+        print('Goodbye!')
         node.destroy_node()
 
 
 if __name__ == '__main__':
     main()
+"""Entrypoint for the migrated ``chatbot_llm`` lifecycle node."""

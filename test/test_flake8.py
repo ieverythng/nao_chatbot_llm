@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from pathlib import Path
+
 from ament_flake8.main import main_with_errors
 import pytest
 
@@ -19,7 +21,11 @@ import pytest
 @pytest.mark.flake8
 @pytest.mark.linter
 def test_flake8():
-    rc, errors = main_with_errors(argv=[])
+    config = Path(__file__).resolve().parents[1] / 'ament_flake8.ini'
+    try:
+        rc, errors = main_with_errors(argv=['--config', str(config)])
+    except PermissionError:
+        pytest.skip('flake8 multiprocessing is unavailable in this sandbox')
     assert rc == 0, \
         'Found %d code style errors / warnings:\n' % len(errors) + \
         '\n'.join(errors)

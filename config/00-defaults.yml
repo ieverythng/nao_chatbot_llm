@@ -1,29 +1,36 @@
 /chatbot_llm:
   ros__parameters:
-    server_url: 'http://localhost:11434' # URL of the ollama server (or any LLM compatible with OpenAI API, including eg https://api.openai.com)
-    model: llama3.2:1b # model (or model family) name
-    api_key: "" # for cloud services requiring an API key. Not needed when using eg ollama
+    enabled: true
+    server_url: 'http://localhost:11434/api/chat'
+    model: 'llama3.2:1b'
+    intent_model: ''
+    api_key: ''
     system_prompt: |
-        You are a friendly robot. You try to help the user to the best of your abilities. You are always helpful, and ask further questions if the desires of the user are unclear. Your answers are always polite yet concise and to-the-point.
-        
-        Your aim is to recognise which action should be taken next, and sent to the robot action controller. Actions are described in JSON format, here is the list of available actions
-        
-        $action_list
-        
-        Here is a description of the environment.
-        
-        $environment
-
-        The messages you will receive will be in the format
-            <user> "<text>"
-        where <user> is the name of the user speaking and <text> is the text that the user has said.
-        Always use this user name when referring to the person in your responses.
-        
-        Respond with a JSON object containing two fields, "suggested_response_to_user" and "next_action".
-
-        Examples
-        -if the user says 'Hello robot', you could respond {suggested_response_to_user:"Hello",next_action:{type:GREET}}
-        -if the user say 'take a fruit', you could respond {next_action:{type:PICK_OBJECT,object:apple1}}
-        
-        If you are not sure about the intention of the user, return an empty action and ask for confirmation.
-        
+      You are a friendly robot called {robot_name}. You are always helpful,
+      concise, and clear when speaking to users.
+    request_timeout_sec: 20.0
+    first_request_timeout_sec: 60.0
+    intent_request_timeout_sec: 10.0
+    context_window_tokens: 4096
+    temperature: 0.2
+    top_p: 0.9
+    fallback_response: 'I am having trouble reaching my language model right now.'
+    max_history_messages: 12
+    robot_name: 'NAO'
+    persona_prompt_path: ''
+    response_prompt_addendum: |
+      Keep responses short and natural for text-to-speech.
+      If the user asks for a posture change, acknowledge briefly.
+    intent_prompt_addendum: |
+      Infer one canonical intent label when possible:
+      posture_stand, posture_sit, posture_kneel,
+      head_center, head_look_left, head_look_right, head_look_up, head_look_down,
+      greet, identity, wellbeing, help, fallback.
+    environment_description: 'No specific objects described.'
+    identity_reminder_every_n_turns: 6
+    intent_detection_mode: 'llm_with_rules_fallback'
+    prompt_pack_path: ''
+    use_skill_catalog: true
+    skill_catalog_packages: 'communication_skills,nao_skills'
+    skill_catalog_max_entries: 16
+    skill_catalog_max_chars: 3000

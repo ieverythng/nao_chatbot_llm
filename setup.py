@@ -1,18 +1,19 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
-from setuptools import find_packages, setup
 from glob import glob
 
-NAME = "chatbot_llm"
+from setuptools import find_packages, setup
+
+NAME = 'chatbot_llm'
 
 setup(
     name=NAME,
-    version="0.1.1",
-    license="Apache-2.0",
-    description="A ollama-based LLM bridge for robotic applications",
-    author="todo",
-    author_email="todo@todo.todo",
+    version='0.1.1',
+    license='Apache-2.0',
+    description='Lifecycle chatbot backend aligned to the ROS4HRI dialogue contract',
+    author='juanbeck',
+    author_email='juanbeck@icloud.com',
     packages=find_packages(exclude=['test']),
     data_files=[
         ('share/' + NAME, ['package.xml']),
@@ -23,7 +24,7 @@ setup(
         ('share/' + NAME + '/module', ['module/' + NAME + '_module.yaml']),
         ('share/ament_index/resource_index/pal_configuration.' + NAME,
             ['config/' + NAME]),
-        ('share/' + NAME + '/config', ['config/00-defaults.yml']),
+        ('share/' + NAME + '/config', glob('config/*.y*ml')),
     ],
     tests_require=['pytest'],
     install_requires=['setuptools'],
