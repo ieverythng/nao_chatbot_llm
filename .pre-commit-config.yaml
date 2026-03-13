@@ -11,6 +11,6 @@ repos:
 
       - id: pytest
         name: pytest
-        entry: pytest -q
+        entry: bash -lc 'export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 && python3 -m pytest -q'
         language: system
         pass_filenames: false
