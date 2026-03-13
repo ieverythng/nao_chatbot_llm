@@ -1,0 +1,16 @@
+minimum_pre_commit_version: "3.5.0"
+
+repos:
+  - repo: local
+    hooks:
+      - id: flake8
+        name: flake8
+        entry: python3 -m flake8 --config ament_flake8.ini --jobs=1 chatbot_llm test
+        language: system
+        pass_filenames: false
+
+      - id: pytest
+        name: pytest
+        entry: pytest -q
+        language: system
+        pass_filenames: false
