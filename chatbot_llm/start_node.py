@@ -1,4 +1,4 @@
-# Copyright (c) 2026 TODO. All rights reserved.
+# Copyright (c) 2026 Juan Beck. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -39,9 +39,11 @@ def main():
         node_executor.spin()
     except (KeyboardInterrupt, rclpy.executors.ExternalShutdownException):
         print('Goodbye!')
+    finally:
         node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':
     main()
-"""Entrypoint for the migrated ``chatbot_llm`` lifecycle node."""
