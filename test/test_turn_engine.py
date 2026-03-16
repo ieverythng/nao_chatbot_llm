@@ -5,8 +5,10 @@ from chatbot_llm.turn_engine import DialogueTurnEngine
 class FakeTransport:
     def __init__(self, responses):
         self._responses = list(responses)
+        self.calls = []
 
-    def query(self, **_kwargs):
+    def query(self, **kwargs):
+        self.calls.append(kwargs)
         if not self._responses:
             return ''
         return self._responses.pop(0)
@@ -42,6 +44,14 @@ def make_config(intent_mode: str = 'rules') -> ChatbotConfig:
         skill_catalog_packages=[],
         skill_catalog_max_entries=0,
         skill_catalog_max_chars=0,
+        knowledge_enabled=False,
+        knowledge_query_service_name='/kb/query',
+        knowledge_query_timeout_sec=0.5,
+        knowledge_default_patterns=['?s ?p ?o'],
+        knowledge_default_vars=['?s', '?p', '?o'],
+        knowledge_default_models=[],
+        knowledge_max_results=40,
+        knowledge_max_chars=3000,
     )
 
 
@@ -100,3 +110,30 @@ def test_turn_engine_llm_mode_uses_two_stage_json_outputs():
         'user:look left',
         'assistant:Sure. I am turning my head to the left.',
     ]
+
+
+def test_turn_engine_includes_knowledge_snapshot_in_both_llm_stages():
+    transport = FakeTransport(
+        [
+            '{"verbal_ack":"The mug is on the table."}',
+            '{"user_intent":{"type":"help"},"intent_confidence":0.4}',
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm'),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='where is the mug',
+        history=[],
+        user_id='user1',
+        knowledge_snapshot='mug isOn table',
+    )
+
+    assert result.success is True
+    assert len(transport.calls) == 2
+    assert 'Knowledge base snapshot:\nmug isOn table' in transport.calls[0]['messages'][0]['content']
+    assert 'Knowledge base snapshot:\nmug isOn table' in transport.calls[1]['messages'][0]['content']

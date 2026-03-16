@@ -49,6 +49,14 @@ class ChatbotConfig:
     skill_catalog_packages: list[str]
     skill_catalog_max_entries: int
     skill_catalog_max_chars: int
+    knowledge_enabled: bool
+    knowledge_query_service_name: str
+    knowledge_query_timeout_sec: float
+    knowledge_default_patterns: list[str]
+    knowledge_default_vars: list[str]
+    knowledge_default_models: list[str]
+    knowledge_max_results: int
+    knowledge_max_chars: int
 
 
 def declare_backend_parameters(node) -> None:
@@ -84,6 +92,14 @@ def declare_backend_parameters(node) -> None:
     node.declare_parameter('skill_catalog_packages', 'communication_skills,nao_skills')
     node.declare_parameter('skill_catalog_max_entries', 16)
     node.declare_parameter('skill_catalog_max_chars', 3000)
+    node.declare_parameter('knowledge_enabled', False)
+    node.declare_parameter('knowledge_query_service_name', '/kb/query')
+    node.declare_parameter('knowledge_query_timeout_sec', 0.5)
+    node.declare_parameter('knowledge_default_patterns', ['?s ?p ?o'])
+    node.declare_parameter('knowledge_default_vars', ['?s', '?p', '?o'])
+    node.declare_parameter('knowledge_default_models', [])
+    node.declare_parameter('knowledge_max_results', 40)
+    node.declare_parameter('knowledge_max_chars', 3000)
 
 
 def load_backend_config(node) -> ChatbotConfig:
@@ -177,6 +193,35 @@ def load_backend_config(node) -> ChatbotConfig:
             0,
             int(node.get_parameter('skill_catalog_max_chars').value),
         ),
+        knowledge_enabled=as_bool(node.get_parameter('knowledge_enabled').value),
+        knowledge_query_service_name=str(
+            node.get_parameter('knowledge_query_service_name').value
+        ).strip()
+        or '/kb/query',
+        knowledge_query_timeout_sec=max(
+            0.05,
+            float(node.get_parameter('knowledge_query_timeout_sec').value),
+        ),
+        knowledge_default_patterns=coerce_str_list(
+            node.get_parameter('knowledge_default_patterns').value,
+            fallback=['?s ?p ?o'],
+        ),
+        knowledge_default_vars=coerce_str_list(
+            node.get_parameter('knowledge_default_vars').value,
+            fallback=['?s', '?p', '?o'],
+        ),
+        knowledge_default_models=coerce_str_list(
+            node.get_parameter('knowledge_default_models').value,
+            fallback=[],
+        ),
+        knowledge_max_results=max(
+            1,
+            int(node.get_parameter('knowledge_max_results').value),
+        ),
+        knowledge_max_chars=max(
+            128,
+            int(node.get_parameter('knowledge_max_chars').value),
+        ),
     )
 
 
@@ -195,6 +240,19 @@ def coerce_float(value) -> float:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
+
+
+def coerce_str_list(value, fallback: list[str] | None = None) -> list[str]:
+    """Normalize ROS parameter values to a clean string list."""
+    if isinstance(value, (list, tuple)):
+        cleaned = [str(item).strip() for item in value if str(item).strip()]
+        if cleaned:
+            return cleaned
+    elif isinstance(value, str):
+        cleaned = [item.strip() for item in value.split(',') if item.strip()]
+        if cleaned:
+            return cleaned
+    return list(fallback or [])
 
 
 def _pick_prompt_value(current: str, param_default: str, pack_value: str) -> str:

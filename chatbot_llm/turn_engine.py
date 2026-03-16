@@ -54,6 +54,7 @@ class DialogueTurnEngine:
         user_text: str,
         history: list[str],
         user_id: str,
+        knowledge_snapshot: str = '',
         progress_callback=None,
         turn_id: str = '',
         trace=None,
@@ -113,6 +114,7 @@ class DialogueTurnEngine:
             history_messages=history_messages,
             user_text=user_text,
             user_id=user_id,
+            knowledge_snapshot=knowledge_snapshot,
             timeout_sec=stage1_timeout_sec,
         )
         verbal_ack = str(response_payload.get('verbal_ack', '')).strip()
@@ -147,6 +149,7 @@ class DialogueTurnEngine:
             user_text=user_text,
             assistant_response=verbal_ack,
             user_id=user_id,
+            knowledge_snapshot=knowledge_snapshot,
             timeout_sec=self._config.intent_request_timeout_sec,
         )
 
@@ -324,6 +327,7 @@ class DialogueTurnEngine:
         history_messages: list[dict],
         user_text: str,
         user_id: str,
+        knowledge_snapshot: str,
         timeout_sec: float,
     ) -> dict:
         prompt = build_response_prompt(
@@ -331,6 +335,7 @@ class DialogueTurnEngine:
             user_id=user_id,
             system_prompt=self._config.system_prompt,
             environment_description=self._config.environment_description,
+            knowledge_snapshot=knowledge_snapshot,
             response_prompt_addendum=self._config.response_prompt_addendum,
             skill_catalog_text=self._skill_catalog_text,
             persona_prompt=self._persona_prompt,
@@ -364,6 +369,7 @@ class DialogueTurnEngine:
         user_text: str,
         assistant_response: str,
         user_id: str,
+        knowledge_snapshot: str,
         timeout_sec: float,
     ) -> dict:
         prompt = build_intent_prompt(
@@ -371,6 +377,7 @@ class DialogueTurnEngine:
             user_id=user_id,
             system_prompt=self._config.system_prompt,
             environment_description=self._config.environment_description,
+            knowledge_snapshot=knowledge_snapshot,
             intent_prompt_addendum=self._config.intent_prompt_addendum,
             skill_catalog_text=self._skill_catalog_text,
             persona_prompt=self._persona_prompt,

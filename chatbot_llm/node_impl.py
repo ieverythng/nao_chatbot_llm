@@ -22,6 +22,9 @@ from chatbot_llm.backend_config import load_backend_config
 from chatbot_llm.chat_history import history_to_messages
 from chatbot_llm.chat_history import messages_to_history
 from chatbot_llm.intent_adapter import build_response_intents
+from chatbot_llm.knowledge_snapshot import KnowledgeSnapshotSettings
+from chatbot_llm.knowledge_snapshot import resolve_knowledge_snapshot_settings
+from chatbot_llm.knowledge_snapshot_client import KnowledgeSnapshotClient
 from chatbot_llm.ollama_transport import OllamaTransport
 from chatbot_llm.skill_catalog import build_skill_catalog_text
 from chatbot_llm.turn_engine import DialogueTurnEngine
@@ -46,6 +49,7 @@ class DialogueSession:
     dialogue_id: tuple[int, ...]
     role_name: str
     role_configuration: str
+    knowledge_settings: KnowledgeSnapshotSettings
     locale: str
     history: list[str] = field(default_factory=list)
     request_count: int = 0
@@ -75,6 +79,7 @@ class LLMChatbot(Node):
         self._config: ChatbotConfig | None = None
         self._transport = None
         self._turn_engine = None
+        self._knowledge_snapshot_client = None
         self._skill_catalog_text = ''
         self._skill_catalog_size = 0
         self._default_locale = ''
@@ -106,6 +111,11 @@ class LLMChatbot(Node):
             dialogue_id=dialogue_id,
             role_name=str(goal.role.name or DEFAULT_ROLE).strip() or DEFAULT_ROLE,
             role_configuration=str(goal.role.configuration or '{}').strip() or '{}',
+            knowledge_settings=resolve_knowledge_snapshot_settings(
+                str(goal.role.configuration or '{}').strip() or '{}',
+                self._config,
+                logger=self.get_logger(),
+            ),
             locale=str(goal.locale or self._default_locale).strip(),
             history=_seed_history(
                 str(goal.role.name or DEFAULT_ROLE).strip() or DEFAULT_ROLE,
@@ -217,6 +227,11 @@ class LLMChatbot(Node):
             user_text=text,
             history=list(session.history),
             user_id=user_id,
+            knowledge_snapshot=self._knowledge_snapshot_client.fetch_snapshot(
+                session.knowledge_settings,
+                turn_id=turn_id,
+                trace=self._trace,
+            ),
             progress_callback=lambda status, progress: self._trace(
                 turn_id,
                 'PROGRESS',
@@ -280,6 +295,13 @@ class LLMChatbot(Node):
                 logger=self.get_logger(),
             )
             self._skill_catalog_size = len(descriptors)
+
+        self._knowledge_snapshot_client = KnowledgeSnapshotClient(
+            node=self,
+            callback_group=self._callback_group,
+            service_name=self._config.knowledge_query_service_name,
+            timeout_sec=self._config.knowledge_query_timeout_sec,
+        )
 
         self._turn_engine = DialogueTurnEngine(
             config=self._config,
@@ -412,6 +434,10 @@ class LLMChatbot(Node):
                     value=self._config.intent_detection_mode if self._config else '',
                 ),
                 KeyValue(key='skill_catalog_entries', value=str(self._skill_catalog_size)),
+                KeyValue(
+                    key='knowledge_enabled',
+                    value=str(self._config.knowledge_enabled if self._config else False),
+                ),
             ],
         )
         arr.status = [status]

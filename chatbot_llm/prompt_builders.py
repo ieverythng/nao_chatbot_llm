@@ -74,6 +74,7 @@ def build_response_prompt(
     user_id: str,
     system_prompt: str,
     environment_description: str,
+    knowledge_snapshot: str,
     response_prompt_addendum: str,
     skill_catalog_text: str,
     persona_prompt: str,
@@ -87,6 +88,7 @@ def build_response_prompt(
             user_id=user_id or 'user1',
             environment=environment_description or 'No specific objects described.',
         ),
+        _knowledge_snapshot_block(knowledge_snapshot),
         skill_catalog_text,
         response_prompt_addendum,
     )
@@ -97,6 +99,7 @@ def build_intent_prompt(
     user_id: str,
     system_prompt: str,
     environment_description: str,
+    knowledge_snapshot: str,
     intent_prompt_addendum: str,
     skill_catalog_text: str,
     persona_prompt: str,
@@ -110,6 +113,7 @@ def build_intent_prompt(
             user_id=user_id or 'user1',
             environment=environment_description or 'No specific objects described.',
         ),
+        _knowledge_snapshot_block(knowledge_snapshot),
         skill_catalog_text,
         intent_prompt_addendum,
     )
@@ -128,6 +132,13 @@ def _safe_format(template: str, **kwargs) -> str:
         return raw.format(**kwargs).strip()
     except Exception:
         return raw
+
+
+def _knowledge_snapshot_block(snapshot: str) -> str:
+    clean_snapshot = str(snapshot or '').strip()
+    if not clean_snapshot:
+        return ''
+    return 'Knowledge base snapshot:\n%s' % clean_snapshot
 
 
 def _warn(logger, message: str) -> None:

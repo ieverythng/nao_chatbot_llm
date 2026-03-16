@@ -34,3 +34,15 @@
     skill_catalog_packages: 'communication_skills,nao_skills'
     skill_catalog_max_entries: 16
     skill_catalog_max_chars: 3000
+    knowledge_enabled: true
+    knowledge_query_service_name: '/kb/query'
+    knowledge_query_timeout_sec: 0.5
+    knowledge_default_patterns:
+      - '?s ?p ?o'
+    knowledge_default_vars:
+      - '?s'
+      - '?p'
+      - '?o'
+    knowledge_default_models: []
+    knowledge_max_results: 40
+    knowledge_max_chars: 3000
