@@ -59,7 +59,7 @@ class KnowledgeSnapshotClient:
 
         request = Query.Request()
         request.patterns = list(settings.patterns)
-        request.vars = list(settings.vars)
+        request.vars = list(settings.query_vars)
         request.models = list(settings.models)
 
         future = self._client.call_async(request)

@@ -14,7 +14,7 @@ class KnowledgeSnapshotSettings:
 
     enabled: bool
     patterns: list[str]
-    vars: list[str]
+    query_vars: list[str]
     models: list[str]
     max_results: int
     max_chars: int
@@ -29,7 +29,7 @@ def resolve_knowledge_snapshot_settings(
     resolved = KnowledgeSnapshotSettings(
         enabled=config.knowledge_enabled,
         patterns=list(config.knowledge_default_patterns),
-        vars=list(config.knowledge_default_vars),
+        query_vars=list(config.knowledge_default_vars),
         models=list(config.knowledge_default_models),
         max_results=config.knowledge_max_results,
         max_chars=config.knowledge_max_chars,
@@ -57,7 +57,7 @@ def resolve_knowledge_snapshot_settings(
 
     enabled = _coerce_bool(block.get('enabled'), resolved.enabled)
     patterns = _coerce_str_list(block.get('patterns'), fallback=resolved.patterns)
-    query_vars = _coerce_str_list(block.get('vars'), fallback=resolved.vars)
+    query_vars = _coerce_str_list(block.get('vars'), fallback=resolved.query_vars)
     models = _coerce_str_list(block.get('models'), fallback=resolved.models)
     max_results = _coerce_positive_int(block.get('max_results'), resolved.max_results)
     max_chars = _coerce_positive_int(block.get('max_chars'), resolved.max_chars)
@@ -65,7 +65,7 @@ def resolve_knowledge_snapshot_settings(
     return KnowledgeSnapshotSettings(
         enabled=enabled,
         patterns=patterns or list(resolved.patterns),
-        vars=query_vars or list(resolved.vars),
+        query_vars=query_vars or list(resolved.query_vars),
         models=models,
         max_results=max_results,
         max_chars=max_chars,
@@ -78,7 +78,7 @@ def format_knowledge_snapshot(json_payload: str, settings: KnowledgeSnapshotSett
     if not rows:
         return ''
 
-    ordered_vars = [item.lstrip('?') for item in settings.vars if str(item).strip()]
+    ordered_vars = [item.lstrip('?') for item in settings.query_vars if str(item).strip()]
     formatted_lines: list[str] = []
     remaining_chars = max(settings.max_chars, 0)
     total_rows = min(len(rows), max(settings.max_results, 0))

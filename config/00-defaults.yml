@@ -43,6 +43,6 @@
       - '?s'
       - '?p'
       - '?o'
-    knowledge_default_models: []
+    knowledge_default_models: ''
     knowledge_max_results: 40
     knowledge_max_chars: 3000

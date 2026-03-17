@@ -97,7 +97,7 @@ def declare_backend_parameters(node) -> None:
     node.declare_parameter('knowledge_query_timeout_sec', 0.5)
     node.declare_parameter('knowledge_default_patterns', ['?s ?p ?o'])
     node.declare_parameter('knowledge_default_vars', ['?s', '?p', '?o'])
-    node.declare_parameter('knowledge_default_models', [])
+    node.declare_parameter('knowledge_default_models', '')
     node.declare_parameter('knowledge_max_results', 40)
     node.declare_parameter('knowledge_max_chars', 3000)
 

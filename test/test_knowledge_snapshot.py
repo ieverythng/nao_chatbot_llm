@@ -55,7 +55,7 @@ def test_resolve_knowledge_snapshot_settings_uses_role_overrides():
     assert settings == KnowledgeSnapshotSettings(
         enabled=True,
         patterns=['?person likes ?thing'],
-        vars=['?person', '?thing'],
+        query_vars=['?person', '?thing'],
         models=['all'],
         max_results=3,
         max_chars=120,
@@ -67,14 +67,14 @@ def test_resolve_knowledge_snapshot_settings_falls_back_on_invalid_json():
 
     assert settings.enabled is False
     assert settings.patterns == ['?s ?p ?o']
-    assert settings.vars == ['?s', '?p', '?o']
+    assert settings.query_vars == ['?s', '?p', '?o']
 
 
 def test_format_knowledge_snapshot_formats_triples_and_truncates():
     settings = KnowledgeSnapshotSettings(
         enabled=True,
         patterns=['?s ?p ?o'],
-        vars=['?s', '?p', '?o'],
+        query_vars=['?s', '?p', '?o'],
         models=[],
         max_results=2,
         max_chars=29,
