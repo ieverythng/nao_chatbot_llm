@@ -13,6 +13,12 @@ INTENT_DETECTION_MODES = {'rules', 'llm', 'llm_with_rules_fallback'}
 
 DEFAULT_RESPONSE_PROMPT_ADDENDUM = (
     'Use concise speech suitable for text-to-speech. '
+    'Use the recent conversation history included with the request to keep track of '
+    'what was said in the last several turns. '
+    'When live knowledge snapshot data is available, use it as the robot\'s grounded '
+    'scene state for perception questions and avoid guessing beyond it. '
+    'If a face/person entity is present without a name, say you detect someone '
+    'without inventing an identity. '
     'Posture requests should map to stand, sit, or kneel motions when relevant.'
 )
 
@@ -52,6 +58,7 @@ class ChatbotConfig:
     knowledge_enabled: bool
     knowledge_query_service_name: str
     knowledge_query_timeout_sec: float
+    knowledge_default_query_groups: list[str]
     knowledge_default_patterns: list[str]
     knowledge_default_vars: list[str]
     knowledge_default_models: list[str]
@@ -78,7 +85,7 @@ def declare_backend_parameters(node) -> None:
         'fallback_response',
         'I am having trouble reaching my language model right now.',
     )
-    node.declare_parameter('max_history_messages', 12)
+    node.declare_parameter('max_history_messages', 20)
     node.declare_parameter('robot_name', 'NAO')
     node.declare_parameter('persona_prompt_path', '')
     node.declare_parameter('response_prompt_addendum', DEFAULT_RESPONSE_PROMPT_ADDENDUM)
@@ -95,8 +102,17 @@ def declare_backend_parameters(node) -> None:
     node.declare_parameter('knowledge_enabled', False)
     node.declare_parameter('knowledge_query_service_name', '/kb/query')
     node.declare_parameter('knowledge_query_timeout_sec', 0.5)
-    node.declare_parameter('knowledge_default_patterns', ['?s ?p ?o'])
-    node.declare_parameter('knowledge_default_vars', ['?s', '?p', '?o'])
+    node.declare_parameter(
+        'knowledge_default_query_groups',
+        [
+            'myself sees ?entity && ?entity rdf:type ?type',
+        ],
+    )
+    node.declare_parameter(
+        'knowledge_default_patterns',
+        ['myself sees ?entity', '?entity rdf:type ?type'],
+    )
+    node.declare_parameter('knowledge_default_vars', ['?entity', '?type'])
     node.declare_parameter('knowledge_default_models', '')
     node.declare_parameter('knowledge_max_results', 40)
     node.declare_parameter('knowledge_max_chars', 3000)
@@ -202,13 +218,19 @@ def load_backend_config(node) -> ChatbotConfig:
             0.05,
             float(node.get_parameter('knowledge_query_timeout_sec').value),
         ),
+        knowledge_default_query_groups=coerce_str_list(
+            node.get_parameter('knowledge_default_query_groups').value,
+            fallback=[
+                'myself sees ?entity && ?entity rdf:type ?type',
+            ],
+        ),
         knowledge_default_patterns=coerce_str_list(
             node.get_parameter('knowledge_default_patterns').value,
-            fallback=['?s ?p ?o'],
+            fallback=['myself sees ?entity', '?entity rdf:type ?type'],
         ),
         knowledge_default_vars=coerce_str_list(
             node.get_parameter('knowledge_default_vars').value,
-            fallback=['?s', '?p', '?o'],
+            fallback=['?entity', '?type'],
         ),
         knowledge_default_models=coerce_str_list(
             node.get_parameter('knowledge_default_models').value,

@@ -29,7 +29,7 @@ def make_config(intent_mode: str = 'rules') -> ChatbotConfig:
         temperature=0.2,
         top_p=0.9,
         fallback_response='fallback',
-        max_history_messages=12,
+        max_history_messages=20,
         robot_name='NAO',
         persona_prompt_path='',
         response_prompt_addendum='Respond briefly.',
@@ -47,8 +47,11 @@ def make_config(intent_mode: str = 'rules') -> ChatbotConfig:
         knowledge_enabled=False,
         knowledge_query_service_name='/kb/query',
         knowledge_query_timeout_sec=0.5,
-        knowledge_default_patterns=['?s ?p ?o'],
-        knowledge_default_vars=['?s', '?p', '?o'],
+        knowledge_default_query_groups=[
+            'myself sees ?entity && ?entity rdf:type ?type',
+        ],
+        knowledge_default_patterns=['myself sees ?entity', '?entity rdf:type ?type'],
+        knowledge_default_vars=['?entity', '?type'],
         knowledge_default_models=[],
         knowledge_max_results=40,
         knowledge_max_chars=3000,
@@ -135,5 +138,39 @@ def test_turn_engine_includes_knowledge_snapshot_in_both_llm_stages():
 
     assert result.success is True
     assert len(transport.calls) == 2
-    assert 'Knowledge base snapshot:\nmug isOn table' in transport.calls[0]['messages'][0]['content']
-    assert 'Knowledge base snapshot:\nmug isOn table' in transport.calls[1]['messages'][0]['content']
+    assert 'Live symbolic scene state from KnowledgeCore for this turn:' in transport.calls[0]['messages'][0]['content']
+    assert 'Knowledge snapshot:\nmug isOn table' in transport.calls[0]['messages'][0]['content']
+    assert 'Live symbolic scene state from KnowledgeCore for this turn:' in transport.calls[1]['messages'][0]['content']
+    assert 'Knowledge snapshot:\nmug isOn table' in transport.calls[1]['messages'][0]['content']
+
+
+def test_turn_engine_prompt_explicitly_mentions_recent_history():
+    transport = FakeTransport(
+        [
+            '{"verbal_ack":"Yes, I can see a person."}',
+            '{"user_intent":{"type":"help"},"intent_confidence":0.4}',
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm'),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='is that the same person as before?',
+        history=[
+            'user:can you see anyone?',
+            'assistant:Yes, I can see a person.',
+            'user:what can you see besides the person?',
+            'assistant:I cannot confirm any object yet.',
+        ],
+        user_id='user1',
+        knowledge_snapshot='Entities currently seen by the robot: anonymous person dhgef (Human)',
+    )
+
+    assert result.success is True
+    assert 'Recent conversation history is included in the messages above.' in transport.calls[0]['messages'][0]['content']
+    assert transport.calls[0]['messages'][1]['content'] == 'can you see anyone?'
+    assert transport.calls[0]['messages'][2]['content'] == 'Yes, I can see a person.'

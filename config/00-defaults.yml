@@ -15,11 +15,20 @@
     temperature: 0.2
     top_p: 0.9
     fallback_response: 'I am having trouble reaching my language model right now.'
-    max_history_messages: 12
+    max_history_messages: 20
     robot_name: 'NAO'
     persona_prompt_path: ''
     response_prompt_addendum: |
       Keep responses short and natural for text-to-speech.
+      Use the recent conversation history that comes with each request to keep
+      continuity across the last several turns.
+      When a live knowledge snapshot is present, treat it as the robot's grounded
+      current scene state for perception questions.
+      If the snapshot mentions a face or person entity without a stable identity,
+      say that you can currently detect someone rather than inventing a name.
+      If current tracked entity IDs differ from earlier turns, do not claim it is
+      definitely the same person unless the evidence supports that.
+      If the snapshot does not support a perception claim, say you cannot confirm it.
       If the user asks for a posture change, acknowledge briefly.
     intent_prompt_addendum: |
       Infer one canonical intent label when possible:
@@ -37,12 +46,14 @@
     knowledge_enabled: true
     knowledge_query_service_name: '/kb/query'
     knowledge_query_timeout_sec: 0.5
+    knowledge_default_query_groups:
+      - 'myself sees ?entity && ?entity rdf:type ?type'
     knowledge_default_patterns:
-      - '?s ?p ?o'
+      - 'myself sees ?entity'
+      - '?entity rdf:type ?type'
     knowledge_default_vars:
-      - '?s'
-      - '?p'
-      - '?o'
+      - '?entity'
+      - '?type'
     knowledge_default_models: ''
     knowledge_max_results: 40
     knowledge_max_chars: 3000

@@ -19,7 +19,7 @@ def make_config() -> ChatbotConfig:
         temperature=0.2,
         top_p=0.9,
         fallback_response='fallback',
-        max_history_messages=12,
+        max_history_messages=20,
         robot_name='NAO',
         persona_prompt_path='',
         response_prompt_addendum='Respond briefly.',
@@ -37,8 +37,11 @@ def make_config() -> ChatbotConfig:
         knowledge_enabled=False,
         knowledge_query_service_name='/kb/query',
         knowledge_query_timeout_sec=0.5,
-        knowledge_default_patterns=['?s ?p ?o'],
-        knowledge_default_vars=['?s', '?p', '?o'],
+        knowledge_default_query_groups=[
+            'myself sees ?entity && ?entity rdf:type ?type',
+        ],
+        knowledge_default_patterns=['myself sees ?entity', '?entity rdf:type ?type'],
+        knowledge_default_vars=['?entity', '?type'],
         knowledge_default_models=[],
         knowledge_max_results=40,
         knowledge_max_chars=3000,
@@ -54,6 +57,9 @@ def test_resolve_knowledge_snapshot_settings_uses_role_overrides():
 
     assert settings == KnowledgeSnapshotSettings(
         enabled=True,
+        query_groups=[
+            ['myself sees ?entity', '?entity rdf:type ?type'],
+        ],
         patterns=['?person likes ?thing'],
         query_vars=['?person', '?thing'],
         models=['all'],
@@ -66,13 +72,17 @@ def test_resolve_knowledge_snapshot_settings_falls_back_on_invalid_json():
     settings = resolve_knowledge_snapshot_settings('{not json}', make_config())
 
     assert settings.enabled is False
-    assert settings.patterns == ['?s ?p ?o']
-    assert settings.query_vars == ['?s', '?p', '?o']
+    assert settings.query_groups == [
+        ['myself sees ?entity', '?entity rdf:type ?type'],
+    ]
+    assert settings.patterns == ['myself sees ?entity', '?entity rdf:type ?type']
+    assert settings.query_vars == ['?entity', '?type']
 
 
 def test_format_knowledge_snapshot_formats_triples_and_truncates():
     settings = KnowledgeSnapshotSettings(
         enabled=True,
+        query_groups=[],
         patterns=['?s ?p ?o'],
         query_vars=['?s', '?p', '?o'],
         models=[],
@@ -85,4 +95,59 @@ def test_format_knowledge_snapshot_formats_triples_and_truncates():
         settings,
     )
 
-    assert snapshot == 'mug isOn table\n...'
+    assert snapshot == 'mug is on table\n...'
+
+
+def test_format_knowledge_snapshot_adds_person_face_summary_and_humanizes_triples():
+    settings = KnowledgeSnapshotSettings(
+        enabled=True,
+        query_groups=[],
+        patterns=['?s ?p ?o'],
+        query_vars=['?s', '?p', '?o'],
+        models=[],
+        max_results=4,
+        max_chars=400,
+    )
+
+    snapshot = format_knowledge_snapshot(
+        (
+            '[{"s":"person_1","p":"rdf:type","o":"Person"},'
+            '{"s":"face_1","p":"isVisible","o":"true"},'
+            '{"s":"mug","p":"isOn","o":"table"}]'
+        ),
+        settings,
+    )
+
+    assert 'Detected person/face-related entities right now: person 1, face 1' in snapshot
+    assert 'Scene facts:' in snapshot
+    assert '- person 1 is a Person' in snapshot
+    assert '- face 1 is visible true' in snapshot
+    assert '- mug is on table' in snapshot
+
+
+def test_format_knowledge_snapshot_summarizes_entities_seen_by_robot():
+    settings = KnowledgeSnapshotSettings(
+        enabled=True,
+        query_groups=[
+            ['myself sees ?entity', '?entity rdf:type ?type'],
+        ],
+        patterns=['myself sees ?entity', '?entity rdf:type ?type'],
+        query_vars=['?entity', '?type'],
+        models=[],
+        max_results=20,
+        max_chars=500,
+    )
+
+    snapshot = format_knowledge_snapshot(
+        (
+            '[{"entity":"book_bkjwb","type":"dbr:Book"},'
+            '{"entity":"book_bkjwb","type":"Artifact"},'
+            '{"entity":"anonymous_person_dhgef","type":"Human"},'
+            '{"entity":"anonymous_person_dhgef","type":"foaf:Person"}]'
+        ),
+        settings,
+    )
+
+    assert 'Entities currently seen by the robot: book bkjwb (Book), anonymous person dhgef (Human, Person)' in snapshot
+    assert '- book bkjwb is a Book' in snapshot
+    assert '- anonymous person dhgef is a Human' in snapshot

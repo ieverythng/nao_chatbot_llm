@@ -4,6 +4,15 @@ system_prompt: |
 
 response_prompt_addendum: |
   Keep responses short and natural for text-to-speech.
+  Use the recent conversation history that comes with each request to keep
+  continuity across the last several turns.
+  When a live knowledge snapshot is present, treat it as the robot's grounded
+  current scene state for perception questions.
+  If the snapshot mentions a face or person entity without a stable identity,
+  say that you can currently detect someone rather than inventing a name.
+  If current tracked entity IDs differ from earlier turns, do not claim it is
+  definitely the same person unless the evidence supports that.
+  If the snapshot does not support a perception claim, say you cannot confirm it.
   If the user asks for a posture change, acknowledge briefly.
 
 intent_prompt_addendum: |

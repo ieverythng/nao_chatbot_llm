@@ -15,6 +15,9 @@ The user_id of the person you are talking to is $user_id.
 Environment description:
 $environment
 
+Recent conversation history is included in the messages above.
+Use it to maintain continuity across the last several turns.
+
 Output requirements:
 - Return only valid JSON (no markdown or extra text).
 - Include field verbal_ack as a short answer suitable for TTS.
@@ -44,6 +47,9 @@ Canonical intent labels:
 The user_id of the person you are talking to is $user_id.
 Environment description:
 $environment
+
+Recent conversation history is included in the messages above.
+Use it to maintain continuity across the last several turns.
 
 Output requirements:
 - Return only valid JSON (no markdown or extra text).
@@ -138,7 +144,20 @@ def _knowledge_snapshot_block(snapshot: str) -> str:
     clean_snapshot = str(snapshot or '').strip()
     if not clean_snapshot:
         return ''
-    return 'Knowledge base snapshot:\n%s' % clean_snapshot
+    return (
+        'Live symbolic scene state from KnowledgeCore for this turn:\n'
+        '- Treat it as the robot\'s best grounded view of the current scene.\n'
+        '- Use it when answering who is present, whether a face/person is detected, '
+        'and what objects or relations are currently known.\n'
+        '- Combine it with the recent dialogue history when the user asks whether '
+        'the current scene matches what was seen earlier.\n'
+        '- If it mentions a person or face entity without a stable name, say you can '
+        'currently detect someone without inventing an identity.\n'
+        '- If the current entity ID changed since earlier turns, do not claim it is '
+        'definitely the same person unless the evidence supports that.\n'
+        '- If the snapshot does not support a perception claim, say you cannot confirm it.\n'
+        'Knowledge snapshot:\n%s' % clean_snapshot
+    )
 
 
 def _warn(logger, message: str) -> None:
