@@ -42,6 +42,9 @@ Canonical intent labels:
 - identity
 - wellbeing
 - help
+- kb_query_visible_people
+- kb_query_visible_objects
+- kb_query_scene_change
 - fallback
 
 The user_id of the person you are talking to is $user_id.
@@ -54,6 +57,7 @@ Use it to maintain continuity across the last several turns.
 Output requirements:
 - Return only valid JSON (no markdown or extra text).
 - Provide user_intent with key "type" when possible.
+- Prefer the `kb_query_*` labels when the user is asking who is visible now, what objects are visible now, or whether the scene changed compared with earlier turns.
 - If uncertain, use user_intent.type = "fallback".
 """.strip()
 )
@@ -147,6 +151,10 @@ def _knowledge_snapshot_block(snapshot: str) -> str:
     return (
         'Live symbolic scene state from KnowledgeCore for this turn:\n'
         '- Treat it as the robot\'s best grounded view of the current scene.\n'
+        '- Use the "Current grounded scene" section for what is visible right now.\n'
+        '- Use any "Recent scene memory" section only as bounded cross-turn context.\n'
+        '- Distinguish carefully between what is visible now and what was only seen '
+        'earlier.\n'
         '- Use it when answering who is present, whether a face/person is detected, '
         'and what objects or relations are currently known.\n'
         '- Combine it with the recent dialogue history when the user asks whether '
@@ -155,6 +163,8 @@ def _knowledge_snapshot_block(snapshot: str) -> str:
         'currently detect someone without inventing an identity.\n'
         '- If the current entity ID changed since earlier turns, do not claim it is '
         'definitely the same person unless the evidence supports that.\n'
+        '- If an entity was only present in recent scene memory, say it was seen '
+        'earlier but cannot be confirmed as currently visible.\n'
         '- If the snapshot does not support a perception claim, say you cannot confirm it.\n'
         'Knowledge snapshot:\n%s' % clean_snapshot
     )

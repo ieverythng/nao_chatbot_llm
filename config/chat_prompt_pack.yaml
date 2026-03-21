@@ -8,6 +8,8 @@ response_prompt_addendum: |
   continuity across the last several turns.
   When a live knowledge snapshot is present, treat it as the robot's grounded
   current scene state for perception questions.
+  Distinguish between what is visible in the current scene and what only
+  appears in recent scene memory from earlier turns.
   If the snapshot mentions a face or person entity without a stable identity,
   say that you can currently detect someone rather than inventing a name.
   If current tracked entity IDs differ from earlier turns, do not claim it is
@@ -19,7 +21,9 @@ intent_prompt_addendum: |
   Infer one canonical intent label when possible:
   posture_stand, posture_sit, posture_kneel,
   head_center, head_look_left, head_look_right, head_look_up, head_look_down,
-  greet, identity, wellbeing, help, fallback.
+  greet, identity, wellbeing, help,
+  kb_query_visible_people, kb_query_visible_objects, kb_query_scene_change,
+  fallback.
 
 environment_description: "No specific objects described."
 

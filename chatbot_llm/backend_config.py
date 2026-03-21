@@ -17,6 +17,8 @@ DEFAULT_RESPONSE_PROMPT_ADDENDUM = (
     'what was said in the last several turns. '
     'When live knowledge snapshot data is available, use it as the robot\'s grounded '
     'scene state for perception questions and avoid guessing beyond it. '
+    'Distinguish between what is visible in the current scene and what only appears '
+    'in recent scene memory from earlier turns. '
     'If a face/person entity is present without a name, say you detect someone '
     'without inventing an identity. '
     'Posture requests should map to stand, sit, or kneel motions when relevant.'
@@ -41,6 +43,7 @@ class ChatbotConfig:
     top_p: float
     fallback_response: str
     max_history_messages: int
+    scene_memory_turns: int
     robot_name: str
     persona_prompt_path: str
     response_prompt_addendum: str
@@ -86,6 +89,7 @@ def declare_backend_parameters(node) -> None:
         'I am having trouble reaching my language model right now.',
     )
     node.declare_parameter('max_history_messages', 20)
+    node.declare_parameter('scene_memory_turns', 4)
     node.declare_parameter('robot_name', 'NAO')
     node.declare_parameter('persona_prompt_path', '')
     node.declare_parameter('response_prompt_addendum', DEFAULT_RESPONSE_PROMPT_ADDENDUM)
@@ -183,6 +187,10 @@ def load_backend_config(node) -> ChatbotConfig:
         max_history_messages=max(
             0,
             int(node.get_parameter('max_history_messages').value),
+        ),
+        scene_memory_turns=max(
+            0,
+            int(node.get_parameter('scene_memory_turns').value),
         ),
         robot_name=str(node.get_parameter('robot_name').value),
         persona_prompt_path=str(node.get_parameter('persona_prompt_path').value),

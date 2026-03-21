@@ -1,4 +1,6 @@
 from chatbot_llm.backend_config import ChatbotConfig
+from chatbot_llm.knowledge_snapshot import build_scene_context
+from chatbot_llm.knowledge_snapshot import extract_scene_memory_entry
 from chatbot_llm.knowledge_snapshot import KnowledgeSnapshotSettings
 from chatbot_llm.knowledge_snapshot import format_knowledge_snapshot
 from chatbot_llm.knowledge_snapshot import resolve_knowledge_snapshot_settings
@@ -20,6 +22,7 @@ def make_config() -> ChatbotConfig:
         top_p=0.9,
         fallback_response='fallback',
         max_history_messages=20,
+        scene_memory_turns=4,
         robot_name='NAO',
         persona_prompt_path='',
         response_prompt_addendum='Respond briefly.',
@@ -149,5 +152,31 @@ def test_format_knowledge_snapshot_summarizes_entities_seen_by_robot():
     )
 
     assert 'Entities currently seen by the robot: book bkjwb (Book), anonymous person dhgef (Human, Person)' in snapshot
-    assert '- book bkjwb is a Book' in snapshot
-    assert '- anonymous person dhgef is a Human' in snapshot
+    assert '- book bkjwb is currently classified as Book' in snapshot
+    assert '- anonymous person dhgef is currently classified as Human, Person' in snapshot
+
+
+def test_extract_scene_memory_entry_prefers_summary_line():
+    snapshot = (
+        'Entities currently seen by the robot: book bkjwb (Book)\n'
+        'Scene facts:\n'
+        '- book bkjwb is currently classified as Book'
+    )
+
+    assert (
+        extract_scene_memory_entry(snapshot)
+        == 'Entities currently seen by the robot: book bkjwb (Book)'
+    )
+
+
+def test_build_scene_context_includes_current_scene_and_recent_memory():
+    context = build_scene_context(
+        'Entities currently seen by the robot: anonymous person dhgef (Human)',
+        recent_scene_memory=[
+            'Entities currently seen by the robot: book bkjwb (Book)',
+        ],
+    )
+
+    assert 'Current grounded scene:' in context
+    assert 'Recent scene memory from previous turns:' in context
+    assert '- Entities currently seen by the robot: book bkjwb (Book)' in context

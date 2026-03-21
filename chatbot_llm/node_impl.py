@@ -23,6 +23,8 @@ from chatbot_llm.chat_history import history_to_messages
 from chatbot_llm.chat_history import messages_to_history
 from chatbot_llm.intent_adapter import build_response_intents
 from chatbot_llm.knowledge_snapshot import KnowledgeSnapshotSettings
+from chatbot_llm.knowledge_snapshot import build_scene_context
+from chatbot_llm.knowledge_snapshot import extract_scene_memory_entry
 from chatbot_llm.knowledge_snapshot import resolve_knowledge_snapshot_settings
 from chatbot_llm.knowledge_snapshot_client import KnowledgeSnapshotClient
 from chatbot_llm.ollama_transport import OllamaTransport
@@ -52,6 +54,7 @@ class DialogueSession:
     knowledge_settings: KnowledgeSnapshotSettings
     locale: str
     history: list[str] = field(default_factory=list)
+    recent_scene_memory: list[str] = field(default_factory=list)
     request_count: int = 0
     last_user_id: str = 'anonymous_user'
 
@@ -223,15 +226,21 @@ class LLMChatbot(Node):
             )
         )
 
+        current_snapshot = self._knowledge_snapshot_client.fetch_snapshot(
+            session.knowledge_settings,
+            turn_id=turn_id,
+            trace=self._trace,
+        )
+        knowledge_context = build_scene_context(
+            current_snapshot,
+            recent_scene_memory=session.recent_scene_memory,
+        )
+
         result = self._turn_engine.execute_turn(
             user_text=text,
             history=list(session.history),
             user_id=user_id,
-            knowledge_snapshot=self._knowledge_snapshot_client.fetch_snapshot(
-                session.knowledge_settings,
-                turn_id=turn_id,
-                trace=self._trace,
-            ),
+            knowledge_snapshot=knowledge_context,
             progress_callback=lambda status, progress: self._trace(
                 turn_id,
                 'PROGRESS',
@@ -245,6 +254,10 @@ class LLMChatbot(Node):
         with self._session_lock:
             if self._session is not None:
                 self._session.history = list(result.updated_history)
+                self._session.recent_scene_memory = self._remember_scene_memory(
+                    self._session.recent_scene_memory,
+                    current_snapshot,
+                )
                 self._session.last_user_id = user_id
                 self._session.request_count += 1
 
@@ -428,6 +441,10 @@ class LLMChatbot(Node):
                     key='request_count',
                     value=str(session.request_count if session is not None else 0),
                 ),
+                KeyValue(
+                    key='recent_scene_memory_count',
+                    value=str(len(session.recent_scene_memory) if session is not None else 0),
+                ),
                 KeyValue(key='model', value=self._config.model if self._config else ''),
                 KeyValue(
                     key='intent_mode',
@@ -471,6 +488,27 @@ class LLMChatbot(Node):
             result.results = '{}'
             result.error_msg = str(error_msg)
             self._dialogue_result = result
+
+    def _remember_scene_memory(
+        self,
+        existing_entries: list[str],
+        current_snapshot: str,
+    ) -> list[str]:
+        """Retain a bounded sequence of compact scene summaries across turns."""
+        limit = max(0, self._config.scene_memory_turns if self._config else 0)
+        if limit <= 0:
+            return []
+
+        current_entry = extract_scene_memory_entry(current_snapshot)
+        retained = [str(entry).strip() for entry in existing_entries if str(entry).strip()]
+        if not current_entry:
+            return retained[-limit:]
+
+        if retained and retained[-1].lower() == current_entry.lower():
+            return retained[-limit:]
+
+        retained.append(current_entry)
+        return retained[-limit:]
 
     def _trace(self, turn_id: str, stage: str, message: str, level: str = 'info') -> None:
         """Compact structured logging helper used by the turn engine."""

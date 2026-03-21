@@ -107,7 +107,15 @@ def format_knowledge_snapshot(json_payload: str, settings: KnowledgeSnapshotSett
             )
 
     fact_lines = []
+    typed_entity_fact_lines = _build_typed_entity_fact_lines(rows[:total_rows])
+    if typed_entity_fact_lines:
+        fact_lines.extend(
+            f'- {line}' if summary_lines else line for line in typed_entity_fact_lines
+        )
+
     for row in rows[:total_rows]:
+        if {'entity', 'type'}.issubset(row.keys()) and typed_entity_fact_lines:
+            continue
         line = _format_query_row(row, ordered_vars)
         if line:
             fact_lines.append(f'- {line}' if summary_lines else line)
@@ -115,6 +123,44 @@ def format_knowledge_snapshot(json_payload: str, settings: KnowledgeSnapshotSett
     _append_bounded_lines(formatted_lines, fact_lines, remaining_chars)
 
     return '\n'.join(formatted_lines).strip()
+
+
+def build_scene_context(
+    snapshot: str,
+    recent_scene_memory: list[str] | None = None,
+) -> str:
+    """Combine the live snapshot with a short, explicit scene-memory section."""
+    clean_snapshot = str(snapshot or '').strip()
+    memory_entries = _unique_preserving_order(recent_scene_memory or [])
+    sections: list[str] = []
+
+    if clean_snapshot:
+        sections.append('Current grounded scene:\n%s' % clean_snapshot)
+    elif memory_entries:
+        sections.append(
+            'Current grounded scene:\n'
+            'No entities are confirmed in the live KnowledgeCore snapshot for this turn.'
+        )
+
+    if memory_entries:
+        sections.append(
+            'Recent scene memory from previous turns:\n%s'
+            % '\n'.join('- %s' % entry for entry in memory_entries)
+        )
+
+    return '\n\n'.join(sections).strip()
+
+
+def extract_scene_memory_entry(snapshot: str) -> str:
+    """Extract one compact scene summary line to retain across turns."""
+    for raw_line in str(snapshot or '').splitlines():
+        clean_line = str(raw_line).strip()
+        if not clean_line or clean_line == 'Scene facts:':
+            continue
+        if clean_line.startswith('- '):
+            clean_line = clean_line[2:].strip()
+        return clean_line
+    return ''
 
 
 def _parse_query_rows(json_payload: str) -> list[dict]:
@@ -223,6 +269,30 @@ def _build_visible_entity_summary(rows: list[dict]) -> list[str]:
         'Entities currently seen by the robot: %s'
         % ', '.join(entity_descriptions[:6])
     ]
+
+
+def _build_typed_entity_fact_lines(rows: list[dict]) -> list[str]:
+    typed_entities = _collect_typed_entities(rows)
+    if not typed_entities:
+        return []
+
+    lines = []
+    for entity, raw_types in typed_entities.items():
+        informative_types = [
+            _display_type(raw_type)
+            for raw_type in raw_types
+            if _is_informative_type(raw_type)
+        ]
+        informative_types = _unique_preserving_order(informative_types)
+        entity_name = _humanize_value(entity)
+        if entity_name and informative_types:
+            lines.append(
+                '%s is currently classified as %s'
+                % (entity_name, ', '.join(informative_types[:3]))
+            )
+        elif entity_name:
+            lines.append('%s is currently present' % entity_name)
+    return lines
 
 
 def _collect_typed_entities(rows: list[dict]) -> dict[str, list[str]]:

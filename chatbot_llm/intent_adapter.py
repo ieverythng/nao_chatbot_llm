@@ -45,6 +45,11 @@ GENERIC_INTENT_MAP = {
 }
 
 RESPONSE_ONLY_INTENTS = {'identity', 'wellbeing', 'help'}
+KB_QUERY_INTENTS = {
+    'kb_query_visible_people',
+    'kb_query_visible_objects',
+    'kb_query_scene_change',
+}
 
 
 def build_response_intents(
@@ -62,6 +67,19 @@ def build_response_intents(
 
     if normalized in RESPONSE_ONLY_INTENTS:
         return []
+
+    if normalized in KB_QUERY_INTENTS:
+        payload = _clean_payload(user_intent)
+        if verbal_ack:
+            payload.setdefault('suggested_response', verbal_ack)
+        return [
+            _make_intent(
+                normalized,
+                payload,
+                source=source,
+                confidence=confidence,
+            )
+        ]
 
     if normalized in LOCAL_MOTION_MAP:
         return [
@@ -130,7 +148,7 @@ def _clean_payload(user_intent: dict) -> dict:
     payload = {}
     if not isinstance(user_intent, dict):
         return payload
-    for key in ('object', 'recipient', 'input', 'goal'):
+    for key in ('object', 'recipient', 'input', 'goal', 'suggested_response'):
         value = str(user_intent.get(key, '')).strip()
         if value:
             payload[key] = value
