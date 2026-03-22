@@ -24,6 +24,12 @@ intent_prompt_addendum: |
   greet, identity, wellbeing, help,
   kb_query_visible_people, kb_query_visible_objects, kb_query_scene_change,
   fallback.
+  When the user requests an action, you may also return:
+  - ack_text: a short acknowledgement for the action
+  - ack_mode: usually "say"
+  - scene_targets: a list of relevant object labels if the action refers to scene entities
+  - plan: an ordered list of steps shaped as {type,name,args}
+  For posture or head-motion actions, prefer a single skill step named "perform_motion".
 
 environment_description: "No specific objects described."
 
@@ -53,6 +59,18 @@ intent_schema:
           type: string
         goal:
           type: string
+        ack_text:
+          type: string
+        ack_mode:
+          type: string
+        scene_targets:
+          type: array
+          items:
+            type: string
+        plan:
+          type: array
+          items:
+            type: object
       required:
         - type
     intent_confidence:

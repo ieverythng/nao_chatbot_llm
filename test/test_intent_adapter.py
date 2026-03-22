@@ -16,7 +16,18 @@ def test_build_response_intents_maps_motion_to_perform_motion():
 
     assert len(intents) == 1
     assert intents[0].intent == Intent.PERFORM_MOTION
-    assert json.loads(intents[0].data) == {'object': 'stand'}
+    assert json.loads(intents[0].data) == {
+        'object': 'stand',
+        'ack_text': 'Sure.',
+        'ack_mode': 'say',
+        'plan': [
+            {
+                'type': 'skill',
+                'name': 'perform_motion',
+                'args': {'object': 'stand'},
+            }
+        ],
+    }
 
 
 def test_build_response_intents_maps_greet_with_response_hint():
@@ -31,7 +42,11 @@ def test_build_response_intents_maps_greet_with_response_hint():
 
     assert len(intents) == 1
     assert intents[0].intent == Intent.GREET
-    assert json.loads(intents[0].data) == {'suggested_response': 'Hello there!'}
+    assert json.loads(intents[0].data) == {
+        'ack_text': 'Hello there!',
+        'ack_mode': 'say',
+        'suggested_response': 'Hello there!',
+    }
 
 
 def test_build_response_intents_ignores_response_only_intents():
@@ -62,4 +77,44 @@ def test_build_response_intents_fallbacks_to_raw_user_input():
     assert json.loads(intents[0].data) == {
         'input': 'tell me something complicated',
         'suggested_response': 'I am not fully sure what you meant.',
+        'ack_text': 'I am not fully sure what you meant.',
+        'ack_mode': 'say',
+    }
+
+
+def test_build_response_intents_preserves_explicit_scene_targets_and_plan():
+    intents = build_response_intents(
+        resolved_intent='bring_object',
+        user_intent={
+            'type': 'bring_object',
+            'object': 'cup',
+            'scene_targets': ['cup'],
+            'plan': [
+                {
+                    'type': 'skill',
+                    'name': 'bring_object',
+                    'args': {'object': 'cup'},
+                }
+            ],
+        },
+        source_user_id='user1',
+        verbal_ack='I will bring the cup.',
+        raw_input='bring me the cup',
+        confidence=0.7,
+    )
+
+    assert len(intents) == 1
+    assert intents[0].intent == Intent.BRING_OBJECT
+    assert json.loads(intents[0].data) == {
+        'object': 'cup',
+        'ack_text': 'I will bring the cup.',
+        'ack_mode': 'say',
+        'scene_targets': ['cup'],
+        'plan': [
+            {
+                'type': 'skill',
+                'name': 'bring_object',
+                'args': {'object': 'cup'},
+            }
+        ],
     }

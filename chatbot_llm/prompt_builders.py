@@ -58,6 +58,10 @@ Output requirements:
 - Return only valid JSON (no markdown or extra text).
 - Provide user_intent with key "type" when possible.
 - Prefer the `kb_query_*` labels when the user is asking who is visible now, what objects are visible now, or whether the scene changed compared with earlier turns.
+- When the user requests an action, you may also include ack_text, ack_mode,
+  scene_targets, and a plan list shaped as {type,name,args}.
+- For posture or head-motion requests, prefer one plan step with
+  type="skill", name="perform_motion", and args.object set to the canonical motion.
 - If uncertain, use user_intent.type = "fallback".
 """.strip()
 )

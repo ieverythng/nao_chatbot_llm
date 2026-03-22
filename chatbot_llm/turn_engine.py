@@ -488,10 +488,38 @@ def _extract_json_object(payload: str) -> dict:
 def _coerce_user_intent(user_intent) -> dict:
     if isinstance(user_intent, dict):
         cleaned = {}
-        for key in ('type', 'object', 'recipient', 'input', 'goal'):
+        for key in ('type', 'object', 'recipient', 'input', 'goal', 'ack_text', 'ack_mode'):
             value = str(user_intent.get(key, '')).strip()
             if value:
                 cleaned[key] = value
+        scene_targets = user_intent.get('scene_targets')
+        if isinstance(scene_targets, str):
+            parsed_targets = [item.strip() for item in scene_targets.split(',') if item.strip()]
+            if parsed_targets:
+                cleaned['scene_targets'] = parsed_targets
+        elif isinstance(scene_targets, (list, tuple)):
+            parsed_targets = [str(item).strip() for item in scene_targets if str(item).strip()]
+            if parsed_targets:
+                cleaned['scene_targets'] = parsed_targets
+
+        raw_plan = user_intent.get('plan')
+        if isinstance(raw_plan, list):
+            cleaned_plan = []
+            for step in raw_plan:
+                if not isinstance(step, dict):
+                    continue
+                step_type = str(step.get('type', '')).strip()
+                if not step_type:
+                    continue
+                cleaned_plan.append(
+                    {
+                        'type': step_type,
+                        'name': str(step.get('name', '')).strip(),
+                        'args': step.get('args', {}) if isinstance(step.get('args'), dict) else {},
+                    }
+                )
+            if cleaned_plan:
+                cleaned['plan'] = cleaned_plan
         return cleaned
     if isinstance(user_intent, str) and user_intent.strip():
         return {'type': user_intent.strip()}
