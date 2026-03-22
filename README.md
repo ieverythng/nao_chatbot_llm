@@ -40,6 +40,21 @@ Main implementation modules:
 - `chat_history.py`: bounded dialogue history
 - `intent_rules.py` and `intent_adapter.py`: fallback and intent translation
 
+The intent pipeline now preserves a small set of execution-oriented metadata in
+`Intent.data` so downstream routing can stay flexible without changing the ROS
+message type:
+
+- `ack_text`
+- `ack_mode`
+- `scene_targets`
+- `plan`
+
+The package also preserves scene-query intents as explicit labels:
+
+- `kb_query_visible_people`
+- `kb_query_visible_objects`
+- `kb_query_scene_change`
+
 ## KnowledgeCore Grounding
 
 `knowledge_core` does not directly push prompt text into `chatbot_llm`.
@@ -88,6 +103,10 @@ Example dialogue-role override:
 
 If no `knowledge_snapshot` block is provided in `role.configuration`, the node
 falls back to its launch defaults.
+
+The live snapshot is complemented by a short recent-scene-memory trail so the
+response and intent prompts can reason about what changed across turns, not
+only what is visible right now.
 
 Historical note:
 
@@ -145,6 +164,8 @@ reflects the shipped launch defaults.
   the NAO-specific backend used by this workspace
 - robot-side dispatch must stay out of this package; `/intents` consumers belong
   in `nao_orchestrator`
+- `plan` generation is advisory metadata for downstream execution, not direct
+  robot control from inside `chatbot_llm`
 
 ## Verification
 
