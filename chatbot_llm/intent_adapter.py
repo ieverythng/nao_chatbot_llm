@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from hri_actions_msgs.msg import Intent
+from kb_skills.intent_labels import KB_QUERY_INTENTS
 
 
 LOCAL_MOTION_MAP = {
@@ -45,11 +46,6 @@ GENERIC_INTENT_MAP = {
 }
 
 RESPONSE_ONLY_INTENTS = {'identity', 'wellbeing', 'help'}
-KB_QUERY_INTENTS = {
-    'kb_query_visible_people',
-    'kb_query_visible_objects',
-    'kb_query_scene_change',
-}
 
 
 def build_response_intents(

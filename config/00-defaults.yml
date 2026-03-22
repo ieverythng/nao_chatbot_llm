@@ -45,7 +45,7 @@
     intent_detection_mode: 'llm_with_rules_fallback'
     prompt_pack_path: ''
     use_skill_catalog: true
-    skill_catalog_packages: 'communication_skills,nao_skills'
+    skill_catalog_packages: 'communication_skills,nao_skills,kb_skills'
     skill_catalog_max_entries: 16
     skill_catalog_max_chars: 3000
     knowledge_enabled: true
