@@ -62,6 +62,24 @@ def test_build_response_intents_ignores_response_only_intents():
     assert intents == []
 
 
+def test_build_response_intents_preserves_kb_query_intents():
+    intents = build_response_intents(
+        resolved_intent='kb_query_visible_people',
+        user_intent={'type': 'kb_query_visible_people', 'goal': 'visible_people'},
+        source_user_id='user1',
+        verbal_ack='I can currently see one person.',
+        raw_input='who can you see?',
+        confidence=0.6,
+    )
+
+    assert len(intents) == 1
+    assert intents[0].intent == 'kb_query_visible_people'
+    assert json.loads(intents[0].data) == {
+        'goal': 'visible_people',
+        'suggested_response': 'I can currently see one person.',
+    }
+
+
 def test_build_response_intents_fallbacks_to_raw_user_input():
     intents = build_response_intents(
         resolved_intent='fallback',

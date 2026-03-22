@@ -4,6 +4,11 @@ from __future__ import annotations
 
 import re
 
+from kb_skills.intent_labels import KB_QUERY_INTENTS
+from kb_skills.intent_labels import KB_QUERY_SCENE_CHANGE
+from kb_skills.intent_labels import KB_QUERY_VISIBLE_OBJECTS
+from kb_skills.intent_labels import KB_QUERY_VISIBLE_PEOPLE
+
 
 SUPPORTED_INTENTS = (
     'posture_stand',
@@ -18,9 +23,7 @@ SUPPORTED_INTENTS = (
     'wellbeing',
     'identity',
     'help',
-    'kb_query_visible_people',
-    'kb_query_visible_objects',
-    'kb_query_scene_change',
+    *KB_QUERY_INTENTS,
     'fallback',
 )
 
@@ -29,9 +32,9 @@ INTENT_ALIASES = {
     '__intent_hello__': 'greet',
     '__intent_identity__': 'identity',
     '__intent_help__': 'help',
-    '__intent_kb_query_visible_people__': 'kb_query_visible_people',
-    '__intent_kb_query_visible_objects__': 'kb_query_visible_objects',
-    '__intent_kb_query_scene_change__': 'kb_query_scene_change',
+    '__intent_kb_query_visible_people__': KB_QUERY_VISIBLE_PEOPLE,
+    '__intent_kb_query_visible_objects__': KB_QUERY_VISIBLE_OBJECTS,
+    '__intent_kb_query_scene_change__': KB_QUERY_SCENE_CHANGE,
     '__intent_wellbeing__': 'wellbeing',
     '__intent_stand__': 'posture_stand',
     '__intent_sit__': 'posture_sit',
@@ -95,7 +98,7 @@ def normalize_intent(intent: str, default: str = 'fallback', hint_text: str = ''
             'can you see a person',
         ),
     ):
-        return 'kb_query_visible_people'
+        return KB_QUERY_VISIBLE_PEOPLE
     if _contains_any_phrase(
         search_space,
         (
@@ -106,7 +109,7 @@ def normalize_intent(intent: str, default: str = 'fallback', hint_text: str = ''
             'what items do you see',
         ),
     ):
-        return 'kb_query_visible_objects'
+        return KB_QUERY_VISIBLE_OBJECTS
     if _contains_any_phrase(
         search_space,
         (
@@ -119,7 +122,7 @@ def normalize_intent(intent: str, default: str = 'fallback', hint_text: str = ''
             'do you still see',
         ),
     ):
-        return 'kb_query_scene_change'
+        return KB_QUERY_SCENE_CHANGE
     return default
 
 
@@ -179,7 +182,7 @@ def detect_intent(text: str) -> str:
             'is anyone there',
         ),
     ):
-        return 'kb_query_visible_people'
+        return KB_QUERY_VISIBLE_PEOPLE
     if _contains_any_phrase(
         lowered,
         (
@@ -190,7 +193,7 @@ def detect_intent(text: str) -> str:
             'what items do you see',
         ),
     ):
-        return 'kb_query_visible_objects'
+        return KB_QUERY_VISIBLE_OBJECTS
     if _contains_any_phrase(
         lowered,
         (
@@ -203,7 +206,7 @@ def detect_intent(text: str) -> str:
             'do you still see',
         ),
     ):
-        return 'kb_query_scene_change'
+        return KB_QUERY_SCENE_CHANGE
     return 'fallback'
 
 
@@ -237,11 +240,11 @@ def build_rule_response(intent: str) -> str:
             'changes like stand, kneel, or sit, and head movements like look '
             'left, right, up, down, or center.'
         )
-    if intent == 'kb_query_visible_people':
+    if intent == KB_QUERY_VISIBLE_PEOPLE:
         return 'I will answer using the people I can currently detect.'
-    if intent == 'kb_query_visible_objects':
+    if intent == KB_QUERY_VISIBLE_OBJECTS:
         return 'I will answer using the objects I can currently confirm.'
-    if intent == 'kb_query_scene_change':
+    if intent == KB_QUERY_SCENE_CHANGE:
         return 'I will compare the current scene with the recent scene memory.'
     return 'I heard you. We are testing the dialogue backend.'
 
