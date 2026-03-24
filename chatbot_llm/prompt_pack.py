@@ -12,6 +12,10 @@ except ImportError:  # pragma: no cover - runtime dependency
     yaml = None
 
 
+# ---------------------------------------------------------------------------
+# Built-in prompt-pack defaults
+# ---------------------------------------------------------------------------
+
 DEFAULT_SYSTEM_PROMPT = (
     'You are a friendly robot called {robot_name}. '
     'You are helpful, concise, and clear in spoken interactions.'
@@ -68,6 +72,10 @@ class PromptPack:
     response_schema: dict[str, Any]
     intent_schema: dict[str, Any]
 
+
+# ---------------------------------------------------------------------------
+# Public prompt-pack loading API
+# ---------------------------------------------------------------------------
 
 def default_prompt_pack() -> PromptPack:
     """Return built-in defaults used when no external prompt pack is available."""
@@ -138,6 +146,10 @@ def load_prompt_pack(path: str, logger=None) -> PromptPack:
         intent_schema=intent_schema,
     )
 
+
+# ---------------------------------------------------------------------------
+# Prompt-pack parsing helpers
+# ---------------------------------------------------------------------------
 
 def _as_text(value) -> str:
     if value is None:

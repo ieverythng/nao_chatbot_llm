@@ -18,6 +18,10 @@ from chatbot_llm.prompt_builders import build_response_prompt
 from chatbot_llm.prompt_builders import load_persona_prompt
 
 
+# ---------------------------------------------------------------------------
+# Turn execution result model
+# ---------------------------------------------------------------------------
+
 @dataclass(frozen=True)
 class TurnExecutionResult:
     """Result tuple returned by ``DialogueTurnEngine.execute_turn``."""
@@ -30,6 +34,10 @@ class TurnExecutionResult:
     intent_confidence: float
     user_intent: dict
 
+
+# ---------------------------------------------------------------------------
+# Two-stage turn engine
+# ---------------------------------------------------------------------------
 
 class DialogueTurnEngine:
     """Implement rules/LLM policies for ``chatbot_llm`` interactions."""
@@ -48,6 +56,10 @@ class DialogueTurnEngine:
         self._skill_catalog_text = str(skill_catalog_text or '').strip()
         self._persona_prompt = load_persona_prompt(config.persona_prompt_path, logger=logger)
         self._handled_requests = 0
+
+    # -----------------------------------------------------------------------
+    # Public turn execution path
+    # -----------------------------------------------------------------------
 
     def execute_turn(
         self,
@@ -193,6 +205,10 @@ class DialogueTurnEngine:
             user_intent=user_intent,
         )
 
+    # -----------------------------------------------------------------------
+    # Intent resolution and fallback paths
+    # -----------------------------------------------------------------------
+
     def _resolve_intent(
         self,
         user_text: str,
@@ -322,6 +338,10 @@ class DialogueTurnEngine:
             user_intent={},
         )
 
+    # -----------------------------------------------------------------------
+    # LLM querying stages
+    # -----------------------------------------------------------------------
+
     def _query_response(
         self,
         history_messages: list[dict],
@@ -420,6 +440,10 @@ class DialogueTurnEngine:
             return {}
         return parsed
 
+    # -----------------------------------------------------------------------
+    # Prompt-history helper methods
+    # -----------------------------------------------------------------------
+
     def _inject_identity_reminder(self, history_messages: list[dict]) -> list[dict]:
         if self._config.identity_reminder_every_n_turns <= 0:
             return list(history_messages)
@@ -454,6 +478,10 @@ class DialogueTurnEngine:
             return clean
         return clean[: max_len - 3] + '...'
 
+
+# ---------------------------------------------------------------------------
+# Module-local JSON coercion helpers
+# ---------------------------------------------------------------------------
 
 def _parse_json_dict(payload: str) -> dict:
     if not payload:

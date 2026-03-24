@@ -151,7 +151,9 @@ ros2 launch chatbot_llm chatbot_llm.launch.py
 As part of the migrated stack:
 
 ```bash
-ros2 launch nao_chatbot nao_chatbot_ros4hri_migration.launch.py
+ros2 launch nao_chatbot nao_chatbot_sim.launch.py
+ros2 launch nao_chatbot nao_chatbot_robot.launch.py nao_ip:=172.26.112.62
+ros2 launch nao_chatbot nao_chatbot_robot_asr.launch.py nao_ip:=172.26.112.62
 ```
 
 ## Important Parameters
@@ -189,7 +191,8 @@ reflects the shipped launch defaults.
 - robot-side dispatch must stay out of this package; `/intents` consumers belong
   in `nao_orchestrator`
 - `plan` generation is advisory metadata for downstream execution, not direct
-  robot control from inside `chatbot_llm`
+  robot control from inside `chatbot_llm`; the downstream stack now accepts
+  target-frame `look_at` steps when a future prompt pack starts emitting them
 
 ## Verification
 

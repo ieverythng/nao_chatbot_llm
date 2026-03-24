@@ -31,6 +31,8 @@ def main():
     """Start the lifecycle chatbot backend with a multithreaded executor."""
     rclpy.init()
 
+    # The backend mixes lifecycle callbacks, action handling, and service work,
+    # so the multithreaded executor keeps those paths responsive under load.
     node = chatbot_llm.node_impl.LLMChatbot()
     node_executor = MultiThreadedExecutor()
     node_executor.add_node(node)

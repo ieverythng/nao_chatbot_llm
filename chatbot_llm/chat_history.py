@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 
+# ---------------------------------------------------------------------------
+# Public history conversions
+# ---------------------------------------------------------------------------
+
 def coerce_history(raw_history) -> list[str]:
     """Normalize inbound history payload to ``list[str]``."""
     if isinstance(raw_history, list):

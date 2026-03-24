@@ -20,6 +20,10 @@ except ImportError:  # pragma: no cover - runtime dependency
     yaml = None
 
 
+# ---------------------------------------------------------------------------
+# Skill descriptor model
+# ---------------------------------------------------------------------------
+
 @dataclass(frozen=True)
 class SkillDescriptor:
     """Compact skill descriptor injected into prompts."""
@@ -31,6 +35,10 @@ class SkillDescriptor:
     description: str
     input_names: list[str]
 
+
+# ---------------------------------------------------------------------------
+# Public catalog assembly
+# ---------------------------------------------------------------------------
 
 def parse_package_list(value: str) -> list[str]:
     """Parse CSV package lists into normalized names."""
@@ -90,6 +98,10 @@ def build_skill_catalog_text(
         rendered = rendered[: max_chars - 3].rstrip() + '...'
     return rendered, descriptors
 
+
+# ---------------------------------------------------------------------------
+# Package discovery and manifest parsing
+# ---------------------------------------------------------------------------
 
 def _resolve_package_xml(package_name: str) -> Path | None:
     candidates: list[Path] = []
@@ -172,6 +184,10 @@ def _load_package_skill_descriptors(
 
     return items
 
+
+# ---------------------------------------------------------------------------
+# YAML fallback parsing helpers
+# ---------------------------------------------------------------------------
 
 def _parse_skill_manifest_yaml(payload: str, logger=None) -> dict[str, Any]:
     if yaml is not None:

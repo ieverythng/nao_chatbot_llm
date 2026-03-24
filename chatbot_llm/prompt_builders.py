@@ -6,6 +6,10 @@ from pathlib import Path
 from string import Template
 
 
+# ---------------------------------------------------------------------------
+# Shared prompt templates
+# ---------------------------------------------------------------------------
+
 RESPONSE_STAGE_TEMPLATE = Template(
     """
 You are a friendly robot called $robot_name.
@@ -68,6 +72,10 @@ Output requirements:
 """.strip()
 )
 
+
+# ---------------------------------------------------------------------------
+# Public prompt assembly helpers
+# ---------------------------------------------------------------------------
 
 def load_persona_prompt(path: str, logger=None) -> str:
     """Load optional persona prompt text from file."""
@@ -134,6 +142,10 @@ def build_intent_prompt(
         intent_prompt_addendum,
     )
 
+
+# ---------------------------------------------------------------------------
+# Prompt formatting helpers
+# ---------------------------------------------------------------------------
 
 def _join_prompt_parts(*parts: str) -> str:
     cleaned = [str(part).strip() for part in parts if str(part).strip()]

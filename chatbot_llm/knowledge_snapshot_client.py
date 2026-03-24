@@ -9,10 +9,15 @@ from chatbot_llm.knowledge_snapshot import format_knowledge_snapshot
 from kb_skills.query_client import KnowledgeCoreQueryClient
 
 
+# ---------------------------------------------------------------------------
+# Snapshot query adapter
+# ---------------------------------------------------------------------------
+
 class KnowledgeSnapshotClient:
     """Fetch KnowledgeCore rows and format them into prompt-ready snapshots."""
 
     def __init__(self, node, callback_group, service_name: str, timeout_sec: float) -> None:
+        """Bind the reusable kb_skills client for one chatbot node instance."""
         self._query_client = KnowledgeCoreQueryClient(
             node=node,
             callback_group=callback_group,
@@ -69,5 +74,6 @@ class KnowledgeSnapshotClient:
 
     @staticmethod
     def _trace(trace, turn_id: str, stage: str, message: str, level: str = 'info') -> None:
+        """Forward trace hooks without forcing callers to provide one."""
         if callable(trace):
             trace(turn_id, stage, message, level=level)

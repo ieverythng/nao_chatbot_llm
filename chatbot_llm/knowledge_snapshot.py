@@ -9,6 +9,10 @@ from dataclasses import dataclass
 from chatbot_llm.backend_config import ChatbotConfig
 
 
+# ---------------------------------------------------------------------------
+# Role-scoped snapshot settings
+# ---------------------------------------------------------------------------
+
 @dataclass(frozen=True)
 class KnowledgeSnapshotSettings:
     """Resolved KnowledgeCore query settings for one dialogue role."""
@@ -21,6 +25,10 @@ class KnowledgeSnapshotSettings:
     max_results: int
     max_chars: int
 
+
+# ---------------------------------------------------------------------------
+# Role configuration parsing
+# ---------------------------------------------------------------------------
 
 def resolve_knowledge_snapshot_settings(
     role_configuration: str,
@@ -79,6 +87,10 @@ def resolve_knowledge_snapshot_settings(
         max_chars=max_chars,
     )
 
+
+# ---------------------------------------------------------------------------
+# Snapshot formatting
+# ---------------------------------------------------------------------------
 
 def format_knowledge_snapshot(json_payload: str, settings: KnowledgeSnapshotSettings) -> str:
     """Format `/kb/query` JSON bindings into a bounded deterministic text block."""
@@ -163,6 +175,10 @@ def extract_scene_memory_entry(snapshot: str) -> str:
     return ''
 
 
+# ---------------------------------------------------------------------------
+# Query row formatting helpers
+# ---------------------------------------------------------------------------
+
 def _parse_query_rows(json_payload: str) -> list[dict]:
     payload = str(json_payload or '').strip()
     if not payload:
@@ -207,6 +223,10 @@ def _format_query_row(row: dict, ordered_vars: list[str]) -> str:
         if _humanize_value(value)
     ).strip()
 
+
+# ---------------------------------------------------------------------------
+# Scene summarization helpers
+# ---------------------------------------------------------------------------
 
 def _append_bounded_lines(
     target_lines: list[str],
@@ -294,6 +314,10 @@ def _build_typed_entity_fact_lines(rows: list[dict]) -> list[str]:
             lines.append('%s is currently present' % entity_name)
     return lines
 
+
+# ---------------------------------------------------------------------------
+# Humanization and coercion helpers
+# ---------------------------------------------------------------------------
 
 def _collect_typed_entities(rows: list[dict]) -> dict[str, list[str]]:
     grouped: dict[str, list[str]] = {}

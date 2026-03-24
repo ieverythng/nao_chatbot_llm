@@ -10,6 +10,10 @@ from kb_skills.intent_labels import KB_QUERY_VISIBLE_OBJECTS
 from kb_skills.intent_labels import KB_QUERY_VISIBLE_PEOPLE
 
 
+# ---------------------------------------------------------------------------
+# Canonical labels and aliases
+# ---------------------------------------------------------------------------
+
 SUPPORTED_INTENTS = (
     'posture_stand',
     'posture_sit',
@@ -46,6 +50,10 @@ INTENT_ALIASES = {
     '__intent_look_down__': 'head_look_down',
 }
 
+
+# ---------------------------------------------------------------------------
+# Intent normalization and rules fallback
+# ---------------------------------------------------------------------------
 
 def normalize_intent(intent: str, default: str = 'fallback', hint_text: str = '') -> str:
     """Normalize incoming intent labels to one of ``SUPPORTED_INTENTS``."""
@@ -209,6 +217,10 @@ def detect_intent(text: str) -> str:
         return KB_QUERY_SCENE_CHANGE
     return 'fallback'
 
+
+# ---------------------------------------------------------------------------
+# Phrase matching helpers
+# ---------------------------------------------------------------------------
 
 def build_rule_response(intent: str) -> str:
     """Build rule-based verbal acknowledgement for the fallback path."""

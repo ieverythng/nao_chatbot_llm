@@ -8,6 +8,10 @@ from hri_actions_msgs.msg import Intent
 from kb_skills.intent_labels import KB_QUERY_INTENTS
 
 
+# ---------------------------------------------------------------------------
+# Canonical intent mappings
+# ---------------------------------------------------------------------------
+
 LOCAL_MOTION_MAP = {
     'posture_stand': 'stand',
     'posture_sit': 'sit',
@@ -48,6 +52,10 @@ GENERIC_INTENT_MAP = {
 RESPONSE_ONLY_INTENTS = {'identity', 'wellbeing', 'help'}
 PLAN_STEP_TYPES = {'say', 'skill', 'look_at', 'noop'}
 
+
+# ---------------------------------------------------------------------------
+# Public intent translation
+# ---------------------------------------------------------------------------
 
 def build_response_intents(
     resolved_intent: str,
@@ -152,6 +160,10 @@ def build_response_intents(
 
     return []
 
+
+# ---------------------------------------------------------------------------
+# Payload normalization helpers
+# ---------------------------------------------------------------------------
 
 def _clean_payload(user_intent: dict) -> dict:
     payload = {}

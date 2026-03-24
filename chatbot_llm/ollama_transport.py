@@ -8,6 +8,10 @@ import urllib.error
 import urllib.request
 
 
+# ---------------------------------------------------------------------------
+# Ollama HTTP transport
+# ---------------------------------------------------------------------------
+
 class OllamaTransport:
     """Wrapper around Ollama REST requests used by the turn engine."""
 
@@ -81,6 +85,10 @@ class OllamaTransport:
         except Exception as err:  # pragma: no cover - network dependent
             self._logger.error(f'Ollama unexpected error: {err}')
             return ''
+
+    # -----------------------------------------------------------------------
+    # Debug and diagnostics helpers
+    # -----------------------------------------------------------------------
 
     def log_model_inventory(self) -> None:
         """Log available model names from the Ollama tags endpoint."""

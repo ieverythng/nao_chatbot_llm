@@ -44,6 +44,10 @@ ASSISTANT_USER_ID = '__assistant__'
 DEFAULT_ROLE = '__default__'
 
 
+# ---------------------------------------------------------------------------
+# Active dialogue session state
+# ---------------------------------------------------------------------------
+
 @dataclass
 class DialogueSession:
     """In-memory state for the currently active dialogue."""
@@ -58,6 +62,10 @@ class DialogueSession:
     request_count: int = 0
     last_user_id: str = 'anonymous_user'
 
+
+# ---------------------------------------------------------------------------
+# Lifecycle chatbot node
+# ---------------------------------------------------------------------------
 
 class LLMChatbot(Node):
     """Lifecycle chatbot backend exposing the upstream Dialogue contract."""
@@ -92,6 +100,10 @@ class LLMChatbot(Node):
         self._session: DialogueSession | None = None
 
         self.get_logger().info('Chatbot backend created, awaiting lifecycle configuration.')
+
+    # -----------------------------------------------------------------------
+    # Dialogue action/service handlers
+    # -----------------------------------------------------------------------
 
     def on_dialog_goal(self, goal_request: Dialogue.Goal):
         """Accept one dialogue at a time."""
@@ -289,6 +301,10 @@ class LLMChatbot(Node):
         goal_handle.succeed()
         return result
 
+    # -----------------------------------------------------------------------
+    # ROS lifecycle transitions
+    # -----------------------------------------------------------------------
+
     def on_configure(self, _state: State) -> TransitionCallbackReturn:
         """Configure transport, prompts, diagnostics, and locale interfaces."""
         self._config = load_backend_config(self)
@@ -423,6 +439,10 @@ class LLMChatbot(Node):
         self.get_logger().info('chatbot_llm finalized')
         return TransitionCallbackReturn.SUCCESS
 
+    # -----------------------------------------------------------------------
+    # Diagnostics and session bookkeeping
+    # -----------------------------------------------------------------------
+
     def publish_diagnostics(self) -> None:
         """Publish compact runtime diagnostics."""
         arr = DiagnosticArray()
@@ -524,6 +544,10 @@ class LLMChatbot(Node):
             return
         self.get_logger().info(line)
 
+
+# ---------------------------------------------------------------------------
+# Module-local helpers
+# ---------------------------------------------------------------------------
 
 def _seed_history(role_name: str, role_configuration: str) -> list[str]:
     entries = []

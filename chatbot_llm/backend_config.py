@@ -9,6 +9,10 @@ from chatbot_llm.prompt_pack import load_prompt_pack
 from chatbot_llm.skill_catalog import parse_package_list
 
 
+# ---------------------------------------------------------------------------
+# Runtime defaults
+# ---------------------------------------------------------------------------
+
 INTENT_DETECTION_MODES = {'rules', 'llm', 'llm_with_rules_fallback'}
 
 DEFAULT_RESPONSE_PROMPT_ADDENDUM = (
@@ -68,6 +72,10 @@ class ChatbotConfig:
     knowledge_max_results: int
     knowledge_max_chars: int
 
+
+# ---------------------------------------------------------------------------
+# Public configuration API
+# ---------------------------------------------------------------------------
 
 def declare_backend_parameters(node) -> None:
     """Declare lifecycle parameters used by the migrated backend."""
@@ -254,6 +262,10 @@ def load_backend_config(node) -> ChatbotConfig:
         ),
     )
 
+
+# ---------------------------------------------------------------------------
+# Coercion helpers
+# ---------------------------------------------------------------------------
 
 def as_bool(value) -> bool:
     """Coerce bool-ish parameter values."""
