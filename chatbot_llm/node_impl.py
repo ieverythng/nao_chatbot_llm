@@ -112,7 +112,7 @@ class LLMChatbot(Node):
                 self.get_logger().warn('Rejected dialogue goal because another dialogue is active')
                 return GoalResponse.REJECT
 
-        role_name = str(goal_request.role.name or DEFAULT_ROLE).strip()
+        role_name = _normalize_role_name(goal_request.role.name)
         if not role_name:
             self.get_logger().warn('Rejected dialogue goal with empty role')
             return GoalResponse.REJECT
@@ -122,21 +122,7 @@ class LLMChatbot(Node):
         """Create dialogue session state and execute the long-lived goal."""
         goal = handle.request
         dialogue_id = tuple(handle.goal_id.uuid)
-        session = DialogueSession(
-            dialogue_id=dialogue_id,
-            role_name=str(goal.role.name or DEFAULT_ROLE).strip() or DEFAULT_ROLE,
-            role_configuration=str(goal.role.configuration or '{}').strip() or '{}',
-            knowledge_settings=resolve_knowledge_snapshot_settings(
-                str(goal.role.configuration or '{}').strip() or '{}',
-                self._config,
-                logger=self.get_logger(),
-            ),
-            locale=str(goal.locale or self._default_locale).strip(),
-            history=_seed_history(
-                str(goal.role.name or DEFAULT_ROLE).strip() or DEFAULT_ROLE,
-                str(goal.role.configuration or '{}').strip() or '{}',
-            ),
-        )
+        session = self._build_dialogue_session(goal, dialogue_id)
         with self._session_lock:
             self._dialogue_id = dialogue_id
             self._dialogue_result = None
@@ -151,6 +137,26 @@ class LLMChatbot(Node):
     def on_dialog_cancel(self, _handle: ServerGoalHandle):
         """Allow dialogue_manager to cancel long-lived dialogues."""
         return CancelResponse.ACCEPT
+
+    def _build_dialogue_session(
+        self,
+        goal: Dialogue.Goal,
+        dialogue_id: tuple[int, ...],
+    ) -> DialogueSession:
+        role_name = _normalize_role_name(goal.role.name)
+        role_configuration = _normalize_role_configuration(goal.role.configuration)
+        return DialogueSession(
+            dialogue_id=dialogue_id,
+            role_name=role_name,
+            role_configuration=role_configuration,
+            knowledge_settings=resolve_knowledge_snapshot_settings(
+                role_configuration,
+                self._config,
+                logger=self.get_logger(),
+            ),
+            locale=str(goal.locale or self._default_locale).strip(),
+            history=_seed_history(role_name, role_configuration),
+        )
 
     def on_dialog_execute(self, handle: ServerGoalHandle):
         """Keep the dialogue action alive until cancelled or explicitly terminated."""
@@ -551,8 +557,8 @@ class LLMChatbot(Node):
 
 def _seed_history(role_name: str, role_configuration: str) -> list[str]:
     entries = []
-    clean_role = str(role_name or DEFAULT_ROLE).strip() or DEFAULT_ROLE
-    clean_config = str(role_configuration or '{}').strip() or '{}'
+    clean_role = _normalize_role_name(role_name)
+    clean_config = _normalize_role_configuration(role_configuration)
 
     if clean_role != DEFAULT_ROLE:
         system_message = 'Dialogue role: %s.' % clean_role
@@ -576,3 +582,11 @@ def _preview_text(text: str, max_len: int = 72) -> str:
     if len(clean) <= max_len:
         return clean
     return clean[: max_len - 3] + '...'
+
+
+def _normalize_role_name(value: str) -> str:
+    return str(value or DEFAULT_ROLE).strip() or DEFAULT_ROLE
+
+
+def _normalize_role_configuration(value: str) -> str:
+    return str(value or '{}').strip() or '{}'

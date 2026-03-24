@@ -195,7 +195,7 @@ class DialogueTurnEngine:
         self._handled_requests += 1
         self._publish_progress(progress_callback, 'complete', 1.0)
         self._trace(trace, turn_id, 'TURN_DONE', 'chat backend complete')
-        return TurnExecutionResult(
+        return self._build_result(
             success=True,
             verbal_ack=verbal_ack,
             updated_history=updated_history,
@@ -266,16 +266,9 @@ class DialogueTurnEngine:
         intent = detect_intent(user_text)
         verbal_ack = build_rule_response(intent)
         user_intent = {'type': intent} if intent != 'fallback' else {}
-        updated_history = messages_to_history(
-            history_to_messages(history, max_history_messages=self._config.max_history_messages)
-            + [
-                {'role': 'user', 'content': user_text},
-                {'role': 'assistant', 'content': verbal_ack},
-            ],
-            max_history_messages=self._config.max_history_messages,
-        )
+        updated_history = self._history_with_turn(history, user_text, verbal_ack)
         self._handled_requests += 1
-        return TurnExecutionResult(
+        return self._build_result(
             success=True,
             verbal_ack=verbal_ack,
             updated_history=updated_history,
@@ -286,49 +279,41 @@ class DialogueTurnEngine:
         )
 
     def _execute_disabled_turn(self, user_text: str, history: list[str]) -> TurnExecutionResult:
-        verbal_ack = self._config.fallback_response
-        updated_history = messages_to_history(
-            history_to_messages(history, max_history_messages=self._config.max_history_messages)
-            + [
-                {'role': 'user', 'content': user_text},
-                {'role': 'assistant', 'content': verbal_ack},
-            ],
-            max_history_messages=self._config.max_history_messages,
-        )
-        self._handled_requests += 1
-        return TurnExecutionResult(
-            success=False,
-            verbal_ack=verbal_ack,
-            updated_history=updated_history,
-            intent='fallback',
+        return self._execute_fallback_turn(
+            user_text=user_text,
+            history=history,
             intent_source='llm_disabled',
-            intent_confidence=0.0,
-            user_intent={},
         )
 
     def _execute_llm_failure_turn(self, user_text: str, history: list[str]) -> TurnExecutionResult:
-        verbal_ack = self._config.fallback_response
-        updated_history = messages_to_history(
-            history_to_messages(history, max_history_messages=self._config.max_history_messages)
-            + [
-                {'role': 'user', 'content': user_text},
-                {'role': 'assistant', 'content': verbal_ack},
-            ],
-            max_history_messages=self._config.max_history_messages,
+        return self._execute_fallback_turn(
+            user_text=user_text,
+            history=history,
+            intent_source='llm_response_failed',
         )
+
+    def _execute_fallback_turn(
+        self,
+        *,
+        user_text: str,
+        history: list[str],
+        intent_source: str,
+    ) -> TurnExecutionResult:
+        verbal_ack = self._config.fallback_response
+        updated_history = self._history_with_turn(history, user_text, verbal_ack)
         self._handled_requests += 1
-        return TurnExecutionResult(
+        return self._build_result(
             success=False,
             verbal_ack=verbal_ack,
             updated_history=updated_history,
             intent='fallback',
-            intent_source='llm_response_failed',
+            intent_source=intent_source,
             intent_confidence=0.0,
             user_intent={},
         )
 
     def _cancelled_result(self, history: list[str]) -> TurnExecutionResult:
-        return TurnExecutionResult(
+        return self._build_result(
             success=False,
             verbal_ack='',
             updated_history=list(history),
@@ -460,6 +445,45 @@ class DialogueTurnEngine:
             ),
         }
         return list(history_messages) + [reminder]
+
+    def _history_with_turn(
+        self,
+        history: list[str],
+        user_text: str,
+        assistant_text: str,
+    ) -> list[str]:
+        return messages_to_history(
+            history_to_messages(
+                history,
+                max_history_messages=self._config.max_history_messages,
+            )
+            + [
+                {'role': 'user', 'content': user_text},
+                {'role': 'assistant', 'content': assistant_text},
+            ],
+            max_history_messages=self._config.max_history_messages,
+        )
+
+    @staticmethod
+    def _build_result(
+        *,
+        success: bool,
+        verbal_ack: str,
+        updated_history: list[str],
+        intent: str,
+        intent_source: str,
+        intent_confidence: float,
+        user_intent: dict,
+    ) -> TurnExecutionResult:
+        return TurnExecutionResult(
+            success=success,
+            verbal_ack=verbal_ack,
+            updated_history=updated_history,
+            intent=intent,
+            intent_source=intent_source,
+            intent_confidence=intent_confidence,
+            user_intent=user_intent,
+        )
 
     @staticmethod
     def _publish_progress(callback, status: str, progress: float) -> None:
