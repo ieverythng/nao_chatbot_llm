@@ -15,7 +15,7 @@ DEFAULT_RESPONSE_PROMPT_ADDENDUM = (
     'Use concise speech suitable for text-to-speech. '
     'Use the recent conversation history included with the request to keep track of '
     'what was said in the last several turns. '
-    'When live knowledge snapshot data is available, use it as the robot\'s grounded '
+    "When live knowledge snapshot data is available, use it as the robot's grounded "
     'scene state for perception questions and avoid guessing beyond it. '
     'Distinguish between what is visible in the current scene and what only appears '
     'in recent scene memory from earlier turns. '

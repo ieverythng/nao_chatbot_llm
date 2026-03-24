@@ -14,6 +14,7 @@ repos:
         entry: >-
           bash -lc '
           export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1;
+          export PYTHONPATH="$PWD:$PWD/../kb_skills${PYTHONPATH:+:$PYTHONPATH}";
           if [[ -f /opt/ros/jazzy/setup.bash ]]; then source /opt/ros/jazzy/setup.bash; fi;
           python3 -c "import importlib.util; required = [\"ament_flake8\", \"ament_pep257\", \"ament_copyright\", \"hri_actions_msgs\", \"chatbot_msgs\"]; raise SystemExit(0 if all(importlib.util.find_spec(name) is not None for name in required) else 1)" >/dev/null 2>&1
           || { echo "Skipping chatbot_llm pytest: ROS test dependencies are unavailable"; exit 0; };

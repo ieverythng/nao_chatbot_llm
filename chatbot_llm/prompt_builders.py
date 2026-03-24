@@ -57,7 +57,9 @@ Use it to maintain continuity across the last several turns.
 Output requirements:
 - Return only valid JSON (no markdown or extra text).
 - Provide user_intent with key "type" when possible.
-- Prefer the `kb_query_*` labels when the user is asking who is visible now, what objects are visible now, or whether the scene changed compared with earlier turns.
+- Prefer the `kb_query_*` labels when the user is asking who is visible now,
+  what objects are visible now, or whether the scene changed compared with
+  earlier turns.
 - When the user requests an action, you may also include ack_text, ack_mode,
   scene_targets, and a plan list shaped as {type,name,args}.
 - For posture or head-motion requests, prefer one plan step with
@@ -154,7 +156,7 @@ def _knowledge_snapshot_block(snapshot: str) -> str:
         return ''
     return (
         'Live symbolic scene state from KnowledgeCore for this turn:\n'
-        '- Treat it as the robot\'s best grounded view of the current scene.\n'
+        "- Treat it as the robot's best grounded view of the current scene.\n"
         '- Use the "Current grounded scene" section for what is visible right now.\n'
         '- Use any "Recent scene memory" section only as bounded cross-turn context.\n'
         '- Distinguish carefully between what is visible now and what was only seen '

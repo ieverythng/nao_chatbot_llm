@@ -55,6 +55,27 @@ The package also preserves scene-query intents as explicit labels:
 - `kb_query_visible_objects`
 - `kb_query_scene_change`
 
+## Current End-To-End Flow
+
+The current grounded turn flow now looks like this:
+
+1. `dialogue_manager` forwards the user turn into `chatbot_llm`
+2. if object grounding is active, the detector backend publishes raw detections
+   and `nao_scene_grounding` refreshes transient object facts in
+   `knowledge_core`
+3. `chatbot_llm` reads the current grounded scene through `/kb/query` and
+   formats that result into the `knowledge_snapshot` prompt block
+4. the response model produces the spoken reply or `verbal_ack`
+5. the intent stage produces structured intent payloads
+6. `intent_adapter.py` preserves richer metadata in `Intent.data`, including
+   `ack_text`, `ack_mode`, `scene_targets`, and optional `plan` steps
+7. `nao_orchestrator` consumes those downstream and can either execute the
+   structured `plan` or fall back to legacy routing rules
+
+Object detection therefore influences `chatbot_llm` indirectly through KB
+grounding, not through a detector-specific direct subscription inside this
+package.
+
 ## KnowledgeCore Grounding
 
 `knowledge_core` does not directly push prompt text into `chatbot_llm`.
@@ -70,6 +91,9 @@ Current behavior:
   the response and intent prompts
 - the prompt builder labels it as live scene state, and the node also keeps a
   short recent-scene-memory trail across turns
+- if object grounding is enabled elsewhere in the stack, those detector-derived
+  facts arrive through the same `/kb/query` seam rather than a separate object
+  detector API inside `chatbot_llm`
 
 Example `/kb/query` response payload shape:
 

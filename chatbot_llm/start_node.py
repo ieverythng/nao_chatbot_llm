@@ -38,7 +38,7 @@ def main():
     try:
         node_executor.spin()
     except (KeyboardInterrupt, rclpy.executors.ExternalShutdownException):
-        print('Goodbye!')
+        pass
     finally:
         node.destroy_node()
         if rclpy.ok():

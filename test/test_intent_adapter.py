@@ -75,6 +75,8 @@ def test_build_response_intents_preserves_kb_query_intents():
     assert len(intents) == 1
     assert intents[0].intent == 'kb_query_visible_people'
     assert json.loads(intents[0].data) == {
+        'ack_text': 'I can currently see one person.',
+        'ack_mode': 'say',
         'goal': 'visible_people',
         'suggested_response': 'I can currently see one person.',
     }

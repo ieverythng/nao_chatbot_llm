@@ -172,7 +172,10 @@ def test_turn_engine_prompt_explicitly_mentions_recent_history():
     )
 
     assert result.success is True
-    assert 'Recent conversation history is included in the messages above.' in transport.calls[0]['messages'][0]['content']
+    assert (
+        'Recent conversation history is included in the messages above.'
+        in transport.calls[0]['messages'][0]['content']
+    )
     assert 'kb_query_visible_people' in transport.calls[1]['messages'][0]['content']
     assert transport.calls[0]['messages'][1]['content'] == 'can you see anyone?'
     assert transport.calls[0]['messages'][2]['content'] == 'Yes, I can see a person.'
