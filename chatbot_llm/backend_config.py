@@ -62,6 +62,9 @@ class ChatbotConfig:
     skill_catalog_packages: list[str]
     skill_catalog_max_entries: int
     skill_catalog_max_chars: int
+    planner_mode_enabled: bool
+    planner_request_topic: str
+    planner_request_intent: str
     knowledge_enabled: bool
     knowledge_query_service_name: str
     knowledge_query_timeout_sec: float
@@ -111,6 +114,9 @@ def declare_backend_parameters(node) -> None:
     node.declare_parameter('skill_catalog_packages', 'communication_skills,nao_skills,kb_skills')
     node.declare_parameter('skill_catalog_max_entries', 16)
     node.declare_parameter('skill_catalog_max_chars', 3000)
+    node.declare_parameter('planner_mode_enabled', False)
+    node.declare_parameter('planner_request_topic', '/planner/request')
+    node.declare_parameter('planner_request_intent', 'planner_request')
     node.declare_parameter('knowledge_enabled', False)
     node.declare_parameter('knowledge_query_service_name', '/kb/query')
     node.declare_parameter('knowledge_query_timeout_sec', 0.5)
@@ -225,6 +231,11 @@ def load_backend_config(node) -> ChatbotConfig:
             0,
             int(node.get_parameter('skill_catalog_max_chars').value),
         ),
+        planner_mode_enabled=as_bool(node.get_parameter('planner_mode_enabled').value),
+        planner_request_topic=str(node.get_parameter('planner_request_topic').value).strip()
+        or '/planner/request',
+        planner_request_intent=str(node.get_parameter('planner_request_intent').value).strip()
+        or 'planner_request',
         knowledge_enabled=as_bool(node.get_parameter('knowledge_enabled').value),
         knowledge_query_service_name=str(
             node.get_parameter('knowledge_query_service_name').value

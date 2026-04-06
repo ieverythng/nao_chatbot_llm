@@ -4,8 +4,35 @@ from __future__ import annotations
 
 import json
 
-from hri_actions_msgs.msg import Intent
 from kb_skills.intent_labels import KB_QUERY_INTENTS
+
+try:  # pragma: no cover - optional dependency in local unit tests
+    from hri_actions_msgs.msg import Intent
+except ImportError:  # pragma: no cover - import-light fallback
+    class Intent:  # type: ignore[no-redef]
+        GREET = 'greet'
+        START_ACTIVITY = 'start_activity'
+        STOP_ACTIVITY = 'stop_activity'
+        GRAB_OBJECT = 'grab_object'
+        BRING_OBJECT = 'bring_object'
+        PLACE_OBJECT = 'place_object'
+        MOVE_TO = 'move_to'
+        GUIDE = 'guide'
+        PERFORM_MOTION = 'perform_motion'
+        WAKEUP = 'wakeup'
+        SUSPEND = 'suspend'
+        SAY = 'say'
+        RAW_USER_INPUT = 'raw_user_input'
+        MODALITY_SPEECH = 'speech'
+        UNKNOWN_AGENT = 'unknown_agent'
+
+        def __init__(self) -> None:
+            self.intent = ''
+            self.source = ''
+            self.modality = ''
+            self.confidence = 0.0
+            self.priority = 0
+            self.data = ''
 
 
 # ---------------------------------------------------------------------------

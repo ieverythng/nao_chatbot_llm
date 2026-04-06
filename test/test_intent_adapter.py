@@ -1,7 +1,7 @@
 import json
 
 from chatbot_llm.intent_adapter import build_response_intents
-from hri_actions_msgs.msg import Intent
+from chatbot_llm.intent_adapter import Intent
 
 
 def test_build_response_intents_maps_motion_to_perform_motion():

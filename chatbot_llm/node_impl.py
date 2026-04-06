@@ -28,8 +28,11 @@ from chatbot_llm.knowledge_snapshot import extract_scene_memory_entry
 from chatbot_llm.knowledge_snapshot import resolve_knowledge_snapshot_settings
 from chatbot_llm.knowledge_snapshot_client import KnowledgeSnapshotClient
 from chatbot_llm.ollama_transport import OllamaTransport
+from chatbot_llm.planner_request_adapter import build_planner_request_intent
+from chatbot_llm.planner_request_adapter import should_route_intents_through_planner
 from chatbot_llm.skill_catalog import build_skill_catalog_text
 from chatbot_llm.turn_engine import DialogueTurnEngine
+from hri_actions_msgs.msg import Intent
 
 try:  # pragma: no cover - optional dependency
     from i18n_msgs.action import SetLocale
@@ -86,6 +89,7 @@ class LLMChatbot(Node):
 
         self._diag_pub = None
         self._diag_timer = None
+        self._planner_request_pub = None
 
         self._config: ChatbotConfig | None = None
         self._transport = None
@@ -280,7 +284,7 @@ class LLMChatbot(Node):
                 self._session.request_count += 1
 
         response.response = result.verbal_ack
-        response.intents = build_response_intents(
+        direct_intents = build_response_intents(
             resolved_intent=result.intent,
             user_intent=result.user_intent,
             source_user_id=user_id,
@@ -288,6 +292,17 @@ class LLMChatbot(Node):
             raw_input=text,
             confidence=result.intent_confidence,
         )
+        if self._publish_planner_request(
+            user_id=user_id,
+            turn_id=turn_id,
+            user_text=text,
+            knowledge_context=knowledge_context,
+            result=result,
+            direct_intents=direct_intents,
+        ):
+            response.intents = []
+        else:
+            response.intents = direct_intents
         response.error_msg = ''
         return response
 
@@ -347,6 +362,13 @@ class LLMChatbot(Node):
 
         self._diag_pub = self.create_publisher(DiagnosticArray, '/diagnostics', 1)
         self._diag_timer = self.create_timer(1.0, self.publish_diagnostics)
+        self._planner_request_pub = None
+        if self._config.planner_mode_enabled:
+            self._planner_request_pub = self.create_publisher(
+                Intent,
+                self._config.planner_request_topic,
+                10,
+            )
 
         if GetLocales is not None and SetLocale is not None:
             self._get_supported_locales_server = self.create_service(
@@ -369,13 +391,15 @@ class LLMChatbot(Node):
 
         self.get_logger().info(
             'Configured chatbot_llm | server_url=%s model=%s intent_model=%s '
-            'intent_mode=%s skill_catalog=%s'
+            'intent_mode=%s skill_catalog=%s planner_mode=%s planner_topic=%s'
             % (
                 self._config.server_url,
                 self._config.model,
                 self._config.intent_model,
                 self._config.intent_detection_mode,
                 self._skill_catalog_size,
+                self._config.planner_mode_enabled,
+                self._config.planner_request_topic,
             )
         )
         self._transport.log_model_inventory()
@@ -427,6 +451,9 @@ class LLMChatbot(Node):
         if self._diag_pub is not None:
             self.destroy_publisher(self._diag_pub)
             self._diag_pub = None
+        if self._planner_request_pub is not None:
+            self.destroy_publisher(self._planner_request_pub)
+            self._planner_request_pub = None
 
         if self._dialogue_start_action is not None:
             self._dialogue_start_action.destroy()
@@ -481,6 +508,10 @@ class LLMChatbot(Node):
                     key='knowledge_enabled',
                     value=str(self._config.knowledge_enabled if self._config else False),
                 ),
+                KeyValue(
+                    key='planner_mode_enabled',
+                    value=str(self._config.planner_mode_enabled if self._config else False),
+                ),
             ],
         )
         arr.status = [status]
@@ -504,6 +535,47 @@ class LLMChatbot(Node):
         with self._session_lock:
             if self._session is not None and self._session.dialogue_id == session.dialogue_id:
                 self._session.history = new_history
+
+    def _publish_planner_request(
+        self,
+        *,
+        user_id: str,
+        turn_id: str,
+        user_text: str,
+        knowledge_context: str,
+        result,
+        direct_intents: list[Intent],
+    ) -> bool:
+        """Publish the current turn to planner_llm when planner mode is enabled."""
+        if self._config is None or not self._config.planner_mode_enabled:
+            return False
+        if self._planner_request_pub is None:
+            self.get_logger().warn('planner mode is enabled but planner request publisher is unavailable')
+            return False
+        if not should_route_intents_through_planner(direct_intents):
+            return False
+
+        try:
+            planner_msg = build_planner_request_intent(
+                turn_id=turn_id,
+                user_text=user_text,
+                source_user_id=user_id,
+                turn_result=result,
+                knowledge_context=knowledge_context,
+                planner_request_intent=self._config.planner_request_intent,
+            )
+            self._planner_request_pub.publish(planner_msg)
+        except Exception as err:  # pragma: no cover - ROS publish failures are runtime-only
+            self.get_logger().warn('failed to publish planner request: %s' % err)
+            self._trace(turn_id, 'PLANNER_REQUEST', 'publish failed: %s' % err, level='warn')
+            return False
+
+        self._trace(
+            turn_id,
+            'PLANNER_REQUEST',
+            'published planner request on %s' % self._config.planner_request_topic,
+        )
+        return True
 
     def _terminate_active_dialogue(self, error_msg: str) -> None:
         """Unblock the action execution loop if a dialogue is still active."""
