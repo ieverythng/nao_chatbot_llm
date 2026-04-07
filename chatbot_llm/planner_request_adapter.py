@@ -27,10 +27,13 @@ except ImportError:  # pragma: no cover - import-light fallback
 
 
 _NON_PLANNER_INTENT_NAMES = {
-    Intent.SAY,
-    Intent.GREET,
-    Intent.RAW_USER_INPUT,
-    *KB_QUERY_INTENTS,
+    str(intent_name).strip().lower()
+    for intent_name in (
+        Intent.SAY,
+        Intent.GREET,
+        Intent.RAW_USER_INPUT,
+        *KB_QUERY_INTENTS,
+    )
 }
 _NON_SCENE_TARGET_OBJECTS = {
     'stand',
@@ -49,7 +52,10 @@ def should_route_intents_through_planner(intents: list[Intent]) -> bool:
     """Return true when the turn contains execution-oriented intents."""
     if not isinstance(intents, list) or not intents:
         return False
-    return any(str(intent.intent).strip() not in _NON_PLANNER_INTENT_NAMES for intent in intents)
+    return any(
+        _normalize_token(getattr(intent, 'intent', '')) not in _NON_PLANNER_INTENT_NAMES
+        for intent in intents
+    )
 
 
 def build_planner_request_payload(
@@ -62,27 +68,23 @@ def build_planner_request_payload(
     max_history_entries: int = 6,
 ) -> dict:
     """Build the planner ingress payload from the current turn result."""
-    user_intent = turn_result.user_intent if isinstance(turn_result.user_intent, dict) else {}
-    ack_text = str(user_intent.get('ack_text', '')).strip() or str(turn_result.verbal_ack).strip()
-    ack_mode = str(user_intent.get('ack_mode', '')).strip() or 'say'
+    user_intent = _turn_user_intent(turn_result)
+    ack_text = _resolved_ack_text(user_intent, getattr(turn_result, 'verbal_ack', ''))
+    ack_mode = _resolved_ack_mode(user_intent)
     dialogue_context = _bounded_dialogue_context(
-        turn_result.updated_history,
+        getattr(turn_result, 'updated_history', []),
         max_history_entries=max_history_entries,
     )
-    grounded_context = {}
-    clean_knowledge_context = str(knowledge_context or '').strip()
-    if clean_knowledge_context:
-        grounded_context['knowledge_snapshot'] = clean_knowledge_context
 
     return {
         'request_id': str(turn_id).strip(),
         'user_text': str(user_text or '').strip(),
-        'normalized_intents': _normalized_intents(turn_result.intent),
+        'normalized_intents': _normalized_intents(getattr(turn_result, 'intent', '')),
         'ack_text': ack_text,
         'ack_mode': ack_mode,
         'scene_targets': _scene_targets_from_user_intent(user_intent),
         'dialogue_context': dialogue_context,
-        'grounded_context': grounded_context,
+        'grounded_context': _grounded_context_payload(knowledge_context),
         'planner_mode': str(planner_mode or 'default').strip() or 'default',
     }
 
@@ -124,7 +126,7 @@ def _bounded_dialogue_context(history: list[str], *, max_history_entries: int) -
 
 
 def _normalized_intents(intent_name: str) -> list[str]:
-    clean_intent = str(intent_name or '').strip()
+    clean_intent = _normalize_token(intent_name)
     return [clean_intent] if clean_intent else []
 
 
@@ -133,15 +135,40 @@ def _scene_targets_from_user_intent(user_intent: dict) -> list[str]:
     if scene_targets:
         return scene_targets
     scene_object = str(user_intent.get('object', '')).strip()
-    if scene_object and scene_object not in _NON_SCENE_TARGET_OBJECTS:
+    if scene_object and _normalize_token(scene_object) not in _NON_SCENE_TARGET_OBJECTS:
         return [scene_object]
     return []
 
 
+def _turn_user_intent(turn_result) -> dict:
+    user_intent = getattr(turn_result, 'user_intent', {})
+    if isinstance(user_intent, dict):
+        return user_intent
+    return {}
+
+
+def _resolved_ack_text(user_intent: dict, verbal_ack: str) -> str:
+    return str(user_intent.get('ack_text', '')).strip() or str(verbal_ack).strip()
+
+
+def _resolved_ack_mode(user_intent: dict) -> str:
+    return str(user_intent.get('ack_mode', '')).strip() or 'say'
+
+
+def _grounded_context_payload(knowledge_context: str) -> dict:
+    clean_knowledge_context = str(knowledge_context or '').strip()
+    if not clean_knowledge_context:
+        return {}
+    return {'knowledge_snapshot': clean_knowledge_context}
+
+
+def _normalize_token(value) -> str:
+    return str(value or '').strip().lower()
+
+
 def _coerce_str_list(value) -> list[str]:
     if isinstance(value, str):
-        clean_value = value.strip()
-        return [clean_value] if clean_value else []
+        return [item.strip() for item in value.split(',') if item.strip()]
     if not isinstance(value, (list, tuple)):
         return []
     return [str(item).strip() for item in value if str(item).strip()]
