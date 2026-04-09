@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from dataclasses import dataclass, field
@@ -64,6 +65,7 @@ class DialogueSession:
     recent_scene_memory: list[str] = field(default_factory=list)
     request_count: int = 0
     last_user_id: str = 'anonymous_user'
+    active_planner_goal_id: str = ''
 
 
 # ---------------------------------------------------------------------------
@@ -563,6 +565,7 @@ class LLMChatbot(Node):
                 turn_result=result,
                 knowledge_context=knowledge_context,
                 planner_request_intent=self._config.planner_request_intent,
+                active_goal_id=session.active_planner_goal_id,
             )
             self._planner_request_pub.publish(planner_msg)
         except Exception as err:  # pragma: no cover - ROS publish failures are runtime-only
@@ -570,10 +573,26 @@ class LLMChatbot(Node):
             self._trace(turn_id, 'PLANNER_REQUEST', 'publish failed: %s' % err, level='warn')
             return False
 
+        planner_payload = {}
+        try:
+            planner_payload = json.loads(planner_msg.data)
+        except Exception:
+            planner_payload = {}
+        planner_goal_id = str(planner_payload.get('goal_id', '')).strip()
+        if planner_goal_id:
+            with self._session_lock:
+                if self._session is not None and self._session.dialogue_id == session.dialogue_id:
+                    self._session.active_planner_goal_id = planner_goal_id
+
         self._trace(
             turn_id,
             'PLANNER_REQUEST',
-            'published planner request on %s' % self._config.planner_request_topic,
+            'published planner request on %s goal_id=%s kind=%s'
+            % (
+                self._config.planner_request_topic,
+                planner_payload.get('goal_id', ''),
+                planner_payload.get('request_kind', ''),
+            ),
         )
         return True
 

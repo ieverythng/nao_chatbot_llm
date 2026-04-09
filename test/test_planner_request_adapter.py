@@ -39,6 +39,10 @@ def test_build_planner_request_payload_derives_scene_targets_and_bounds_context(
 
     assert payload == {
         'request_id': 'turn_1',
+        'goal_id': 'goal_turn_1',
+        'parent_goal_id': '',
+        'supersedes_goal_id': '',
+        'request_kind': 'new_goal',
         'user_text': 'bring me the cup',
         'normalized_intents': ['bring_object'],
         'ack_text': 'I will bring the cup.',
@@ -52,8 +56,15 @@ def test_build_planner_request_payload_derives_scene_targets_and_bounds_context(
             'assistant:You are welcome.',
             'user:bring me the cup now',
         ],
-        'grounded_context': {'knowledge_snapshot': 'cup isOn table'},
+        'grounded_context': {
+            'knowledge_snapshot': {'summary_text': 'cup isOn table'},
+            'scene_summary': {},
+            'world_model_snapshot': {},
+            'world_model_text': '',
+        },
         'planner_mode': 'default',
+        'interaction_mode': 'speech',
+        'dialogue_turn_id': 'turn_1',
     }
 
 
@@ -75,8 +86,11 @@ def test_build_planner_request_intent_encodes_expected_message_shape():
     assert msg.intent == 'planner_request'
     assert msg.source == 'user1'
     assert msg.confidence == 0.6
-    assert json.loads(msg.data)['normalized_intents'] == ['head_look_left']
-    assert json.loads(msg.data)['ack_mode'] == 'auto'
+    payload = json.loads(msg.data)
+    assert payload['normalized_intents'] == ['head_look_left']
+    assert payload['ack_mode'] == 'auto'
+    assert payload['goal_id'] == 'goal_turn_2'
+    assert payload['request_kind'] == 'new_goal'
 
 
 def test_build_planner_request_payload_splits_explicit_scene_targets_string():
@@ -131,3 +145,19 @@ def test_should_route_intents_through_planner_normalizes_intent_names():
 
     assert should_route_intents_through_planner([greet_intent]) is False
     assert should_route_intents_through_planner([motion_intent]) is True
+
+
+def test_build_planner_request_payload_reuses_active_goal_for_cancel_request():
+    payload = build_planner_request_payload(
+        turn_id='turn_9',
+        user_text='stop that',
+        turn_result=_make_result(
+            intent='cancel_request',
+            user_intent={'type': 'cancel_request'},
+        ),
+        knowledge_context='',
+        active_goal_id='goal_existing',
+    )
+
+    assert payload['request_kind'] == 'cancel_request'
+    assert payload['goal_id'] == 'goal_existing'
