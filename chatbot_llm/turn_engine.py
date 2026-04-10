@@ -16,6 +16,39 @@ from chatbot_llm.intent_rules import normalize_intent
 from chatbot_llm.prompt_builders import build_intent_prompt
 from chatbot_llm.prompt_builders import build_response_prompt
 from chatbot_llm.prompt_builders import load_persona_prompt
+from kb_skills.intent_labels import KB_QUERY_INTENTS
+
+
+_DIALOGUE_ROUTE = 'dialogue'
+_KNOWLEDGE_QUERY_ROUTE = 'knowledge_query'
+_EXECUTION_ROUTE = 'execution'
+_SUPPORTED_ROUTES = {
+    _DIALOGUE_ROUTE,
+    _KNOWLEDGE_QUERY_ROUTE,
+    _EXECUTION_ROUTE,
+}
+_DIALOGUE_INTENTS = {'greet', 'identity', 'wellbeing', 'help'}
+_EXECUTION_HINT_MARKERS = (
+    ' and then ',
+    ' then ',
+    ' after that ',
+    ' before that ',
+    ' while also ',
+    ' also ',
+    ' stand',
+    ' sit',
+    ' kneel',
+    ' look ',
+    ' move ',
+    ' turn ',
+    ' head ',
+    ' bring ',
+    ' grab ',
+    ' pick ',
+    ' place ',
+    ' guide ',
+    ' walk ',
+)
 
 
 # ---------------------------------------------------------------------------
@@ -33,6 +66,7 @@ class TurnExecutionResult:
     intent_source: str
     intent_confidence: float
     user_intent: dict
+    route: str
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +179,49 @@ class DialogueTurnEngine:
             self._trace(trace, turn_id, 'TURN_DONE', 'llm response failed fallback')
             return result
 
+        if self._config.planner_mode_enabled:
+            (
+                route,
+                resolved_intent,
+                intent_source,
+                intent_confidence,
+                user_intent,
+            ) = self._resolve_planner_mode_turn(
+                user_text=user_text,
+                verbal_ack=verbal_ack,
+                response_payload=response_payload,
+            )
+            self._trace(
+                trace,
+                turn_id,
+                'ROUTE_RESOLVED',
+                'route=%s intent=%s source=%s confidence=%.2f'
+                % (route, resolved_intent or '-', intent_source, intent_confidence),
+            )
+
+            updated_history = messages_to_history(
+                history_messages
+                + [
+                    {'role': 'user', 'content': user_text},
+                    {'role': 'assistant', 'content': verbal_ack},
+                ],
+                max_history_messages=self._config.max_history_messages,
+            )
+
+            self._handled_requests += 1
+            self._publish_progress(progress_callback, 'complete', 1.0)
+            self._trace(trace, turn_id, 'TURN_DONE', 'planner-mode response complete')
+            return self._build_result(
+                success=True,
+                verbal_ack=verbal_ack,
+                updated_history=updated_history,
+                intent=resolved_intent,
+                intent_source=intent_source,
+                intent_confidence=intent_confidence,
+                user_intent=user_intent,
+                route=route,
+            )
+
         self._publish_progress(progress_callback, 'extracting_intent', 0.7)
         if cancel_requested():
             return self._cancelled_result(history)
@@ -203,6 +280,7 @@ class DialogueTurnEngine:
             intent_source=intent_source,
             intent_confidence=intent_confidence,
             user_intent=user_intent,
+            route=self._route_for_intent(resolved_intent),
         )
 
     # -----------------------------------------------------------------------
@@ -257,6 +335,114 @@ class DialogueTurnEngine:
 
         return 'fallback', 'llm_intent_failed', 0.0, {}
 
+    def _resolve_planner_mode_turn(
+        self,
+        *,
+        user_text: str,
+        verbal_ack: str,
+        response_payload: dict,
+    ) -> tuple[str, str, str, float, dict]:
+        user_intent = _coerce_user_intent(response_payload.get('user_intent', {}))
+        resolved_intent = self._resolve_user_intent_label(
+            user_text=user_text,
+            verbal_ack=verbal_ack,
+            user_intent=user_intent,
+        )
+        inferred_route = self._infer_route(
+            requested_route=response_payload.get('route', ''),
+            user_text=user_text,
+            resolved_intent=resolved_intent,
+            user_intent=user_intent,
+        )
+
+        response_confidence = coerce_float(
+            response_payload.get(
+                'intent_confidence',
+                response_payload.get('confidence', 0.0),
+            )
+        )
+
+        if not resolved_intent:
+            fallback_intent = normalize_intent(detect_intent(user_text), default='')
+            if fallback_intent and fallback_intent != 'fallback':
+                resolved_intent = fallback_intent
+                if not user_intent:
+                    user_intent = {'type': fallback_intent}
+                elif not str(user_intent.get('type', '')).strip():
+                    user_intent = dict(user_intent)
+                    user_intent['type'] = fallback_intent
+
+        if inferred_route == _DIALOGUE_ROUTE and not resolved_intent and not user_intent:
+            intent_source = 'llm_response_route'
+        elif _normalize_route(response_payload.get('route', '')):
+            intent_source = 'llm_response_route'
+        else:
+            intent_source = 'llm_response_inferred_route'
+
+        return inferred_route, resolved_intent, intent_source, response_confidence, user_intent
+
+    def _resolve_user_intent_label(
+        self,
+        *,
+        user_text: str,
+        verbal_ack: str,
+        user_intent: dict,
+    ) -> str:
+        if not user_intent:
+            return ''
+        hint_text = ' '.join(
+            [
+                user_intent.get('object', ''),
+                user_intent.get('goal', ''),
+                user_intent.get('input', ''),
+                verbal_ack,
+                user_text,
+            ]
+        ).strip()
+        return normalize_intent(
+            user_intent.get('type', ''),
+            default='',
+            hint_text=hint_text,
+        )
+
+    def _infer_route(
+        self,
+        *,
+        requested_route,
+        user_text: str,
+        resolved_intent: str,
+        user_intent: dict,
+    ) -> str:
+        clean_route = _normalize_route(requested_route)
+        if clean_route:
+            return clean_route
+
+        if _has_executable_plan(user_intent):
+            return _EXECUTION_ROUTE
+
+        intent_route = self._route_for_intent(
+            str(user_intent.get('type', '')).strip() or resolved_intent
+        )
+        if intent_route != _DIALOGUE_ROUTE or resolved_intent or user_intent.get('type'):
+            return intent_route
+
+        fallback_intent = normalize_intent(detect_intent(user_text), default='')
+        if fallback_intent and fallback_intent != 'fallback':
+            return self._route_for_intent(fallback_intent)
+
+        if _looks_like_execution_text(user_text):
+            return _EXECUTION_ROUTE
+        return _DIALOGUE_ROUTE
+
+    @staticmethod
+    def _route_for_intent(intent_name: str) -> str:
+        clean_intent = str(intent_name or '').strip().lower()
+        if clean_intent in KB_QUERY_INTENTS:
+            return _KNOWLEDGE_QUERY_ROUTE
+        if clean_intent in _DIALOGUE_INTENTS or clean_intent in ('', 'fallback'):
+            return _DIALOGUE_ROUTE
+        return _EXECUTION_ROUTE
+
     def _execute_rule_turn(
         self,
         user_text: str,
@@ -276,6 +462,7 @@ class DialogueTurnEngine:
             intent_source=source,
             intent_confidence=1.0 if intent != 'fallback' else 0.0,
             user_intent=user_intent,
+            route=self._route_for_intent(intent),
         )
 
     def _execute_disabled_turn(self, user_text: str, history: list[str]) -> TurnExecutionResult:
@@ -310,6 +497,7 @@ class DialogueTurnEngine:
             intent_source=intent_source,
             intent_confidence=0.0,
             user_intent={},
+            route=_DIALOGUE_ROUTE,
         )
 
     def _cancelled_result(self, history: list[str]) -> TurnExecutionResult:
@@ -321,6 +509,7 @@ class DialogueTurnEngine:
             intent_source='cancelled',
             intent_confidence=0.0,
             user_intent={},
+            route=_DIALOGUE_ROUTE,
         )
 
     # -----------------------------------------------------------------------
@@ -344,6 +533,7 @@ class DialogueTurnEngine:
             response_prompt_addendum=self._config.response_prompt_addendum,
             skill_catalog_text=self._skill_catalog_text,
             persona_prompt=self._persona_prompt,
+            planner_mode_enabled=self._config.planner_mode_enabled,
         )
         messages = [{'role': 'system', 'content': prompt}]
         messages.extend(history_messages)
@@ -365,7 +555,19 @@ class DialogueTurnEngine:
         if parsed:
             verbal_ack = str(parsed.get('verbal_ack', '')).strip()
             if verbal_ack:
-                return {'verbal_ack': verbal_ack}
+                payload = {'verbal_ack': verbal_ack}
+                route = _normalize_route(parsed.get('route', ''))
+                if route:
+                    payload['route'] = route
+                user_intent = _coerce_user_intent(parsed.get('user_intent', {}))
+                if user_intent:
+                    payload['user_intent'] = user_intent
+                confidence = coerce_float(
+                    parsed.get('confidence', parsed.get('intent_confidence', 0.0))
+                )
+                if confidence > 0.0:
+                    payload['confidence'] = confidence
+                return payload
         return {'verbal_ack': str(raw_response).strip()}
 
     def _query_intent(
@@ -474,6 +676,7 @@ class DialogueTurnEngine:
         intent_source: str,
         intent_confidence: float,
         user_intent: dict,
+        route: str,
     ) -> TurnExecutionResult:
         return TurnExecutionResult(
             success=success,
@@ -483,6 +686,7 @@ class DialogueTurnEngine:
             intent_source=intent_source,
             intent_confidence=intent_confidence,
             user_intent=user_intent,
+            route=route,
         )
 
     @staticmethod
@@ -576,3 +780,39 @@ def _coerce_user_intent(user_intent) -> dict:
     if isinstance(user_intent, str) and user_intent.strip():
         return {'type': user_intent.strip()}
     return {}
+
+
+def _normalize_route(value) -> str:
+    clean_value = str(value or '').strip().lower()
+    if clean_value in _SUPPORTED_ROUTES:
+        return clean_value
+    return ''
+
+
+def _coerce_plan(user_intent: dict) -> list[dict]:
+    if not isinstance(user_intent, dict):
+        return []
+    raw_plan = user_intent.get('plan')
+    if not isinstance(raw_plan, list):
+        return []
+    clean_plan = []
+    for step in raw_plan:
+        if not isinstance(step, dict):
+            continue
+        step_type = str(step.get('type', '')).strip().lower()
+        if not step_type:
+            continue
+        clean_plan.append(step)
+    return clean_plan
+
+
+def _has_executable_plan(user_intent: dict) -> bool:
+    for step in _coerce_plan(user_intent):
+        if str(step.get('type', '')).strip().lower() in ('skill', 'look_at', 'say'):
+            return True
+    return False
+
+
+def _looks_like_execution_text(user_text: str) -> bool:
+    lowered = ' %s ' % ' '.join(str(user_text or '').strip().lower().split())
+    return any(marker in lowered for marker in _EXECUTION_HINT_MARKERS)

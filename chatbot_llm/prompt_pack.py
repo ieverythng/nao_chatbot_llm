@@ -36,6 +36,30 @@ DEFAULT_RESPONSE_SCHEMA: dict[str, Any] = {
     'type': 'object',
     'properties': {
         'verbal_ack': {'type': 'string'},
+        'route': {
+            'type': 'string',
+            'enum': ['dialogue', 'knowledge_query', 'execution'],
+        },
+        'user_intent': {
+            'type': 'object',
+            'properties': {
+                'type': {'type': 'string'},
+                'object': {'type': 'string'},
+                'recipient': {'type': 'string'},
+                'input': {'type': 'string'},
+                'goal': {'type': 'string'},
+                'ack_text': {'type': 'string'},
+                'ack_mode': {'type': 'string'},
+                'scene_targets': {
+                    'type': 'array',
+                    'items': {'type': 'string'},
+                },
+                'plan': {
+                    'type': 'array',
+                    'items': {'type': 'object'},
+                },
+            },
+        },
         'confidence': {'type': 'number'},
     },
     'required': ['verbal_ack'],

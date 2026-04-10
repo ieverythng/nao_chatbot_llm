@@ -102,6 +102,41 @@ def test_build_response_intents_fallbacks_to_raw_user_input():
     }
 
 
+def test_build_response_intents_fallback_preserves_plan_hints():
+    intents = build_response_intents(
+        resolved_intent='fallback',
+        user_intent={
+            'plan': [
+                {
+                    'type': 'skill',
+                    'name': 'perform_motion',
+                    'args': {'object': 'head_look_up'},
+                }
+            ]
+        },
+        source_user_id='user1',
+        verbal_ack='I will look up.',
+        raw_input='look up and then tell me what you see',
+        confidence=0.2,
+    )
+
+    assert len(intents) == 1
+    assert intents[0].intent == Intent.RAW_USER_INPUT
+    assert json.loads(intents[0].data) == {
+        'input': 'look up and then tell me what you see',
+        'suggested_response': 'I will look up.',
+        'ack_text': 'I will look up.',
+        'ack_mode': 'say',
+        'plan': [
+            {
+                'type': 'skill',
+                'name': 'perform_motion',
+                'args': {'object': 'head_look_up'},
+            }
+        ],
+    }
+
+
 def test_build_response_intents_preserves_explicit_scene_targets_and_plan():
     intents = build_response_intents(
         resolved_intent='bring_object',

@@ -14,7 +14,11 @@ class FakeTransport:
         return self._responses.pop(0)
 
 
-def make_config(intent_mode: str = 'rules') -> ChatbotConfig:
+def make_config(
+    intent_mode: str = 'rules',
+    *,
+    planner_mode_enabled: bool = False,
+) -> ChatbotConfig:
     return ChatbotConfig(
         server_url='http://localhost:11434/api/chat',
         model='llama3.2:1b',
@@ -45,7 +49,7 @@ def make_config(intent_mode: str = 'rules') -> ChatbotConfig:
         skill_catalog_packages=[],
         skill_catalog_max_entries=0,
         skill_catalog_max_chars=0,
-        planner_mode_enabled=False,
+        planner_mode_enabled=planner_mode_enabled,
         planner_request_topic='/planner/request',
         planner_request_intent='planner_request',
         knowledge_enabled=False,
@@ -80,6 +84,7 @@ def test_turn_engine_rules_mode_generates_motion_reply():
     assert result.intent == 'posture_stand'
     assert result.intent_source == 'rules'
     assert result.intent_confidence == 1.0
+    assert result.route == 'execution'
     assert result.verbal_ack == 'Sure. I am switching to a standing posture.'
     assert result.updated_history == [
         'user:please stand up',
@@ -112,6 +117,7 @@ def test_turn_engine_llm_mode_uses_two_stage_json_outputs():
     assert result.intent_source == 'llm_intent'
     assert result.intent_confidence == 0.85
     assert result.user_intent == {'type': 'head_look_left'}
+    assert result.route == 'execution'
     assert result.verbal_ack == 'Sure. I am turning my head to the left.'
     assert result.updated_history[-2:] == [
         'user:look left',
@@ -182,3 +188,71 @@ def test_turn_engine_prompt_explicitly_mentions_recent_history():
     assert 'kb_query_visible_people' in transport.calls[1]['messages'][0]['content']
     assert transport.calls[0]['messages'][1]['content'] == 'can you see anyone?'
     assert transport.calls[0]['messages'][2]['content'] == 'Yes, I can see a person.'
+
+
+def test_turn_engine_planner_mode_uses_single_response_stage_for_execution():
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"I will look left and then sit down.",'
+                '"route":"execution",'
+                '"user_intent":{"type":"fallback","ack_mode":"say","plan":['
+                '{"type":"skill","name":"perform_motion","args":{"object":"head_look_left"}},'
+                '{"type":"skill","name":"perform_motion","args":{"object":"sit"}}'
+                ']},'
+                '"confidence":0.72}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='look left and then sit down',
+        history=[],
+        user_id='user1',
+        knowledge_snapshot='person_1 rdf:type Person',
+    )
+
+    assert result.success is True
+    assert len(transport.calls) == 1
+    assert result.route == 'execution'
+    assert result.intent == 'fallback'
+    assert result.intent_source == 'llm_response_route'
+    assert result.intent_confidence == 0.72
+    assert result.user_intent['type'] == 'fallback'
+    assert len(result.user_intent['plan']) == 2
+    assert (
+        'Planner-mode routing requirements:'
+        in transport.calls[0]['messages'][0]['content']
+    )
+    assert 'Knowledge snapshot:\nperson_1 rdf:type Person' in transport.calls[0]['messages'][0]['content']
+
+
+def test_turn_engine_planner_mode_infers_execution_route_without_second_call():
+    transport = FakeTransport(
+        [
+            '{"verbal_ack":"I can do that.","user_intent":{"type":"posture_stand"},"confidence":0.51}',
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm_with_rules_fallback', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='please stand up',
+        history=[],
+        user_id='user1',
+    )
+
+    assert len(transport.calls) == 1
+    assert result.route == 'execution'
+    assert result.intent == 'posture_stand'
+    assert result.intent_source == 'llm_response_inferred_route'

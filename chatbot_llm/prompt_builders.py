@@ -28,6 +28,20 @@ Output requirements:
 """.strip()
 )
 
+PLANNER_MODE_RESPONSE_TEMPLATE = """
+Planner-mode routing requirements:
+- Also include route with one of: dialogue, knowledge_query, execution.
+- Use route="execution" for physical actions, skill requests, or multi-step requests.
+- Use route="knowledge_query" for grounded scene/perception questions answered from the
+  live knowledge snapshot.
+- Use route="dialogue" for greetings, identity, wellbeing, help, or general conversation.
+- When possible include user_intent with key "type".
+- For execution turns, you may also include ack_text, ack_mode, scene_targets, and a
+  plan list shaped as {type,name,args}.
+- When the user combines multiple requested actions, or mixes action with perception
+  or dialogue, keep every requested step in `plan` in execution order.
+""".strip()
+
 INTENT_STAGE_TEMPLATE = Template(
     """
 You are an intent extraction component for robot $robot_name.
@@ -66,6 +80,12 @@ Output requirements:
   earlier turns.
 - When the user requests an action, you may also include ack_text, ack_mode,
   scene_targets, and a plan list shaped as {type,name,args}.
+- When the user combines multiple requested actions, or an action plus a
+  follow-up perception or dialogue task, keep every requested step in `plan`
+  in execution order instead of dropping the later steps.
+- If no single canonical label covers the whole request, keep `user_intent.type`
+  on the closest executable label or use `fallback`, but still return the full
+  ordered `plan`.
 - For posture or head-motion requests, prefer one plan step with
   type="skill", name="perform_motion", and args.object set to the canonical motion.
 - If uncertain, use user_intent.type = "fallback".
@@ -102,6 +122,7 @@ def build_response_prompt(
     response_prompt_addendum: str,
     skill_catalog_text: str,
     persona_prompt: str,
+    planner_mode_enabled: bool,
 ) -> str:
     """Build system prompt used for verbal response generation."""
     return _join_prompt_parts(
@@ -112,6 +133,7 @@ def build_response_prompt(
             user_id=user_id or 'user1',
             environment=environment_description or 'No specific objects described.',
         ),
+        PLANNER_MODE_RESPONSE_TEMPLATE if planner_mode_enabled else '',
         _knowledge_snapshot_block(knowledge_snapshot),
         skill_catalog_text,
         response_prompt_addendum,

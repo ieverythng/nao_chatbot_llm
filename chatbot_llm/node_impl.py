@@ -286,15 +286,18 @@ class LLMChatbot(Node):
                 self._session.request_count += 1
 
         response.response = result.verbal_ack
-        direct_intents = build_response_intents(
-            resolved_intent=result.intent,
-            user_intent=result.user_intent,
-            source_user_id=user_id,
-            verbal_ack=result.verbal_ack,
-            raw_input=text,
-            confidence=result.intent_confidence,
-        )
+        direct_intents = []
+        if result.route != 'execution':
+            direct_intents = build_response_intents(
+                resolved_intent=result.intent,
+                user_intent=result.user_intent,
+                source_user_id=user_id,
+                verbal_ack=result.verbal_ack,
+                raw_input=text,
+                confidence=result.intent_confidence,
+            )
         if self._publish_planner_request(
+            session=session,
             user_id=user_id,
             turn_id=turn_id,
             user_text=text,
@@ -541,6 +544,7 @@ class LLMChatbot(Node):
     def _publish_planner_request(
         self,
         *,
+        session: DialogueSession,
         user_id: str,
         turn_id: str,
         user_text: str,
@@ -554,7 +558,11 @@ class LLMChatbot(Node):
         if self._planner_request_pub is None:
             self.get_logger().warn('planner mode is enabled but planner request publisher is unavailable')
             return False
-        if not should_route_intents_through_planner(direct_intents):
+        if not should_route_intents_through_planner(
+            direct_intents,
+            turn_result=result,
+            user_text=user_text,
+        ):
             return False
 
         try:

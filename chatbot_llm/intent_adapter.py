@@ -159,9 +159,10 @@ def build_response_intents(
         ]
 
     if normalized == 'fallback':
-        fallback_payload = {'input': str(raw_input).strip()}
+        fallback_payload = _clean_payload(user_intent)
+        fallback_payload.setdefault('input', str(raw_input).strip())
         if verbal_ack:
-            fallback_payload['suggested_response'] = verbal_ack
+            fallback_payload.setdefault('suggested_response', verbal_ack)
         _apply_ack_metadata(fallback_payload, verbal_ack)
         return [
             _make_intent(

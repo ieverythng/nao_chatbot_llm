@@ -29,6 +29,12 @@ intent_prompt_addendum: |
   - ack_mode: usually "say"
   - scene_targets: a list of relevant object labels if the action refers to scene entities
   - plan: an ordered list of steps shaped as {type,name,args}
+  When the user asks for multiple actions, or combines motion with perception
+  or dialogue, keep every requested step in `plan` in execution order instead
+  of collapsing the request to only the first action.
+  If no single canonical label covers the whole request, you may keep the
+  closest executable `user_intent.type` or use `fallback`, but still return
+  the full ordered `plan`.
   For posture or head-motion actions, prefer a single skill step named "perform_motion".
 
 environment_description: "No specific objects described."
@@ -38,6 +44,37 @@ response_schema:
   properties:
     verbal_ack:
       type: string
+    route:
+      type: string
+      enum:
+        - dialogue
+        - knowledge_query
+        - execution
+    user_intent:
+      type: object
+      properties:
+        type:
+          type: string
+        object:
+          type: string
+        recipient:
+          type: string
+        input:
+          type: string
+        goal:
+          type: string
+        ack_text:
+          type: string
+        ack_mode:
+          type: string
+        scene_targets:
+          type: array
+          items:
+            type: string
+        plan:
+          type: array
+          items:
+            type: object
     confidence:
       type: number
   required:

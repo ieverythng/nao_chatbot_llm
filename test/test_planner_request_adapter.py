@@ -24,6 +24,7 @@ def _make_result(**overrides):
         'intent_source': 'llm_intent',
         'intent_confidence': 0.8,
         'user_intent': {'type': 'bring_object', 'object': 'cup'},
+        'route': 'execution',
     }
     payload.update(overrides)
     return TurnExecutionResult(**payload)
@@ -126,6 +127,21 @@ def test_build_planner_request_payload_ignores_capitalized_motion_objects_as_sce
     assert payload['scene_targets'] == []
 
 
+def test_build_planner_request_payload_marks_multi_step_turns_for_planner_mode():
+    payload = build_planner_request_payload(
+        turn_id='turn_multi',
+        user_text='move your head up and then sit down',
+        turn_result=_make_result(
+            intent='head_look_up',
+            user_intent={'type': 'head_look_up'},
+        ),
+        knowledge_context='',
+    )
+
+    assert payload['normalized_intents'] == ['head_look_up']
+    assert payload['planner_mode'] == 'multi_step'
+
+
 def test_should_route_intents_through_planner_only_for_execution_intents():
     greet_intent = Intent()
     greet_intent.intent = Intent.GREET
@@ -161,3 +177,36 @@ def test_build_planner_request_payload_reuses_active_goal_for_cancel_request():
 
     assert payload['request_kind'] == 'cancel_request'
     assert payload['goal_id'] == 'goal_existing'
+
+
+def test_should_route_intents_through_planner_for_fallback_with_plan() -> None:
+    result = _make_result(
+        intent='fallback',
+        user_intent={
+            'type': 'fallback',
+            'plan': [
+                {
+                    'type': 'skill',
+                    'name': 'perform_motion',
+                    'args': {'object': 'stand'},
+                },
+                {
+                    'type': 'say',
+                    'name': 'say',
+                    'args': {'text': 'I am standing now.'},
+                },
+            ],
+        },
+    )
+
+    assert should_route_intents_through_planner([], turn_result=result) is True
+
+
+def test_should_route_intents_through_planner_for_explicit_execution_route() -> None:
+    result = _make_result(
+        intent='',
+        user_intent={},
+        route='execution',
+    )
+
+    assert should_route_intents_through_planner([], turn_result=result) is True

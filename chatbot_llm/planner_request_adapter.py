@@ -33,6 +33,12 @@ _NON_PLANNER_INTENT_NAMES = {
         Intent.GREET,
         Intent.RAW_USER_INPUT,
         *KB_QUERY_INTENTS,
+        'say',
+        'greet',
+        'raw_user_input',
+        'identity',
+        'wellbeing',
+        'help',
     )
 }
 _NON_SCENE_TARGET_OBJECTS = {
@@ -46,6 +52,39 @@ _NON_SCENE_TARGET_OBJECTS = {
     'head_look_down',
     'look_at_reset',
 }
+_MULTI_STEP_COORDINATION_MARKERS = (
+    ' and then ',
+    ' then ',
+    ' while ',
+    ' while also ',
+    ' also ',
+    ' after that ',
+    ' after you ',
+    ' before that ',
+    ' before you ',
+    ' once you ',
+    ' once that ',
+    ' at the same time ',
+    ' simultaneously ',
+)
+_ACTION_HINT_TOKENS = (
+    'stand',
+    'sit',
+    'kneel',
+    'crouch',
+    'look',
+    'move',
+    'turn',
+    'head',
+    'bring',
+    'grab',
+    'pick',
+    'place',
+    'go',
+    'guide',
+    'walk',
+)
+_EXECUTABLE_PLAN_STEP_TYPES = {'say', 'skill', 'look_at', 'noop'}
 _PLANNER_REQUEST_KINDS = {
     'new_goal',
     'goal_update',
@@ -61,13 +100,27 @@ _CANCEL_INTENT_TYPES = {
 }
 
 
-def should_route_intents_through_planner(intents: list[Intent]) -> bool:
+def should_route_intents_through_planner(
+    intents: list[Intent],
+    *,
+    turn_result=None,
+    user_text: str = '',
+) -> bool:
     """Return true when the turn contains execution-oriented intents."""
-    if not isinstance(intents, list) or not intents:
-        return False
-    return any(
-        _normalize_token(getattr(intent, 'intent', '')) not in _NON_PLANNER_INTENT_NAMES
-        for intent in intents
+    if _normalize_token(getattr(turn_result, 'route', '')) == 'execution':
+        return True
+
+    if _contains_execution_intent(intents):
+        return True
+
+    user_intent = _turn_user_intent(turn_result)
+    if _has_executable_plan(user_intent):
+        return True
+
+    return _is_multi_step_turn(
+        user_intent=user_intent,
+        resolved_intent=getattr(turn_result, 'intent', ''),
+        user_text=user_text,
     )
 
 
@@ -77,13 +130,18 @@ def build_planner_request_payload(
     user_text: str,
     turn_result,
     knowledge_context: str,
-    planner_mode: str = 'default',
+    planner_mode: str = 'auto',
     max_history_entries: int = 6,
     active_goal_id: str = '',
 ) -> dict:
     """Build the planner ingress payload from the current turn result."""
     user_intent = _turn_user_intent(turn_result)
     resolved_intent = getattr(turn_result, 'intent', '')
+    resolved_planner_mode = _resolved_planner_mode(
+        planner_mode=planner_mode,
+        turn_result=turn_result,
+        user_text=user_text,
+    )
     ack_text = _resolved_ack_text(user_intent, getattr(turn_result, 'verbal_ack', ''))
     ack_mode = _resolved_ack_mode(user_intent)
     dialogue_context = _bounded_dialogue_context(
@@ -105,13 +163,13 @@ def build_planner_request_payload(
         'supersedes_goal_id': str(user_intent.get('supersedes_goal_id', '')).strip(),
         'request_kind': request_kind,
         'user_text': str(user_text or '').strip(),
-        'normalized_intents': _normalized_intents(resolved_intent),
+        'normalized_intents': _normalized_intents_for_turn(turn_result),
         'ack_text': ack_text,
         'ack_mode': ack_mode,
         'scene_targets': _scene_targets_from_user_intent(user_intent),
         'dialogue_context': dialogue_context,
         'grounded_context': _grounded_context_payload(knowledge_context),
-        'planner_mode': str(planner_mode or 'default').strip() or 'default',
+        'planner_mode': resolved_planner_mode,
         'interaction_mode': str(user_intent.get('interaction_mode', 'speech')).strip()
         or 'speech',
         'dialogue_turn_id': str(user_intent.get('dialogue_turn_id', turn_id)).strip()
@@ -127,7 +185,7 @@ def build_planner_request_intent(
     turn_result,
     knowledge_context: str,
     planner_request_intent: str = 'planner_request',
-    planner_mode: str = 'default',
+    planner_mode: str = 'auto',
     max_history_entries: int = 6,
     active_goal_id: str = '',
 ) -> Intent:
@@ -162,6 +220,22 @@ def _normalized_intents(intent_name: str) -> list[str]:
     return [clean_intent] if clean_intent else []
 
 
+def _normalized_intents_for_turn(turn_result) -> list[str]:
+    user_intent = _turn_user_intent(turn_result)
+    candidates = [
+        user_intent.get('type', ''),
+        getattr(turn_result, 'intent', ''),
+    ]
+    normalized = []
+    for candidate in candidates:
+        clean_candidate = _normalize_token(candidate)
+        if clean_candidate == 'fallback' and _coerce_plan(user_intent.get('plan')):
+            continue
+        if clean_candidate and clean_candidate not in normalized:
+            normalized.append(clean_candidate)
+    return normalized
+
+
 def _scene_targets_from_user_intent(user_intent: dict) -> list[str]:
     scene_targets = _coerce_str_list(user_intent.get('scene_targets'))
     if scene_targets:
@@ -187,6 +261,24 @@ def _resolved_ack_mode(user_intent: dict) -> str:
     return str(user_intent.get('ack_mode', '')).strip() or 'say'
 
 
+def _resolved_planner_mode(
+    *,
+    planner_mode: str,
+    turn_result,
+    user_text: str,
+) -> str:
+    requested_mode = _normalize_token(planner_mode)
+    if requested_mode not in ('', 'auto', 'default'):
+        return requested_mode
+    if _is_multi_step_turn(
+        user_intent=_turn_user_intent(turn_result),
+        resolved_intent=getattr(turn_result, 'intent', ''),
+        user_text=user_text,
+    ):
+        return 'multi_step'
+    return 'default'
+
+
 def _grounded_context_payload(knowledge_context: str) -> dict:
     clean_knowledge_context = str(knowledge_context or '').strip()
     knowledge_snapshot = {}
@@ -205,8 +297,8 @@ def _resolved_request_kind(user_intent: dict, resolved_intent: str) -> str:
     if explicit_kind in _PLANNER_REQUEST_KINDS:
         return explicit_kind
 
-    normalized_intent = _normalize_token(resolved_intent)
-    if normalized_intent in _CANCEL_INTENT_TYPES:
+    user_intent_type = _normalize_token(user_intent.get('type', ''))
+    if user_intent_type in _CANCEL_INTENT_TYPES or _normalize_token(resolved_intent) in _CANCEL_INTENT_TYPES:
         return 'cancel_request'
     return 'new_goal'
 
@@ -240,9 +332,49 @@ def _normalize_token(value) -> str:
     return str(value or '').strip().lower()
 
 
+def _contains_execution_intent(intents: list[Intent]) -> bool:
+    if not isinstance(intents, list) or not intents:
+        return False
+    return any(
+        _normalize_token(getattr(intent, 'intent', '')) not in _NON_PLANNER_INTENT_NAMES
+        for intent in intents
+    )
+
+
+def _has_executable_plan(user_intent: dict) -> bool:
+    for step in _coerce_plan(user_intent.get('plan')):
+        if _normalize_token(step.get('type', '')) in _EXECUTABLE_PLAN_STEP_TYPES:
+            return True
+    return False
+
+
+def _is_multi_step_turn(*, user_intent: dict, resolved_intent: str, user_text: str) -> bool:
+    if len(_coerce_plan(user_intent.get('plan'))) > 1:
+        return True
+
+    clean_text = ' %s ' % str(user_text or '').strip().lower()
+    if not clean_text.strip():
+        return False
+    if not any(marker in clean_text for marker in _MULTI_STEP_COORDINATION_MARKERS):
+        return False
+    if not any(token in clean_text for token in _ACTION_HINT_TOKENS):
+        return False
+
+    clean_intent = _normalize_token(user_intent.get('type', '') or resolved_intent)
+    if clean_intent and clean_intent not in _NON_PLANNER_INTENT_NAMES:
+        return True
+    return clean_intent in ('', 'fallback')
+
+
 def _coerce_str_list(value) -> list[str]:
     if isinstance(value, str):
         return [item.strip() for item in value.split(',') if item.strip()]
     if not isinstance(value, (list, tuple)):
         return []
     return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _coerce_plan(value) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+    return [step for step in value if isinstance(step, dict)]

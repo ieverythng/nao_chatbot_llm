@@ -4,7 +4,8 @@
 NAO ROS4HRI stack.
 
 It keeps the public ROS contract expected by `dialogue_manager` while using the
-local Ollama prompt, history, and intent pipeline internally.
+local Ollama prompt, history, and direct-or-planner routing pipeline
+internally.
 
 ## ROS API
 
@@ -25,13 +26,17 @@ One interaction turn follows this path:
 3. If knowledge grounding is enabled, it queries `KnowledgeCore` before prompt
    assembly.
 4. The response model generates `verbal_ack`.
-5. The intent model, or rule fallback, generates structured intent data.
-6. `chatbot_llm` returns the spoken answer plus translated HRI intents.
+5. In planner mode, that same response stage can also return a coarse `route`
+   such as `dialogue`, `knowledge_query`, or `execution`.
+6. Direct-mode turns still use the intent model, or rule fallback, to generate
+   translated HRI intents.
+7. Planner-mode execution turns publish `/planner/request` instead of trying to
+   execute directly through `/intents`.
 
 Main implementation modules:
 
 - `node_impl.py`: lifecycle node and ROS contract
-- `turn_engine.py`: response and intent generation pipeline
+- `turn_engine.py`: response generation plus planner-aware routing
 - `knowledge_snapshot_client.py`: read-only `/kb/query` client
 - `knowledge_snapshot.py`: role-level settings merge and snapshot formatting
 - `ollama_transport.py`: HTTP backend transport
@@ -39,6 +44,7 @@ Main implementation modules:
 - `skill_catalog.py`: installed skill summary
 - `chat_history.py`: bounded dialogue history
 - `intent_rules.py` and `intent_adapter.py`: fallback and intent translation
+- `planner_request_adapter.py`: `/planner/request` payload construction
 
 The intent pipeline now preserves a small set of execution-oriented metadata in
 `Intent.data` so downstream routing can stay flexible without changing the ROS
@@ -66,10 +72,12 @@ The current grounded turn flow now looks like this:
 3. `chatbot_llm` reads the current grounded scene through `/kb/query` and
    formats that result into the `knowledge_snapshot` prompt block
 4. the response model produces the spoken reply or `verbal_ack`
-5. the intent stage produces structured intent payloads
-6. `intent_adapter.py` preserves richer metadata in `Intent.data`, including
+5. in planner mode, that response stage can mark the turn as `execution`, which
+   causes `chatbot_llm` to publish `/planner/request`
+6. in direct mode, the intent stage still produces structured intent payloads
+7. `intent_adapter.py` preserves richer metadata in `Intent.data`, including
    `ack_text`, `ack_mode`, `scene_targets`, and optional `plan` steps
-7. `nao_orchestrator` consumes those downstream and can either execute the
+8. `nao_orchestrator` consumes those downstream and can either execute the
    structured `plan` or fall back to legacy routing rules
 
 Object detection therefore influences `chatbot_llm` indirectly through KB
@@ -167,6 +175,9 @@ reflects the shipped launch defaults.
 | `server_url` | `http://localhost:11434/api/chat` | Backend HTTP endpoint |
 | `model` | `llama3.2:1b` | Main response model |
 | `intent_model` | `""` | Optional dedicated intent model |
+| `planner_mode_enabled` | `false` | Route execution-oriented turns to `/planner/request` |
+| `planner_request_topic` | `/planner/request` | Planner ingress topic used in planner mode |
+| `planner_request_intent` | `planner_request` | Intent label stamped on planner ingress messages |
 | `system_prompt` | built-in default | Main persona/system prompt |
 | `prompt_pack_path` | `""` | Optional YAML override for prompt pack |
 | `use_skill_catalog` | `true` | Include discovered skills in prompts |
@@ -188,11 +199,14 @@ reflects the shipped launch defaults.
   with the upstream `chatbot_llm` contract
 - package naming stays `chatbot_llm` even though the local implementation is
   the NAO-specific backend used by this workspace
+- the package defaults still ship with `model=llama3.2:1b`, but the shared
+  `nao_chatbot` sim/robot wrappers override that to `gpt-oss:120b-cloud`
 - robot-side dispatch must stay out of this package; `/intents` consumers belong
   in `nao_orchestrator`
+- planner mode keeps immediate spoken acknowledgement in `chatbot_llm`, while
+  downstream execution ownership moves to `planner_llm` plus `nao_orchestrator`
 - `plan` generation is advisory metadata for downstream execution, not direct
-  robot control from inside `chatbot_llm`; the downstream stack now accepts
-  target-frame `look_at` steps when a future prompt pack starts emitting them
+  robot control from inside `chatbot_llm`
 
 ## Verification
 
