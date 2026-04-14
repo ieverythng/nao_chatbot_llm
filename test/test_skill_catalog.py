@@ -1,7 +1,21 @@
 from chatbot_llm.skill_catalog import build_skill_catalog_text
 
 
-def test_build_skill_catalog_text_includes_kb_skills_metadata():
+def test_build_skill_catalog_text_includes_json_exported_skills() -> None:
+    rendered, descriptors = build_skill_catalog_text(
+        ['interaction_skills', 'nao_skills'],
+        max_entries=0,
+        max_chars=0,
+    )
+
+    descriptor_ids = {descriptor.skill_id for descriptor in descriptors}
+
+    assert 'look_at' in descriptor_ids
+    assert 'do_head_motion' in descriptor_ids
+    assert 'look_at' in rendered
+
+
+def test_build_skill_catalog_text_includes_kb_skills_metadata() -> None:
     rendered, descriptors = build_skill_catalog_text(
         package_names=['kb_skills'],
         max_entries=8,

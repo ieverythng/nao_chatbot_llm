@@ -40,6 +40,9 @@ Planner-mode routing requirements:
   plan list shaped as {type,name,args}.
 - When the user combines multiple requested actions, or mixes action with perception
   or dialogue, keep every requested step in `plan` in execution order.
+- Do not add a `say` plan step when it only repeats the acknowledgement; keep pure
+  acknowledgements in `verbal_ack`/`ack_text` and reserve `say` plan steps for speech
+  that is itself part of the user task.
 """.strip()
 
 INTENT_STAGE_TEMPLATE = Template(
@@ -86,6 +89,9 @@ Output requirements:
 - If no single canonical label covers the whole request, keep `user_intent.type`
   on the closest executable label or use `fallback`, but still return the full
   ordered `plan`.
+- Do not add a `say` plan step when it only repeats the acknowledgement; keep pure
+  acknowledgements in `ack_text`/assistant speech and reserve `say` plan steps for
+  speech that is itself part of the requested task.
 - For posture or head-motion requests, prefer one plan step with
   type="skill", name="perform_motion", and args.object set to the canonical motion.
 - If uncertain, use user_intent.type = "fallback".

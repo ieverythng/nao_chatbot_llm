@@ -57,6 +57,7 @@ def test_build_planner_request_payload_derives_scene_targets_and_bounds_context(
             'assistant:You are welcome.',
             'user:bring me the cup now',
         ],
+        'requested_plan': [],
         'grounded_context': {
             'knowledge_snapshot': {'summary_text': 'cup isOn table'},
             'scene_summary': {},
@@ -140,6 +141,53 @@ def test_build_planner_request_payload_marks_multi_step_turns_for_planner_mode()
 
     assert payload['normalized_intents'] == ['head_look_up']
     assert payload['planner_mode'] == 'multi_step'
+
+
+def test_build_planner_request_payload_preserves_requested_plan_and_filters_ack_step():
+    payload = build_planner_request_payload(
+        turn_id='turn_hint',
+        user_text='stand up and then tell me when you are done',
+        turn_result=_make_result(
+            verbal_ack='I will stand up and let you know.',
+            intent='fallback',
+            user_intent={
+                'type': 'fallback',
+                'ack_text': 'I will stand up and let you know.',
+                'plan': [
+                    {
+                        'type': 'say',
+                        'name': 'say',
+                        'args': {'text': 'I will stand up and let you know.'},
+                    },
+                    {
+                        'type': 'skill',
+                        'name': 'perform_motion',
+                        'args': {'object': 'stand'},
+                    },
+                    {
+                        'type': 'say',
+                        'name': 'say',
+                        'args': {'text': 'I am standing now.'},
+                    },
+                ],
+            },
+        ),
+        knowledge_context='',
+    )
+
+    assert payload['normalized_intents'] == ['posture_stand']
+    assert payload['requested_plan'] == [
+        {
+            'type': 'skill',
+            'name': 'perform_motion',
+            'args': {'object': 'stand'},
+        },
+        {
+            'type': 'say',
+            'name': 'say',
+            'args': {'text': 'I am standing now.'},
+        },
+    ]
 
 
 def test_should_route_intents_through_planner_only_for_execution_intents():

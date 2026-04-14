@@ -42,6 +42,7 @@
   <exec_depend>chatbot_msgs</exec_depend>
   <exec_depend>diagnostic_msgs</exec_depend>
   <exec_depend>kb_skills</exec_depend>
+  <exec_depend>planner_common</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

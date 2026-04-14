@@ -52,6 +52,21 @@ _NON_SCENE_TARGET_OBJECTS = {
     'head_look_down',
     'look_at_reset',
 }
+_MOTION_OBJECT_INTENT_HINTS = {
+    'stand': 'posture_stand',
+    'standinit': 'posture_stand',
+    'standfull': 'posture_stand',
+    'standzero': 'posture_stand',
+    'sit': 'posture_sit',
+    'sitrelax': 'posture_sit',
+    'kneel': 'posture_kneel',
+    'crouch': 'posture_kneel',
+    'head_center': 'head_center',
+    'head_look_left': 'head_look_left',
+    'head_look_right': 'head_look_right',
+    'head_look_up': 'head_look_up',
+    'head_look_down': 'head_look_down',
+}
 _MULTI_STEP_COORDINATION_MARKERS = (
     ' and then ',
     ' then ',
@@ -144,6 +159,7 @@ def build_planner_request_payload(
     )
     ack_text = _resolved_ack_text(user_intent, getattr(turn_result, 'verbal_ack', ''))
     ack_mode = _resolved_ack_mode(user_intent)
+    requested_plan = _requested_plan_from_user_intent(user_intent, ack_text=ack_text)
     dialogue_context = _bounded_dialogue_context(
         getattr(turn_result, 'updated_history', []),
         max_history_entries=max_history_entries,
@@ -168,6 +184,7 @@ def build_planner_request_payload(
         'ack_mode': ack_mode,
         'scene_targets': _scene_targets_from_user_intent(user_intent),
         'dialogue_context': dialogue_context,
+        'requested_plan': requested_plan,
         'grounded_context': _grounded_context_payload(knowledge_context),
         'planner_mode': resolved_planner_mode,
         'interaction_mode': str(user_intent.get('interaction_mode', 'speech')).strip()
@@ -233,6 +250,9 @@ def _normalized_intents_for_turn(turn_result) -> list[str]:
             continue
         if clean_candidate and clean_candidate not in normalized:
             normalized.append(clean_candidate)
+    for hinted_intent in _plan_intent_hints(_coerce_plan(user_intent.get('plan'))):
+        if hinted_intent not in normalized:
+            normalized.append(hinted_intent)
     return normalized
 
 
@@ -378,3 +398,63 @@ def _coerce_plan(value) -> list[dict]:
     if not isinstance(value, list):
         return []
     return [step for step in value if isinstance(step, dict)]
+
+
+def _requested_plan_from_user_intent(user_intent: dict, *, ack_text: str = '') -> list[dict]:
+    requested_steps = []
+    raw_plan = _coerce_plan(user_intent.get('plan'))
+    if not raw_plan:
+        return requested_steps
+
+    clean_ack_text = str(ack_text or '').strip().lower()
+    has_non_say_step = any(_normalize_token(step.get('type', '')) != 'say' for step in raw_plan)
+
+    for step in raw_plan:
+        step_type = _normalize_token(step.get('type', ''))
+        step_name = str(step.get('name', '')).strip()
+        step_args = step.get('args', {}) if isinstance(step.get('args'), dict) else {}
+
+        if step_type == 'say' and has_non_say_step:
+            step_text = str(step_args.get('text', step_args.get('object', ''))).strip().lower()
+            if clean_ack_text and step_text == clean_ack_text:
+                continue
+
+        requested_steps.append(
+            {
+                'type': step_type,
+                'name': step_name,
+                'args': step_args,
+            }
+        )
+
+    return requested_steps
+
+
+def _plan_intent_hints(plan_steps: list[dict]) -> list[str]:
+    hints: list[str] = []
+    for step in plan_steps:
+        step_type = _normalize_token(step.get('type', ''))
+        step_name = _normalize_token(step.get('name', ''))
+        step_args = step.get('args', {}) if isinstance(step.get('args'), dict) else {}
+
+        if step_type == 'look_at':
+            hints.append('look_at')
+            continue
+
+        if step_type != 'skill':
+            continue
+
+        if step_name == 'look_at':
+            hints.append('look_at')
+            continue
+
+        if step_name not in ('', 'motion', 'perform_motion'):
+            continue
+
+        motion_object = _normalize_token(
+            step_args.get('object', step_args.get('motion_name', ''))
+        )
+        hinted_intent = _MOTION_OBJECT_INTENT_HINTS.get(motion_object, '')
+        if hinted_intent:
+            hints.append(hinted_intent)
+    return hints

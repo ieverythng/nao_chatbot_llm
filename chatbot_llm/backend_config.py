@@ -111,7 +111,10 @@ def declare_backend_parameters(node) -> None:
 
     node.declare_parameter('prompt_pack_path', '')
     node.declare_parameter('use_skill_catalog', True)
-    node.declare_parameter('skill_catalog_packages', 'communication_skills,nao_skills,kb_skills')
+    node.declare_parameter(
+        'skill_catalog_packages',
+        'communication_skills,interaction_skills,nao_skills,nao_say_skill,kb_skills',
+    )
     node.declare_parameter('skill_catalog_max_entries', 16)
     node.declare_parameter('skill_catalog_max_chars', 3000)
     node.declare_parameter('planner_mode_enabled', False)
