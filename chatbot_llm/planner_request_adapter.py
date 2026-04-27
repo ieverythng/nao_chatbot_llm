@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from kb_skills.intent_labels import KB_QUERY_INTENTS
+from planner_common import normalize_grounded_context
 
 try:  # pragma: no cover - optional dependency in local unit tests
     from hri_actions_msgs.msg import Intent
@@ -113,6 +114,8 @@ _CANCEL_INTENT_TYPES = {
     'stop_activity',
     'suspend',
 }
+_DEFAULT_PLANNER_PRIORITY = 128
+_MIN_PLANNER_CONFIDENCE = 0.5
 
 
 def should_route_intents_through_planner(
@@ -145,6 +148,7 @@ def build_planner_request_payload(
     user_text: str,
     turn_result,
     knowledge_context: str,
+    grounded_context: dict | None = None,
     planner_mode: str = 'auto',
     max_history_entries: int = 6,
     active_goal_id: str = '',
@@ -178,14 +182,17 @@ def build_planner_request_payload(
         'parent_goal_id': str(user_intent.get('parent_goal_id', '')).strip(),
         'supersedes_goal_id': str(user_intent.get('supersedes_goal_id', '')).strip(),
         'request_kind': request_kind,
-        'user_text': str(user_text or '').strip(),
+        'goal_text': _goal_text_from_user_intent(user_intent, user_text=user_text),
         'normalized_intents': _normalized_intents_for_turn(turn_result),
         'ack_text': ack_text,
         'ack_mode': ack_mode,
         'scene_targets': _scene_targets_from_user_intent(user_intent),
         'dialogue_context': dialogue_context,
         'requested_plan': requested_plan,
-        'grounded_context': _grounded_context_payload(knowledge_context),
+        'grounded_context': _grounded_context_payload(
+            knowledge_context,
+            grounded_context=grounded_context,
+        ),
         'planner_mode': resolved_planner_mode,
         'interaction_mode': str(user_intent.get('interaction_mode', 'speech')).strip()
         or 'speech',
@@ -201,6 +208,7 @@ def build_planner_request_intent(
     source_user_id: str,
     turn_result,
     knowledge_context: str,
+    grounded_context: dict | None = None,
     planner_request_intent: str = 'planner_request',
     planner_mode: str = 'auto',
     max_history_entries: int = 6,
@@ -212,6 +220,7 @@ def build_planner_request_intent(
         user_text=user_text,
         turn_result=turn_result,
         knowledge_context=knowledge_context,
+        grounded_context=grounded_context,
         planner_mode=planner_mode,
         max_history_entries=max_history_entries,
         active_goal_id=active_goal_id,
@@ -220,8 +229,8 @@ def build_planner_request_intent(
     intent.intent = str(planner_request_intent or 'planner_request').strip() or 'planner_request'
     intent.source = str(source_user_id).strip() or getattr(Intent, 'UNKNOWN_AGENT', 'unknown_agent')
     intent.modality = getattr(Intent, 'MODALITY_SPEECH', 'speech')
-    intent.confidence = float(getattr(turn_result, 'intent_confidence', 0.0))
-    intent.priority = 0
+    intent.confidence = _planner_confidence(turn_result)
+    intent.priority = _DEFAULT_PLANNER_PRIORITY
     intent.data = json.dumps(payload, separators=(',', ':'))
     return intent
 
@@ -281,6 +290,24 @@ def _resolved_ack_mode(user_intent: dict) -> str:
     return str(user_intent.get('ack_mode', '')).strip() or 'say'
 
 
+def _goal_text_from_user_intent(user_intent: dict, *, user_text: str) -> str:
+    for key in ('goal_text', 'goal', 'task'):
+        clean_value = str(user_intent.get(key, '')).strip()
+        if clean_value:
+            return clean_value
+    return str(user_text or '').strip()
+
+
+def _planner_confidence(turn_result) -> float:
+    try:
+        confidence = float(getattr(turn_result, 'intent_confidence', 0.0))
+    except (TypeError, ValueError):
+        confidence = 0.0
+    if confidence <= 0.0 and _normalize_token(getattr(turn_result, 'route', '')) == 'execution':
+        return _MIN_PLANNER_CONFIDENCE
+    return max(0.0, min(1.0, confidence))
+
+
 def _resolved_planner_mode(
     *,
     planner_mode: str,
@@ -299,17 +326,22 @@ def _resolved_planner_mode(
     return 'default'
 
 
-def _grounded_context_payload(knowledge_context: str) -> dict:
+def _grounded_context_payload(
+    knowledge_context: str,
+    *,
+    grounded_context: dict | None = None,
+) -> dict:
+    payload = normalize_grounded_context(grounded_context or {})
     clean_knowledge_context = str(knowledge_context or '').strip()
-    knowledge_snapshot = {}
-    if clean_knowledge_context:
-        knowledge_snapshot = {'summary_text': clean_knowledge_context}
-    return {
-        'knowledge_snapshot': knowledge_snapshot,
-        'scene_summary': {},
-        'world_model_snapshot': {},
-        'world_model_text': '',
-    }
+    if not clean_knowledge_context:
+        return payload
+
+    knowledge_snapshot = dict(payload.get('knowledge_snapshot', {}))
+    summary_text = str(knowledge_snapshot.get('summary_text', '')).strip()
+    if not summary_text:
+        knowledge_snapshot['summary_text'] = clean_knowledge_context
+    payload['knowledge_snapshot'] = knowledge_snapshot
+    return payload
 
 
 def _resolved_request_kind(user_intent: dict, resolved_intent: str) -> str:

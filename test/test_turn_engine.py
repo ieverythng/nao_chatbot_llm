@@ -32,6 +32,7 @@ def make_config(
         context_window_tokens=4096,
         temperature=0.2,
         top_p=0.9,
+        think=False,
         fallback_response='fallback',
         max_history_messages=20,
         scene_memory_turns=4,
@@ -52,6 +53,9 @@ def make_config(
         planner_mode_enabled=planner_mode_enabled,
         planner_request_topic='/planner/request',
         planner_request_intent='planner_request',
+        planner_scene_summary_topic='/scene/summary',
+        planner_world_model_snapshot_topic='/world_model/enriched_snapshot',
+        planner_world_model_text_topic='/world_model/enriched_text',
         knowledge_enabled=False,
         knowledge_query_service_name='/kb/query',
         knowledge_query_timeout_sec=0.5,
@@ -116,6 +120,8 @@ def test_turn_engine_llm_mode_uses_two_stage_json_outputs():
     assert result.intent == 'head_look_left'
     assert result.intent_source == 'llm_intent'
     assert result.intent_confidence == 0.85
+    assert transport.calls[0]['think'] is False
+    assert transport.calls[1]['think'] is False
     assert result.user_intent == {'type': 'head_look_left'}
     assert result.route == 'execution'
     assert result.verbal_ack == 'Sure. I am turning my head to the left.'
@@ -256,3 +262,21 @@ def test_turn_engine_planner_mode_infers_execution_route_without_second_call():
     assert result.route == 'execution'
     assert result.intent == 'posture_stand'
     assert result.intent_source == 'llm_response_inferred_route'
+
+
+def test_turn_engine_forwards_think_flag_to_transport():
+    transport = FakeTransport(
+        ['{"verbal_ack":"Sure.","user_intent":{"type":"help"},"confidence":0.4}']
+    )
+    config = make_config(intent_mode='llm', planner_mode_enabled=True)
+    config = ChatbotConfig(**{**config.__dict__, 'think': True})
+    engine = DialogueTurnEngine(
+        config=config,
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    engine.execute_turn(user_text='help me', history=[], user_id='user1')
+
+    assert transport.calls[0]['think'] is True

@@ -546,6 +546,7 @@ class DialogueTurnEngine:
             model=self._config.model,
             temperature=self._config.temperature,
             top_p=self._config.top_p,
+            think=self._config.think,
             response_format=self._config.response_schema,
         )
         if not raw_response:
@@ -616,6 +617,7 @@ class DialogueTurnEngine:
             model=self._config.intent_model,
             temperature=self._config.temperature,
             top_p=self._config.top_p,
+            think=self._config.think,
             response_format=self._config.intent_schema,
         )
         if not raw_response:

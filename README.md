@@ -1,222 +1,100 @@
 # chatbot_llm
 
-`chatbot_llm` is the upstream-aligned chatbot backend used by the migrated
-NAO ROS4HRI stack.
+`chatbot_llm` is the ROS4HRI chatbot backend used by the NAO stack. It keeps the
+public `dialogue_manager` backend contract while adding local grounding,
+intent-declaration, and planner-routing behavior.
 
-It keeps the public ROS contract expected by `dialogue_manager` while using the
-local Ollama prompt, history, and direct-or-planner routing pipeline
-internally.
+This package is editable for the current planner work. Keep changes aligned with
+the upstream backend contract.
 
-## ROS API
+## Owns
 
-- action: `<prefix>/start_dialogue`
-  - type: `chatbot_msgs/action/Dialogue`
-- service: `<prefix>/dialogue_interaction`
-  - type: `chatbot_msgs/srv/DialogueInteraction`
+- `chatbot_msgs/action/Dialogue` backend action.
+- `chatbot_msgs/srv/DialogueInteraction` backend service.
+- prompt construction, history, and Ollama-compatible transport.
+- KnowledgeCore snapshot injection through `kb_skills`.
+- direct intent extraction and planner request publication.
 
-The default backend prefix is `chatbot_llm`.
+It does not own robot execution, final skill dispatch, or planner supervision.
 
-## Turn Pipeline
+## Public ROS API
 
-One interaction turn follows this path:
+| Interface | Type | Purpose |
+| --- | --- | --- |
+| `<prefix>/start_dialogue` | `chatbot_msgs/action/Dialogue` | Open backend dialogue |
+| `<prefix>/dialogue_interaction` | `chatbot_msgs/srv/DialogueInteraction` | Process one user turn |
+| `/planner/request` | `hri_actions_msgs/msg/Intent` | Planner ingress when planner mode is enabled |
 
-1. `dialogue_manager` opens a dialogue action and forwards user turns through
-   `dialogue_interaction`.
-2. `chatbot_llm` loads bounded chat history and optional role configuration.
-3. If knowledge grounding is enabled, it queries `KnowledgeCore` before prompt
-   assembly.
-4. The response model generates `verbal_ack`.
-5. In planner mode, that same response stage can also return a coarse `route`
-   such as `dialogue`, `knowledge_query`, or `execution`.
-6. Direct-mode turns still use the intent model, or rule fallback, to generate
-   translated HRI intents.
-7. Planner-mode execution turns publish `/planner/request` instead of trying to
-   execute directly through `/intents`.
+## Planner Role
 
-Main implementation modules:
+`chatbot_llm` should declare intent and route execution turns. The planner should
+not have to re-parse raw user language as its primary API.
 
-- `node_impl.py`: lifecycle node and ROS contract
-- `turn_engine.py`: response generation plus planner-aware routing
-- `knowledge_snapshot_client.py`: read-only `/kb/query` client
-- `knowledge_snapshot.py`: role-level settings merge and snapshot formatting
-- `ollama_transport.py`: HTTP backend transport
-- `prompt_pack.py` and `prompt_builders.py`: prompt loading and assembly
-- `skill_catalog.py`: installed skill summary
-- `chat_history.py`: bounded dialogue history
-- `intent_rules.py` and `intent_adapter.py`: fallback and intent translation
-- `planner_request_adapter.py`: `/planner/request` payload construction
+Preferred planner request inputs:
 
-The intent pipeline now preserves a small set of execution-oriented metadata in
-`Intent.data` so downstream routing can stay flexible without changing the ROS
-message type:
+- `goal_text`: concise task goal for the planner.
+- `normalized_intents`: strict intent labels.
+- `scene_targets`: grounded labels/entities.
+- `grounded_context`: KB/scene/world context.
+- `requested_plan`: optional hint/fallback.
 
-- `ack_text`
-- `ack_mode`
-- `scene_targets`
-- `plan`
+The current implementation publishes `goal_text`, `normalized_intents`,
+`requested_plan`, and `grounded_context`. It deliberately omits raw
+`user_text` from normal planner requests.
 
-The package also preserves scene-query intents as explicit labels:
+## Knowledge Snapshot Role
 
-- `kb_query_visible_people`
-- `kb_query_visible_objects`
-- `kb_query_scene_change`
+`knowledge_snapshot` is local prompt context, not a native KnowledgeCore object.
 
-## Current End-To-End Flow
+Current path:
 
-The current grounded turn flow now looks like this:
-
-1. `dialogue_manager` forwards the user turn into `chatbot_llm`
-2. if object grounding is active, the detector backend publishes raw detections
-   and `nao_scene_grounding` refreshes transient object facts in
-   `knowledge_core`
-3. `chatbot_llm` reads the current grounded scene through `/kb/query` and
-   formats that result into the `knowledge_snapshot` prompt block
-4. the response model produces the spoken reply or `verbal_ack`
-5. in planner mode, that response stage can mark the turn as `execution`, which
-   causes `chatbot_llm` to publish `/planner/request`
-6. in direct mode, the intent stage still produces structured intent payloads
-7. `intent_adapter.py` preserves richer metadata in `Intent.data`, including
-   `ack_text`, `ack_mode`, `scene_targets`, and optional `plan` steps
-8. `nao_orchestrator` consumes those downstream and can either execute the
-   structured `plan` or fall back to legacy routing rules
-
-Object detection therefore influences `chatbot_llm` indirectly through KB
-grounding, not through a detector-specific direct subscription inside this
-package.
-
-## KnowledgeCore Grounding
-
-`knowledge_core` does not directly push prompt text into `chatbot_llm`.
-The grounding seam lives inside this package.
-
-Current behavior:
-
-- `chatbot_llm` calls `/kb/query` using `kb_msgs/srv/Query`
-- the default query group is:
-  `myself sees ?entity && ?entity rdf:type ?type`
-- the service returns a JSON-encoded list of binding dictionaries
-- `chatbot_llm` formats that result into a bounded text block and appends it to
-  the response and intent prompts
-- the prompt builder labels it as live scene state, and the node also keeps a
-  short recent-scene-memory trail across turns
-- if object grounding is enabled elsewhere in the stack, those detector-derived
-  facts arrive through the same `/kb/query` seam rather than a separate object
-  detector API inside `chatbot_llm`
-
-Example `/kb/query` response payload shape:
-
-```json
-[
-  {"entity": "face_1", "type": "Person"},
-  {"entity": "mug_1", "type": "Mug"}
-]
+```text
+knowledge_core -> /kb/query -> kb_skills -> chatbot_llm
+chatbot_llm -> formatted knowledge_snapshot -> response/intent prompts
 ```
 
-Example dialogue-role override:
+Default query group:
 
-```json
-{
-  "knowledge_snapshot": {
-    "enabled": true,
-    "query_groups": [
-      "myself sees ?entity && ?entity rdf:type ?type"
-    ],
-    "patterns": [
-      "myself sees ?entity",
-      "?entity rdf:type ?type"
-    ],
-    "vars": ["?entity", "?type"],
-    "models": [],
-    "max_results": 40,
-    "max_chars": 3000
-  }
-}
-```
-
-If no `knowledge_snapshot` block is provided in `role.configuration`, the node
-falls back to its launch defaults.
-
-The live snapshot is complemented by a short recent-scene-memory trail so the
-response and intent prompts can reason about what changed across turns, not
-only what is visible right now.
-
-Historical note:
-
-- before the local KB grounding work landed, this package had no
-  `knowledge_*` parameters, no `/kb/query` client, and no knowledge snapshot
-  prompt block
-- the injection seam is therefore a local `chatbot_llm` extension, not an
-  upstream `knowledge_core` feature
-
-## Launch
-
-Standalone:
-
-```bash
-ros2 launch chatbot_llm chatbot_llm.launch.py
-```
-
-As part of the migrated stack:
-
-```bash
-ros2 launch nao_chatbot nao_chatbot_sim.launch.py
-ros2 launch nao_chatbot nao_chatbot_robot.launch.py nao_ip:=172.26.112.62
-ros2 launch nao_chatbot nao_chatbot_robot_asr.launch.py nao_ip:=172.26.112.62
+```text
+myself sees ?entity && ?entity rdf:type ?type
 ```
 
 ## Important Parameters
 
-The lifecycle node declares conservative built-in defaults and then loads the
-effective package defaults from `config/00-defaults.yml`. The table below
-reflects the shipped launch defaults.
+Defaults live in `config/00-defaults.yml`.
 
-| Parameter | Default | Purpose |
-| --- | --- | --- |
-| `server_url` | `http://localhost:11434/api/chat` | Backend HTTP endpoint |
-| `model` | `llama3.2:1b` | Main response model |
-| `intent_model` | `""` | Optional dedicated intent model |
-| `planner_mode_enabled` | `false` | Route execution-oriented turns to `/planner/request` |
-| `planner_request_topic` | `/planner/request` | Planner ingress topic used in planner mode |
-| `planner_request_intent` | `planner_request` | Intent label stamped on planner ingress messages |
-| `system_prompt` | built-in default | Main persona/system prompt |
-| `prompt_pack_path` | `""` | Optional YAML override for prompt pack |
-| `use_skill_catalog` | `true` | Include discovered skills in prompts |
-| `intent_detection_mode` | `llm_with_rules_fallback` | Intent extraction strategy |
-| `request_timeout_sec` | `20.0` | Response request timeout |
-| `intent_request_timeout_sec` | `10.0` | Intent request timeout |
-| `max_history_messages` | `20` | Conversation history bound |
-| `scene_memory_turns` | `4` | Number of recent scene summaries retained |
-| `knowledge_enabled` | `true` | Enable read-only KB grounding by default |
-| `knowledge_query_service_name` | `/kb/query` | Query service used for snapshots |
-| `knowledge_default_query_groups` | `myself sees ?entity && ?entity rdf:type ?type` | Default grouped KB query |
-| `knowledge_default_vars` | `?entity, ?type` | Variables requested from `/kb/query` |
-| `knowledge_max_results` | `40` | Snapshot row cap before formatting |
-| `knowledge_max_chars` | `3000` | Prompt budget reserved for snapshot text |
+- `server_url`
+- `model`
+- `intent_model`
+- `think`: forwarded as Ollama `think=false/true`; default is `false`.
+- `planner_mode_enabled`
+- `planner_request_topic`
+- `planner_request_intent`
+- `planner_scene_summary_topic`
+- `planner_world_model_snapshot_topic`
+- `planner_world_model_text_topic`
+- `knowledge_enabled`
+- `knowledge_query_service_name`
+- `knowledge_default_query_groups`
+- `knowledge_max_results`
+- `knowledge_max_chars`
+- `scene_memory_turns`
 
-## Operational Notes
+The default response and intent model is currently `qwen3.5:397b-cloud` with
+`think: false`. For a lower-variance fallback, override `model` and
+`intent_model` from the launch profile or package config.
 
-- this repo is a fork-tracked upstream package; keep ROS-facing changes aligned
-  with the upstream `chatbot_llm` contract
-- package naming stays `chatbot_llm` even though the local implementation is
-  the NAO-specific backend used by this workspace
-- the package defaults still ship with `model=llama3.2:1b`, but the shared
-  `nao_chatbot` sim/robot wrappers override that to `gpt-oss:120b-cloud`
-- robot-side dispatch must stay out of this package; `/intents` consumers belong
-  in `nao_orchestrator`
-- planner mode keeps immediate spoken acknowledgement in `chatbot_llm`, while
-  downstream execution ownership moves to `planner_llm` plus `nao_orchestrator`
-- `plan` generation is advisory metadata for downstream execution, not direct
-  robot control from inside `chatbot_llm`
-
-## Verification
+## Tests
 
 ```bash
-colcon build --packages-select chatbot_llm
-colcon test --packages-select chatbot_llm
-ros2 launch chatbot_llm chatbot_llm.launch.py --show-args
+cd src/chatbot_llm
+PYTHONPATH="$PWD:../planner_common:../kb_skills" \
+python3 -m pytest -q test/test_planner_request_adapter.py
 ```
 
-## Development Hooks
+## Design Notes
 
-This repo ships its own `.pre-commit-config.yaml` so it can be validated
-independently from the monorepo workspace hooks.
+- Keep `dialogue_manager` as the dialogue/speaking owner.
+- Keep `planner_llm` as the planner/supervisor.
+- Keep `nao_orchestrator` as the executor.
+- Use `say` as a plan step when speech order matters.

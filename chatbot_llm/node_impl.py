@@ -16,6 +16,7 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.lifecycle import Node
 from rclpy.lifecycle import State
 from rclpy.lifecycle import TransitionCallbackReturn
+from std_msgs.msg import String
 
 from chatbot_llm.backend_config import ChatbotConfig
 from chatbot_llm.backend_config import declare_backend_parameters
@@ -92,6 +93,9 @@ class LLMChatbot(Node):
         self._diag_pub = None
         self._diag_timer = None
         self._planner_request_pub = None
+        self._planner_scene_summary_sub = None
+        self._planner_world_model_snapshot_sub = None
+        self._planner_world_model_text_sub = None
 
         self._config: ChatbotConfig | None = None
         self._transport = None
@@ -104,6 +108,9 @@ class LLMChatbot(Node):
         self._dialogue_id: tuple[int, ...] | None = None
         self._dialogue_result: Dialogue.Result | None = None
         self._session: DialogueSession | None = None
+        self._planner_scene_summary_payload: dict = {}
+        self._planner_world_model_snapshot: dict = {}
+        self._planner_world_model_text = ''
 
         self.get_logger().info('Chatbot backend created, awaiting lifecycle configuration.')
 
@@ -374,6 +381,24 @@ class LLMChatbot(Node):
                 self._config.planner_request_topic,
                 10,
             )
+            self._planner_scene_summary_sub = self.create_subscription(
+                String,
+                self._config.planner_scene_summary_topic,
+                self._on_planner_scene_summary,
+                10,
+            )
+            self._planner_world_model_snapshot_sub = self.create_subscription(
+                String,
+                self._config.planner_world_model_snapshot_topic,
+                self._on_planner_world_model_snapshot,
+                10,
+            )
+            self._planner_world_model_text_sub = self.create_subscription(
+                String,
+                self._config.planner_world_model_text_topic,
+                self._on_planner_world_model_text,
+                10,
+            )
 
         if GetLocales is not None and SetLocale is not None:
             self._get_supported_locales_server = self.create_service(
@@ -459,6 +484,15 @@ class LLMChatbot(Node):
         if self._planner_request_pub is not None:
             self.destroy_publisher(self._planner_request_pub)
             self._planner_request_pub = None
+        if self._planner_scene_summary_sub is not None:
+            self.destroy_subscription(self._planner_scene_summary_sub)
+            self._planner_scene_summary_sub = None
+        if self._planner_world_model_snapshot_sub is not None:
+            self.destroy_subscription(self._planner_world_model_snapshot_sub)
+            self._planner_world_model_snapshot_sub = None
+        if self._planner_world_model_text_sub is not None:
+            self.destroy_subscription(self._planner_world_model_text_sub)
+            self._planner_world_model_text_sub = None
 
         if self._dialogue_start_action is not None:
             self._dialogue_start_action.destroy()
@@ -572,6 +606,7 @@ class LLMChatbot(Node):
                 source_user_id=user_id,
                 turn_result=result,
                 knowledge_context=knowledge_context,
+                grounded_context=self._planner_grounded_context(knowledge_context),
                 planner_request_intent=self._config.planner_request_intent,
                 active_goal_id=session.active_planner_goal_id,
             )
@@ -603,6 +638,35 @@ class LLMChatbot(Node):
             ),
         )
         return True
+
+    def _on_planner_scene_summary(self, msg: String) -> None:
+        try:
+            payload = json.loads(str(msg.data or '').strip() or '{}')
+        except json.JSONDecodeError:
+            payload = {}
+        self._planner_scene_summary_payload = payload if isinstance(payload, dict) else {}
+
+    def _on_planner_world_model_snapshot(self, msg: String) -> None:
+        try:
+            payload = json.loads(str(msg.data or '').strip() or '{}')
+        except json.JSONDecodeError:
+            payload = {}
+        self._planner_world_model_snapshot = payload if isinstance(payload, dict) else {}
+
+    def _on_planner_world_model_text(self, msg: String) -> None:
+        self._planner_world_model_text = str(msg.data or '').strip()
+
+    def _planner_grounded_context(self, knowledge_context: str) -> dict:
+        knowledge_snapshot = {}
+        clean_knowledge_context = str(knowledge_context or '').strip()
+        if clean_knowledge_context:
+            knowledge_snapshot['summary_text'] = clean_knowledge_context
+        return {
+            'knowledge_snapshot': knowledge_snapshot,
+            'scene_summary': dict(self._planner_scene_summary_payload),
+            'world_model_snapshot': dict(self._planner_world_model_snapshot),
+            'world_model_text': self._planner_world_model_text,
+        }
 
     def _terminate_active_dialogue(self, error_msg: str) -> None:
         """Unblock the action execution loop if a dialogue is still active."""

@@ -45,6 +45,7 @@ class ChatbotConfig:
     context_window_tokens: int
     temperature: float
     top_p: float
+    think: bool
     fallback_response: str
     max_history_messages: int
     scene_memory_turns: int
@@ -65,6 +66,9 @@ class ChatbotConfig:
     planner_mode_enabled: bool
     planner_request_topic: str
     planner_request_intent: str
+    planner_scene_summary_topic: str
+    planner_world_model_snapshot_topic: str
+    planner_world_model_text_topic: str
     knowledge_enabled: bool
     knowledge_query_service_name: str
     knowledge_query_timeout_sec: float
@@ -83,7 +87,7 @@ class ChatbotConfig:
 def declare_backend_parameters(node) -> None:
     """Declare lifecycle parameters used by the migrated backend."""
     node.declare_parameter('server_url', 'http://localhost:11434/api/chat')
-    node.declare_parameter('model', 'llama3.2:1b')
+    node.declare_parameter('model', 'qwen3.5:397b-cloud')
     node.declare_parameter('api_key', '')
     node.declare_parameter('system_prompt', '')
 
@@ -95,6 +99,7 @@ def declare_backend_parameters(node) -> None:
     node.declare_parameter('context_window_tokens', 4096)
     node.declare_parameter('temperature', 0.2)
     node.declare_parameter('top_p', 0.9)
+    node.declare_parameter('think', False)
     node.declare_parameter(
         'fallback_response',
         'I am having trouble reaching my language model right now.',
@@ -120,6 +125,9 @@ def declare_backend_parameters(node) -> None:
     node.declare_parameter('planner_mode_enabled', False)
     node.declare_parameter('planner_request_topic', '/planner/request')
     node.declare_parameter('planner_request_intent', 'planner_request')
+    node.declare_parameter('planner_scene_summary_topic', '/scene/summary')
+    node.declare_parameter('planner_world_model_snapshot_topic', '/world_model/enriched_snapshot')
+    node.declare_parameter('planner_world_model_text_topic', '/world_model/enriched_text')
     node.declare_parameter('knowledge_enabled', False)
     node.declare_parameter('knowledge_query_service_name', '/kb/query')
     node.declare_parameter('knowledge_query_timeout_sec', 0.5)
@@ -200,6 +208,7 @@ def load_backend_config(node) -> ChatbotConfig:
         ),
         temperature=float(node.get_parameter('temperature').value),
         top_p=float(node.get_parameter('top_p').value),
+        think=as_bool(node.get_parameter('think').value),
         fallback_response=str(node.get_parameter('fallback_response').value),
         max_history_messages=max(
             0,
@@ -239,6 +248,18 @@ def load_backend_config(node) -> ChatbotConfig:
         or '/planner/request',
         planner_request_intent=str(node.get_parameter('planner_request_intent').value).strip()
         or 'planner_request',
+        planner_scene_summary_topic=str(
+            node.get_parameter('planner_scene_summary_topic').value
+        ).strip()
+        or '/scene/summary',
+        planner_world_model_snapshot_topic=str(
+            node.get_parameter('planner_world_model_snapshot_topic').value
+        ).strip()
+        or '/world_model/enriched_snapshot',
+        planner_world_model_text_topic=str(
+            node.get_parameter('planner_world_model_text_topic').value
+        ).strip()
+        or '/world_model/enriched_text',
         knowledge_enabled=as_bool(node.get_parameter('knowledge_enabled').value),
         knowledge_query_service_name=str(
             node.get_parameter('knowledge_query_service_name').value

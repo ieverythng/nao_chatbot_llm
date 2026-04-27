@@ -28,6 +28,7 @@ class OllamaTransport:
         model: str,
         temperature: float,
         top_p: float,
+        think: bool = False,
         response_format: dict | None = None,
     ) -> str:
         """Run one non-streaming chat request against Ollama."""
@@ -35,6 +36,7 @@ class OllamaTransport:
             'model': model,
             'messages': messages,
             'stream': False,
+            'think': bool(think),
             'options': {
                 'num_ctx': self._context_window_tokens,
                 'temperature': float(temperature),

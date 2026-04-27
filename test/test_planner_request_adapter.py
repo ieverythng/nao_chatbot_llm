@@ -44,7 +44,7 @@ def test_build_planner_request_payload_derives_scene_targets_and_bounds_context(
         'parent_goal_id': '',
         'supersedes_goal_id': '',
         'request_kind': 'new_goal',
-        'user_text': 'bring me the cup',
+        'goal_text': 'bring me the cup',
         'normalized_intents': ['bring_object'],
         'ack_text': 'I will bring the cup.',
         'ack_mode': 'say',
@@ -88,11 +88,46 @@ def test_build_planner_request_intent_encodes_expected_message_shape():
     assert msg.intent == 'planner_request'
     assert msg.source == 'user1'
     assert msg.confidence == 0.6
+    assert msg.priority == 128
     payload = json.loads(msg.data)
     assert payload['normalized_intents'] == ['head_look_left']
     assert payload['ack_mode'] == 'auto'
     assert payload['goal_id'] == 'goal_turn_2'
     assert payload['request_kind'] == 'new_goal'
+
+
+def test_build_planner_request_intent_uses_confidence_floor_for_execution_route():
+    msg = build_planner_request_intent(
+        turn_id='turn_floor',
+        user_text='look around',
+        source_user_id='user1',
+        turn_result=_make_result(intent_confidence=0.0, route='execution'),
+        knowledge_context='',
+    )
+
+    assert msg.confidence == 0.5
+    assert msg.priority == 128
+
+
+def test_build_planner_request_payload_keeps_richer_grounded_context() -> None:
+    payload = build_planner_request_payload(
+        turn_id='turn_grounded',
+        user_text='look at the cup',
+        turn_result=_make_result(),
+        knowledge_context='cup isOn table',
+        grounded_context={
+            'scene_summary': {'objects': [{'label': 'cup'}]},
+            'world_model_snapshot': {'entities': ['cup_1']},
+            'world_model_text': 'cup_1 is reachable',
+        },
+    )
+
+    assert payload['grounded_context'] == {
+        'knowledge_snapshot': {'summary_text': 'cup isOn table'},
+        'scene_summary': {'objects': [{'label': 'cup'}]},
+        'world_model_snapshot': {'entities': ['cup_1']},
+        'world_model_text': 'cup_1 is reachable',
+    }
 
 
 def test_build_planner_request_payload_splits_explicit_scene_targets_string():
@@ -141,6 +176,23 @@ def test_build_planner_request_payload_marks_multi_step_turns_for_planner_mode()
 
     assert payload['normalized_intents'] == ['head_look_up']
     assert payload['planner_mode'] == 'multi_step'
+
+
+def test_build_planner_request_payload_prefers_explicit_goal_text() -> None:
+    payload = build_planner_request_payload(
+        turn_id='turn_goal',
+        user_text='please do the thing we discussed',
+        turn_result=_make_result(
+            user_intent={
+                'type': 'inspect_scene',
+                'goal_text': 'inspect the cup and report completion',
+            }
+        ),
+        knowledge_context='',
+    )
+
+    assert payload['goal_text'] == 'inspect the cup and report completion'
+    assert 'user_text' not in payload
 
 
 def test_build_planner_request_payload_preserves_requested_plan_and_filters_ack_step():
