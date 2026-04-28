@@ -130,6 +130,33 @@ def test_build_planner_request_payload_keeps_richer_grounded_context() -> None:
     }
 
 
+def test_build_planner_request_payload_sanitizes_assistant_json_history() -> None:
+    payload = build_planner_request_payload(
+        turn_id='turn_sanitize',
+        user_text='please stand up',
+        turn_result=_make_result(
+            updated_history=[
+                'user:move your head right now',
+                (
+                    'assistant:{"verbal_ack":"Okay, turning my head to the right now.",'
+                    '"route":"execution","user_intent":{"type":"move_head"}}'
+                ),
+                'user:please stand up',
+            ],
+            verbal_ack='Sure. I am switching to a standing posture.',
+            intent='posture_stand',
+            user_intent={'type': 'posture_stand'},
+        ),
+        knowledge_context='',
+    )
+
+    assert payload['dialogue_context'] == [
+        'user:move your head right now',
+        'assistant:Okay, turning my head to the right now.',
+        'user:please stand up',
+    ]
+
+
 def test_build_planner_request_payload_splits_explicit_scene_targets_string():
     payload = build_planner_request_payload(
         turn_id='turn_3',
@@ -195,7 +222,7 @@ def test_build_planner_request_payload_prefers_explicit_goal_text() -> None:
     assert 'user_text' not in payload
 
 
-def test_build_planner_request_payload_preserves_requested_plan_and_filters_ack_step():
+def test_build_planner_request_payload_ignores_plan_hints_from_chatbot_result():
     payload = build_planner_request_payload(
         turn_id='turn_hint',
         user_text='stand up and then tell me when you are done',
@@ -227,19 +254,8 @@ def test_build_planner_request_payload_preserves_requested_plan_and_filters_ack_
         knowledge_context='',
     )
 
-    assert payload['normalized_intents'] == ['posture_stand']
-    assert payload['requested_plan'] == [
-        {
-            'type': 'skill',
-            'name': 'perform_motion',
-            'args': {'object': 'stand'},
-        },
-        {
-            'type': 'say',
-            'name': 'say',
-            'args': {'text': 'I am standing now.'},
-        },
-    ]
+    assert payload['normalized_intents'] == ['fallback']
+    assert payload['requested_plan'] == []
 
 
 def test_should_route_intents_through_planner_only_for_execution_intents():
@@ -279,7 +295,7 @@ def test_build_planner_request_payload_reuses_active_goal_for_cancel_request():
     assert payload['goal_id'] == 'goal_existing'
 
 
-def test_should_route_intents_through_planner_for_fallback_with_plan() -> None:
+def test_should_route_intents_through_planner_ignores_fallback_plan_hint() -> None:
     result = _make_result(
         intent='fallback',
         user_intent={
@@ -297,9 +313,10 @@ def test_should_route_intents_through_planner_for_fallback_with_plan() -> None:
                 },
             ],
         },
+        route='dialogue',
     )
 
-    assert should_route_intents_through_planner([], turn_result=result) is True
+    assert should_route_intents_through_planner([], turn_result=result) is False
 
 
 def test_should_route_intents_through_planner_for_explicit_execution_route() -> None:

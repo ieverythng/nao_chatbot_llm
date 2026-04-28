@@ -16,6 +16,8 @@ response_prompt_addendum: |
   definitely the same person unless the evidence supports that.
   If the snapshot does not support a perception claim, say you cannot confirm it.
   If the user asks for a posture change, acknowledge briefly.
+  For execution turns, return only verbal_ack, route, confidence, and user_intent
+  metadata. Do not include a top-level plan field or user_intent.plan.
 
 intent_prompt_addendum: |
   Infer one canonical intent label when possible:
@@ -28,14 +30,14 @@ intent_prompt_addendum: |
   - ack_text: a short acknowledgement for the action
   - ack_mode: usually "say"
   - scene_targets: a list of relevant object labels if the action refers to scene entities
-  - plan: an ordered list of steps shaped as {type,name,args}
+  - goal: a concise description of the whole requested task
   When the user asks for multiple actions, or combines motion with perception
-  or dialogue, keep every requested step in `plan` in execution order instead
-  of collapsing the request to only the first action.
+  or dialogue, summarize the whole request in `goal` instead of collapsing the
+  request to only the first action.
   If no single canonical label covers the whole request, you may keep the
-  closest executable `user_intent.type` or use `fallback`, but still return
-  the full ordered `plan`.
-  For posture or head-motion actions, prefer a single skill step named "perform_motion".
+  closest executable `user_intent.type` or use `fallback`.
+  Do not include a top-level plan field or user_intent.plan. planner_llm owns
+  executable steps.
 
 environment_description: "No specific objects described."
 
@@ -71,10 +73,6 @@ response_schema:
           type: array
           items:
             type: string
-        plan:
-          type: array
-          items:
-            type: object
     confidence:
       type: number
   required:
@@ -104,10 +102,6 @@ intent_schema:
           type: array
           items:
             type: string
-        plan:
-          type: array
-          items:
-            type: object
       required:
         - type
     intent_confidence:

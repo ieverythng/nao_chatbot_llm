@@ -21,6 +21,8 @@ def make_config() -> ChatbotConfig:
         temperature=0.2,
         top_p=0.9,
         think=False,
+        response_max_tokens=64,
+        intent_max_tokens=64,
         fallback_response='fallback',
         max_history_messages=20,
         scene_memory_turns=4,

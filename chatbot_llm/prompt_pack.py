@@ -23,11 +23,17 @@ DEFAULT_SYSTEM_PROMPT = (
 
 DEFAULT_RESPONSE_PROMPT_ADDENDUM = (
     'Reply with short natural spoken text suitable for TTS. '
-    'Avoid markdown and avoid long lists.'
+    'Avoid markdown and avoid long lists. '
+    'For execution turns, return only verbal_ack, route, confidence, and '
+    'user_intent metadata. Do not include a top-level plan field or '
+    'user_intent.plan.'
 )
 
 DEFAULT_INTENT_PROMPT_ADDENDUM = (
-    'Map user requests to one canonical intent label when possible.'
+    'Map user requests to one canonical intent label when possible. '
+    'When the user requests an action, you may return ack_text, ack_mode, '
+    'scene_targets, and goal. Do not include a top-level plan field or '
+    'user_intent.plan.'
 )
 
 DEFAULT_ENVIRONMENT_DESCRIPTION = 'No specific objects described.'
@@ -54,10 +60,6 @@ DEFAULT_RESPONSE_SCHEMA: dict[str, Any] = {
                     'type': 'array',
                     'items': {'type': 'string'},
                 },
-                'plan': {
-                    'type': 'array',
-                    'items': {'type': 'object'},
-                },
             },
         },
         'confidence': {'type': 'number'},
@@ -76,6 +78,12 @@ DEFAULT_INTENT_SCHEMA: dict[str, Any] = {
                 'recipient': {'type': 'string'},
                 'input': {'type': 'string'},
                 'goal': {'type': 'string'},
+                'ack_text': {'type': 'string'},
+                'ack_mode': {'type': 'string'},
+                'scene_targets': {
+                    'type': 'array',
+                    'items': {'type': 'string'},
+                },
             },
             'required': ['type'],
         },

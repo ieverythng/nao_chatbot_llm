@@ -25,7 +25,9 @@ DEFAULT_RESPONSE_PROMPT_ADDENDUM = (
     'in recent scene memory from earlier turns. '
     'If a face/person entity is present without a name, say you detect someone '
     'without inventing an identity. '
-    'Posture requests should map to stand, sit, or kneel motions when relevant.'
+    'Posture requests should map to stand, sit, or kneel motions when relevant. '
+    'For execution turns, return only verbal_ack, route, confidence, and user_intent '
+    'metadata. Do not include a top-level plan field or user_intent.plan.'
 )
 
 
@@ -46,6 +48,8 @@ class ChatbotConfig:
     temperature: float
     top_p: float
     think: bool
+    response_max_tokens: int
+    intent_max_tokens: int
     fallback_response: str
     max_history_messages: int
     scene_memory_turns: int
@@ -100,6 +104,8 @@ def declare_backend_parameters(node) -> None:
     node.declare_parameter('temperature', 0.2)
     node.declare_parameter('top_p', 0.9)
     node.declare_parameter('think', False)
+    node.declare_parameter('response_max_tokens', 64)
+    node.declare_parameter('intent_max_tokens', 64)
     node.declare_parameter(
         'fallback_response',
         'I am having trouble reaching my language model right now.',
@@ -209,6 +215,8 @@ def load_backend_config(node) -> ChatbotConfig:
         temperature=float(node.get_parameter('temperature').value),
         top_p=float(node.get_parameter('top_p').value),
         think=as_bool(node.get_parameter('think').value),
+        response_max_tokens=max(1, int(node.get_parameter('response_max_tokens').value)),
+        intent_max_tokens=max(1, int(node.get_parameter('intent_max_tokens').value)),
         fallback_response=str(node.get_parameter('fallback_response').value),
         max_history_messages=max(
             0,

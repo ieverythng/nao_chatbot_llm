@@ -15,6 +15,8 @@
     temperature: 0.2
     top_p: 0.9
     think: false
+    response_max_tokens: 64
+    intent_max_tokens: 64
     fallback_response: 'I am having trouble reaching my language model right now.'
     max_history_messages: 20
     scene_memory_turns: 4
@@ -34,6 +36,8 @@
       definitely the same person unless the evidence supports that.
       If the snapshot does not support a perception claim, say you cannot confirm it.
       If the user asks for a posture change, acknowledge briefly.
+      For execution turns, return only verbal_ack, route, confidence, and user_intent
+      metadata. Do not include a top-level plan field or user_intent.plan.
     intent_prompt_addendum: |
       Infer one canonical intent label when possible:
       posture_stand, posture_sit, posture_kneel,
@@ -41,6 +45,10 @@
       greet, identity, wellbeing, help,
       kb_query_visible_people, kb_query_visible_objects, kb_query_scene_change,
       fallback.
+      When the user requests an action, you may also return ack_text, ack_mode,
+      scene_targets, and goal.
+      Do not include a top-level plan field or user_intent.plan. planner_llm owns
+      executable steps.
     environment_description: 'No specific objects described.'
     identity_reminder_every_n_turns: 6
     intent_detection_mode: 'llm_with_rules_fallback'

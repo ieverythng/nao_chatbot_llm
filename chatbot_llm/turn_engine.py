@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 
 from chatbot_llm.backend_config import ChatbotConfig
@@ -165,7 +166,10 @@ class DialogueTurnEngine:
         )
         verbal_ack = str(response_payload.get('verbal_ack', '')).strip()
         if not verbal_ack:
-            if self._config.intent_detection_mode == 'llm_with_rules_fallback':
+            if (
+                self._config.intent_detection_mode == 'llm_with_rules_fallback'
+                and not self._config.planner_mode_enabled
+            ):
                 result = self._execute_rule_turn(
                     user_text=user_text,
                     history=history,
@@ -417,9 +421,6 @@ class DialogueTurnEngine:
         if clean_route:
             return clean_route
 
-        if _has_executable_plan(user_intent):
-            return _EXECUTION_ROUTE
-
         intent_route = self._route_for_intent(
             str(user_intent.get('type', '')).strip() or resolved_intent
         )
@@ -547,6 +548,7 @@ class DialogueTurnEngine:
             temperature=self._config.temperature,
             top_p=self._config.top_p,
             think=self._config.think,
+            max_tokens=self._config.response_max_tokens,
             response_format=self._config.response_schema,
         )
         if not raw_response:
@@ -554,7 +556,7 @@ class DialogueTurnEngine:
 
         parsed = _extract_json_object(raw_response)
         if parsed:
-            verbal_ack = str(parsed.get('verbal_ack', '')).strip()
+            verbal_ack = _ack_from_parsed_response(parsed)
             if verbal_ack:
                 payload = {'verbal_ack': verbal_ack}
                 route = _normalize_route(parsed.get('route', ''))
@@ -569,6 +571,12 @@ class DialogueTurnEngine:
                 if confidence > 0.0:
                     payload['confidence'] = confidence
                 return payload
+        ack_text = _extract_ack_text(raw_response)
+        if ack_text:
+            return {'verbal_ack': ack_text}
+        if _looks_like_json_payload(raw_response):
+            _warn(self._logger, 'Response JSON did not include a safe verbal acknowledgement')
+            return {'verbal_ack': self._config.fallback_response}
         return {'verbal_ack': str(raw_response).strip()}
 
     def _query_intent(
@@ -618,6 +626,7 @@ class DialogueTurnEngine:
             temperature=self._config.temperature,
             top_p=self._config.top_p,
             think=self._config.think,
+            max_tokens=self._config.intent_max_tokens,
             response_format=self._config.intent_schema,
         )
         if not raw_response:
@@ -720,6 +729,8 @@ def _parse_json_dict(payload: str) -> dict:
         parsed = json.loads(payload)
     except json.JSONDecodeError:
         return {}
+    if isinstance(parsed, str):
+        return _parse_json_dict(parsed)
     if not isinstance(parsed, dict):
         return {}
     return parsed
@@ -743,10 +754,97 @@ def _extract_json_object(payload: str) -> dict:
     return {}
 
 
+def _extract_ack_text(payload: str, _depth: int = 0) -> str:
+    if _depth > 3:
+        return ''
+    parsed = _extract_json_object(payload)
+    if parsed:
+        for key in ('verbal_ack', 'ack_text'):
+            text = str(parsed.get(key, '')).strip()
+            if text:
+                return text
+        for value in parsed.values():
+            if isinstance(value, dict):
+                nested_text = _extract_ack_text(json.dumps(value), _depth + 1)
+                if nested_text:
+                    return nested_text
+            elif isinstance(value, str):
+                nested_text = _extract_ack_text(value, _depth + 1)
+                if nested_text:
+                    return nested_text
+        response_text = str(parsed.get('response', '')).strip()
+        if response_text:
+            nested_text = _extract_ack_text(response_text, _depth + 1)
+            if nested_text:
+                return nested_text
+            return response_text
+        return ''
+
+    # Be permissive when the model drifts into "almost JSON" formatting.
+    for key in ('verbal_ack', 'ack_text', 'response'):
+        patterns = (
+            rf'"{key}"\s*:\s*"((?:[^"\\]|\\.)*)"',
+            rf"'{key}'\s*:\s*'((?:[^'\\]|\\.)*)'",
+            rf'\b{key}\b\s*:\s*"((?:[^"\\]|\\.)*)"',
+            rf"\b{key}\b\s*:\s*'((?:[^'\\]|\\.)*)'",
+        )
+        for pattern in patterns:
+            match = re.search(pattern, payload, re.DOTALL)
+            if not match:
+                continue
+            text = bytes(match.group(1), 'utf-8').decode('unicode_escape').strip()
+            if not text:
+                continue
+            if key == 'response':
+                nested_text = _extract_ack_text(text, _depth + 1)
+                if nested_text:
+                    return nested_text
+            return text
+    return ''
+
+
+def _ack_from_parsed_response(parsed: dict) -> str:
+    for key in ('verbal_ack', 'ack_text'):
+        text = str(parsed.get(key, '')).strip()
+        if text:
+            return text
+    response_text = str(parsed.get('response', '')).strip()
+    if response_text:
+        nested_text = _extract_ack_text(response_text)
+        return nested_text or response_text
+    return ''
+
+
+def _looks_like_json_payload(payload: str) -> bool:
+    clean_payload = str(payload or '').strip()
+    return clean_payload.startswith(('{', '"{', '```json', '```'))
+
+
+def _warn(logger, message: str) -> None:
+    if logger is not None:
+        logger.warn(message)
+
+
 def _coerce_user_intent(user_intent) -> dict:
     if isinstance(user_intent, dict):
         cleaned = {}
-        for key in ('type', 'object', 'recipient', 'input', 'goal', 'ack_text', 'ack_mode'):
+        for key in (
+            'type',
+            'object',
+            'recipient',
+            'input',
+            'goal',
+            'goal_text',
+            'task',
+            'ack_text',
+            'ack_mode',
+            'request_kind',
+            'goal_id',
+            'parent_goal_id',
+            'supersedes_goal_id',
+            'interaction_mode',
+            'dialogue_turn_id',
+        ):
             value = str(user_intent.get(key, '')).strip()
             if value:
                 cleaned[key] = value
@@ -760,24 +858,6 @@ def _coerce_user_intent(user_intent) -> dict:
             if parsed_targets:
                 cleaned['scene_targets'] = parsed_targets
 
-        raw_plan = user_intent.get('plan')
-        if isinstance(raw_plan, list):
-            cleaned_plan = []
-            for step in raw_plan:
-                if not isinstance(step, dict):
-                    continue
-                step_type = str(step.get('type', '')).strip()
-                if not step_type:
-                    continue
-                cleaned_plan.append(
-                    {
-                        'type': step_type,
-                        'name': str(step.get('name', '')).strip(),
-                        'args': step.get('args', {}) if isinstance(step.get('args'), dict) else {},
-                    }
-                )
-            if cleaned_plan:
-                cleaned['plan'] = cleaned_plan
         return cleaned
     if isinstance(user_intent, str) and user_intent.strip():
         return {'type': user_intent.strip()}
@@ -789,30 +869,6 @@ def _normalize_route(value) -> str:
     if clean_value in _SUPPORTED_ROUTES:
         return clean_value
     return ''
-
-
-def _coerce_plan(user_intent: dict) -> list[dict]:
-    if not isinstance(user_intent, dict):
-        return []
-    raw_plan = user_intent.get('plan')
-    if not isinstance(raw_plan, list):
-        return []
-    clean_plan = []
-    for step in raw_plan:
-        if not isinstance(step, dict):
-            continue
-        step_type = str(step.get('type', '')).strip().lower()
-        if not step_type:
-            continue
-        clean_plan.append(step)
-    return clean_plan
-
-
-def _has_executable_plan(user_intent: dict) -> bool:
-    for step in _coerce_plan(user_intent):
-        if str(step.get('type', '')).strip().lower() in ('skill', 'look_at', 'say'):
-            return True
-    return False
 
 
 def _looks_like_execution_text(user_text: str) -> bool:

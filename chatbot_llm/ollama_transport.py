@@ -29,6 +29,7 @@ class OllamaTransport:
         temperature: float,
         top_p: float,
         think: bool = False,
+        max_tokens: int | None = None,
         response_format: dict | None = None,
     ) -> str:
         """Run one non-streaming chat request against Ollama."""
@@ -45,6 +46,8 @@ class OllamaTransport:
         }
         if response_format is not None:
             payload['format'] = response_format
+        if max_tokens is not None:
+            payload['options']['num_predict'] = max(1, int(max_tokens))
 
         request = urllib.request.Request(
             self._server_url,
@@ -56,12 +59,12 @@ class OllamaTransport:
         try:
             with urllib.request.urlopen(request, timeout=float(timeout_sec)) as response:
                 parsed = json.loads(response.read().decode('utf-8'))
-            message = parsed.get('message', {})
-            text = str(message.get('content', '')).strip()
+            text = _extract_chat_text(parsed)
             if not text:
-                text = str(parsed.get('response', '')).strip()
-            if not text:
-                self._logger.warn('Ollama response did not include message content')
+                self._logger.warn(
+                    'Ollama response did not include message content; keys=%s'
+                    % ','.join(sorted(str(key) for key in parsed.keys()))
+                )
             return text
         except urllib.error.HTTPError as err:
             error_body = err.read().decode('utf-8', errors='replace')
@@ -106,3 +109,35 @@ class OllamaTransport:
                 self._logger.warn('Ollama tags endpoint returned no models')
         except Exception as err:  # pragma: no cover - network dependent
             self._logger.warn(f'Could not query Ollama model inventory: {err}')
+
+
+def _extract_chat_text(payload: dict) -> str:
+    """Read assistant text from Ollama or OpenAI-compatible response shapes."""
+    if not isinstance(payload, dict):
+        return ''
+
+    message = payload.get('message', {})
+    if isinstance(message, dict):
+        text = str(message.get('content', '')).strip()
+        if text:
+            return text
+
+    text = str(payload.get('response', '')).strip()
+    if text:
+        return text
+
+    choices = payload.get('choices', [])
+    if not isinstance(choices, list):
+        return ''
+    for choice in choices:
+        if not isinstance(choice, dict):
+            continue
+        message = choice.get('message', {})
+        if isinstance(message, dict):
+            text = str(message.get('content', '')).strip()
+            if text:
+                return text
+        text = str(choice.get('text', '')).strip()
+        if text:
+            return text
+    return ''

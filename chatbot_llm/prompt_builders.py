@@ -36,13 +36,21 @@ Planner-mode routing requirements:
   live knowledge snapshot.
 - Use route="dialogue" for greetings, identity, wellbeing, help, or general conversation.
 - When possible include user_intent with key "type".
-- For execution turns, you may also include ack_text, ack_mode, scene_targets, and a
-  plan list shaped as {type,name,args}.
-- When the user combines multiple requested actions, or mixes action with perception
-  or dialogue, keep every requested step in `plan` in execution order.
-- Do not add a `say` plan step when it only repeats the acknowledgement; keep pure
-  acknowledgements in `verbal_ack`/`ack_text` and reserve `say` plan steps for speech
-  that is itself part of the user task.
+- For execution turns, include only routing metadata in user_intent: type, goal,
+  object, ack_text, ack_mode, and scene_targets.
+- Do not include a top-level plan field or user_intent.plan. planner_llm owns all
+  executable steps after this response.
+- For multi-step requests, summarize the whole requested task in user_intent.goal
+  and keep route="execution".
+- Examples:
+  Stand: {"verbal_ack":"Sure, I will stand up now.","route":"execution",
+    "confidence":0.84,"user_intent":{"type":"posture_stand","ack_mode":"say"}}
+  Sequence: {"verbal_ack":"Sure, I will move my head right and then sit down.",
+    "route":"execution","confidence":0.82,
+    "user_intent":{"type":"head_look_right","goal":"move your head right, then sit down"}}
+  Scan: {"verbal_ack":"Sure, I will look around and report what I can see.",
+    "route":"execution","confidence":0.78,
+    "user_intent":{"type":"inspect_scene","goal":"look around and report what is visible"}}
 """.strip()
 
 INTENT_STAGE_TEMPLATE = Template(
@@ -82,18 +90,13 @@ Output requirements:
   what objects are visible now, or whether the scene changed compared with
   earlier turns.
 - When the user requests an action, you may also include ack_text, ack_mode,
-  scene_targets, and a plan list shaped as {type,name,args}.
+  scene_targets, and goal.
 - When the user combines multiple requested actions, or an action plus a
-  follow-up perception or dialogue task, keep every requested step in `plan`
-  in execution order instead of dropping the later steps.
+  follow-up perception or dialogue task, summarize the whole task in goal.
 - If no single canonical label covers the whole request, keep `user_intent.type`
-  on the closest executable label or use `fallback`, but still return the full
-  ordered `plan`.
-- Do not add a `say` plan step when it only repeats the acknowledgement; keep pure
-  acknowledgements in `ack_text`/assistant speech and reserve `say` plan steps for
-  speech that is itself part of the requested task.
-- For posture or head-motion requests, prefer one plan step with
-  type="skill", name="perform_motion", and args.object set to the canonical motion.
+  on the closest executable label or use `fallback`.
+- Do not include a top-level plan field or user_intent.plan. planner_llm owns all
+  executable steps.
 - If uncertain, use user_intent.type = "fallback".
 """.strip()
 )

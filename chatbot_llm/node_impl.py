@@ -34,6 +34,8 @@ from chatbot_llm.planner_request_adapter import build_planner_request_intent
 from chatbot_llm.planner_request_adapter import should_route_intents_through_planner
 from chatbot_llm.skill_catalog import build_skill_catalog_text
 from chatbot_llm.turn_engine import DialogueTurnEngine
+from chatbot_llm.turn_engine import _extract_ack_text
+from chatbot_llm.turn_engine import _looks_like_json_payload
 from hri_actions_msgs.msg import Intent
 
 try:  # pragma: no cover - optional dependency
@@ -292,7 +294,10 @@ class LLMChatbot(Node):
                 self._session.last_user_id = user_id
                 self._session.request_count += 1
 
-        response.response = result.verbal_ack
+        response.response = _sanitize_spoken_response(
+            result.verbal_ack,
+            fallback_response=self._config.fallback_response,
+        )
         direct_intents = []
         if result.route != 'execution':
             direct_intents = build_response_intents(
@@ -745,6 +750,18 @@ def _preview_text(text: str, max_len: int = 72) -> str:
     if len(clean) <= max_len:
         return clean
     return clean[: max_len - 3] + '...'
+
+
+def _sanitize_spoken_response(text: str, *, fallback_response: str) -> str:
+    clean_text = str(text or '').strip()
+    if not clean_text:
+        return ''
+    extracted_ack = _extract_ack_text(clean_text)
+    if extracted_ack:
+        return extracted_ack
+    if _looks_like_json_payload(clean_text):
+        return str(fallback_response or '').strip()
+    return clean_text
 
 
 def _normalize_role_name(value: str) -> str:

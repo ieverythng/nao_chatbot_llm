@@ -67,6 +67,10 @@ Defaults live in `config/00-defaults.yml`.
 - `model`
 - `intent_model`
 - `think`: forwarded as Ollama `think=false/true`; default is `false`.
+- `response_max_tokens`: forwarded to Ollama as `num_predict` for the response
+  stage; default is `64`.
+- `intent_max_tokens`: forwarded to Ollama as `num_predict` for the intent
+  stage; default is `64`.
 - `planner_mode_enabled`
 - `planner_request_topic`
 - `planner_request_intent`
@@ -81,8 +85,8 @@ Defaults live in `config/00-defaults.yml`.
 - `scene_memory_turns`
 
 The default response and intent model is currently `qwen3.5:397b-cloud` with
-`think: false`. For a lower-variance fallback, override `model` and
-`intent_model` from the launch profile or package config.
+`think: false`. Keep the generation caps low for spoken dialogue latency; raise
+`response_max_tokens` only when the turn genuinely needs a longer utterance.
 
 ## Tests
 

@@ -33,6 +33,8 @@ def make_config(
         temperature=0.2,
         top_p=0.9,
         think=False,
+        response_max_tokens=64,
+        intent_max_tokens=64,
         fallback_response='fallback',
         max_history_messages=20,
         scene_memory_turns=4,
@@ -122,6 +124,8 @@ def test_turn_engine_llm_mode_uses_two_stage_json_outputs():
     assert result.intent_confidence == 0.85
     assert transport.calls[0]['think'] is False
     assert transport.calls[1]['think'] is False
+    assert transport.calls[0]['max_tokens'] == 64
+    assert transport.calls[1]['max_tokens'] == 64
     assert result.user_intent == {'type': 'head_look_left'}
     assert result.route == 'execution'
     assert result.verbal_ack == 'Sure. I am turning my head to the left.'
@@ -202,10 +206,8 @@ def test_turn_engine_planner_mode_uses_single_response_stage_for_execution():
             (
                 '{"verbal_ack":"I will look left and then sit down.",'
                 '"route":"execution",'
-                '"user_intent":{"type":"fallback","ack_mode":"say","plan":['
-                '{"type":"skill","name":"perform_motion","args":{"object":"head_look_left"}},'
-                '{"type":"skill","name":"perform_motion","args":{"object":"sit"}}'
-                ']},'
+                '"user_intent":{"type":"fallback","ack_mode":"say",'
+                '"goal":"look left and then sit down"},'
                 '"confidence":0.72}'
             ),
         ]
@@ -231,11 +233,13 @@ def test_turn_engine_planner_mode_uses_single_response_stage_for_execution():
     assert result.intent_source == 'llm_response_route'
     assert result.intent_confidence == 0.72
     assert result.user_intent['type'] == 'fallback'
-    assert len(result.user_intent['plan']) == 2
+    assert result.user_intent['goal'] == 'look left and then sit down'
+    assert 'plan' not in result.user_intent
     assert (
         'Planner-mode routing requirements:'
         in transport.calls[0]['messages'][0]['content']
     )
+    assert 'planner_llm owns all' in transport.calls[0]['messages'][0]['content']
     assert 'Knowledge snapshot:\nperson_1 rdf:type Person' in transport.calls[0]['messages'][0]['content']
 
 
@@ -264,6 +268,26 @@ def test_turn_engine_planner_mode_infers_execution_route_without_second_call():
     assert result.intent_source == 'llm_response_inferred_route'
 
 
+def test_turn_engine_planner_mode_does_not_use_rules_when_llm_response_fails():
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm_with_rules_fallback', planner_mode_enabled=True),
+        transport=FakeTransport(['']),
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='can you look around and tell me what you see',
+        history=[],
+        user_id='user1',
+    )
+
+    assert result.success is False
+    assert result.verbal_ack == 'fallback'
+    assert result.intent_source == 'llm_response_failed'
+    assert result.route == 'dialogue'
+
+
 def test_turn_engine_forwards_think_flag_to_transport():
     transport = FakeTransport(
         ['{"verbal_ack":"Sure.","user_intent":{"type":"help"},"confidence":0.4}']
@@ -280,3 +304,156 @@ def test_turn_engine_forwards_think_flag_to_transport():
     engine.execute_turn(user_text='help me', history=[], user_id='user1')
 
     assert transport.calls[0]['think'] is True
+
+
+def test_turn_engine_forwards_response_and_intent_token_caps_to_transport():
+    transport = FakeTransport(
+        [
+            '{"verbal_ack":"Sure."}',
+            '{"user_intent":{"type":"help"},"intent_confidence":0.4}',
+        ]
+    )
+    config = make_config(intent_mode='llm')
+    config = ChatbotConfig(
+        **{
+            **config.__dict__,
+            'response_max_tokens': 32,
+            'intent_max_tokens': 48,
+        }
+    )
+    engine = DialogueTurnEngine(
+        config=config,
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    engine.execute_turn(user_text='help me', history=[], user_id='user1')
+
+    assert transport.calls[0]['max_tokens'] == 32
+    assert transport.calls[1]['max_tokens'] == 48
+
+
+def test_turn_engine_does_not_speak_json_encoded_ack_payload():
+    transport = FakeTransport(
+        [
+            '"{\\"verbal_ack\\": \\"Moving my head down now.\\", '
+            '\\"user_intent\\": {\\"type\\": \\"head_look_down\\"}}"',
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='move your head down',
+        history=[],
+        user_id='user1',
+    )
+
+    assert result.verbal_ack == 'Moving my head down now.'
+
+
+def test_turn_engine_extracts_ack_from_loose_json_like_text():
+    transport = FakeTransport(
+        [
+            '```json\n{\n  "verbal_ack": "Sure, I am tilting my head down.",\n'
+            '  "route": "execution",\n  "user_intent": {"type": "move_head"}\n}\n```',
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='move your head down',
+        history=[],
+        user_id='user1',
+    )
+
+    assert result.verbal_ack == 'Sure, I am tilting my head down.'
+
+
+def test_turn_engine_extracts_ack_from_wrapped_response_field():
+    transport = FakeTransport(
+        [
+            (
+                '{"response":"{\\"verbal_ack\\":\\"Standing up now.\\",'
+                '\\"route\\":\\"execution\\",'
+                '\\"user_intent\\":{\\"type\\":\\"posture_change\\"}}"}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='stand up',
+        history=[],
+        user_id='user1',
+    )
+
+    assert result.verbal_ack == 'Standing up now.'
+
+
+def test_turn_engine_ignores_plan_fields_from_response_payloads():
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"Standing up now.",'
+                '"route":"execution",'
+                '"plan":[{"type":"skill","name":"perform_motion"}],'
+                '"user_intent":{"type":"posture_stand",'
+                '"plan":[{"type":"skill","name":"perform_motion"}]}}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='stand up',
+        history=[],
+        user_id='user1',
+    )
+
+    assert result.verbal_ack == 'Standing up now.'
+    assert result.user_intent == {'type': 'posture_stand'}
+    assert result.updated_history == ['user:stand up', 'assistant:Standing up now.']
+
+
+def test_turn_engine_falls_back_when_json_has_no_safe_ack():
+    transport = FakeTransport(
+        [
+            '{"route":"execution","user_intent":{"type":"posture_stand"}}',
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='stand up',
+        history=[],
+        user_id='user1',
+    )
+
+    assert result.verbal_ack == 'fallback'
+    assert result.updated_history == ['user:stand up', 'assistant:fallback']

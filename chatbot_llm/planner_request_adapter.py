@@ -53,21 +53,6 @@ _NON_SCENE_TARGET_OBJECTS = {
     'head_look_down',
     'look_at_reset',
 }
-_MOTION_OBJECT_INTENT_HINTS = {
-    'stand': 'posture_stand',
-    'standinit': 'posture_stand',
-    'standfull': 'posture_stand',
-    'standzero': 'posture_stand',
-    'sit': 'posture_sit',
-    'sitrelax': 'posture_sit',
-    'kneel': 'posture_kneel',
-    'crouch': 'posture_kneel',
-    'head_center': 'head_center',
-    'head_look_left': 'head_look_left',
-    'head_look_right': 'head_look_right',
-    'head_look_up': 'head_look_up',
-    'head_look_down': 'head_look_down',
-}
 _MULTI_STEP_COORDINATION_MARKERS = (
     ' and then ',
     ' then ',
@@ -100,7 +85,6 @@ _ACTION_HINT_TOKENS = (
     'guide',
     'walk',
 )
-_EXECUTABLE_PLAN_STEP_TYPES = {'say', 'skill', 'look_at', 'noop'}
 _PLANNER_REQUEST_KINDS = {
     'new_goal',
     'goal_update',
@@ -132,9 +116,6 @@ def should_route_intents_through_planner(
         return True
 
     user_intent = _turn_user_intent(turn_result)
-    if _has_executable_plan(user_intent):
-        return True
-
     return _is_multi_step_turn(
         user_intent=user_intent,
         resolved_intent=getattr(turn_result, 'intent', ''),
@@ -163,7 +144,6 @@ def build_planner_request_payload(
     )
     ack_text = _resolved_ack_text(user_intent, getattr(turn_result, 'verbal_ack', ''))
     ack_mode = _resolved_ack_mode(user_intent)
-    requested_plan = _requested_plan_from_user_intent(user_intent, ack_text=ack_text)
     dialogue_context = _bounded_dialogue_context(
         getattr(turn_result, 'updated_history', []),
         max_history_entries=max_history_entries,
@@ -188,7 +168,7 @@ def build_planner_request_payload(
         'ack_mode': ack_mode,
         'scene_targets': _scene_targets_from_user_intent(user_intent),
         'dialogue_context': dialogue_context,
-        'requested_plan': requested_plan,
+        'requested_plan': [],
         'grounded_context': _grounded_context_payload(
             knowledge_context,
             grounded_context=grounded_context,
@@ -238,7 +218,70 @@ def build_planner_request_intent(
 def _bounded_dialogue_context(history: list[str], *, max_history_entries: int) -> list[str]:
     if not isinstance(history, list) or max_history_entries <= 0:
         return []
-    return [str(item).strip() for item in history[-max_history_entries:] if str(item).strip()]
+    sanitized_history = []
+    for item in history[-max_history_entries:]:
+        clean_item = _sanitize_dialogue_history_entry(str(item).strip())
+        if clean_item:
+            sanitized_history.append(clean_item)
+    return sanitized_history
+
+
+def _sanitize_dialogue_history_entry(entry: str) -> str:
+    if not entry:
+        return ''
+    role, separator, content = entry.partition(':')
+    if separator != ':' or role.strip().lower() != 'assistant':
+        return entry
+
+    clean_content = _extract_assistant_ack_text(content.strip())
+    if not clean_content:
+        return entry
+    return f'assistant:{clean_content}'
+
+
+def _extract_assistant_ack_text(payload: str, *, _depth: int = 0) -> str:
+    if not payload or _depth > 3:
+        return ''
+
+    parsed = _extract_json_dict(payload)
+    if parsed:
+        for key in ('verbal_ack', 'ack_text'):
+            text = str(parsed.get(key, '')).strip()
+            if text:
+                return text
+        response_text = str(parsed.get('response', '')).strip()
+        if response_text:
+            nested_text = _extract_assistant_ack_text(response_text, _depth=_depth + 1)
+            if nested_text:
+                return nested_text
+            return response_text
+    return ''
+
+
+def _extract_json_dict(payload: str) -> dict:
+    if not payload:
+        return {}
+    try:
+        parsed = json.loads(payload)
+    except json.JSONDecodeError:
+        parsed = None
+
+    if isinstance(parsed, str):
+        return _extract_json_dict(parsed)
+    if isinstance(parsed, dict):
+        return parsed
+
+    decoder = json.JSONDecoder()
+    for start, char in enumerate(payload):
+        if char != '{':
+            continue
+        try:
+            maybe_obj, _ = decoder.raw_decode(payload[start:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(maybe_obj, dict):
+            return maybe_obj
+    return {}
 
 
 def _normalized_intents(intent_name: str) -> list[str]:
@@ -255,13 +298,8 @@ def _normalized_intents_for_turn(turn_result) -> list[str]:
     normalized = []
     for candidate in candidates:
         clean_candidate = _normalize_token(candidate)
-        if clean_candidate == 'fallback' and _coerce_plan(user_intent.get('plan')):
-            continue
         if clean_candidate and clean_candidate not in normalized:
             normalized.append(clean_candidate)
-    for hinted_intent in _plan_intent_hints(_coerce_plan(user_intent.get('plan'))):
-        if hinted_intent not in normalized:
-            normalized.append(hinted_intent)
     return normalized
 
 
@@ -393,17 +431,7 @@ def _contains_execution_intent(intents: list[Intent]) -> bool:
     )
 
 
-def _has_executable_plan(user_intent: dict) -> bool:
-    for step in _coerce_plan(user_intent.get('plan')):
-        if _normalize_token(step.get('type', '')) in _EXECUTABLE_PLAN_STEP_TYPES:
-            return True
-    return False
-
-
 def _is_multi_step_turn(*, user_intent: dict, resolved_intent: str, user_text: str) -> bool:
-    if len(_coerce_plan(user_intent.get('plan'))) > 1:
-        return True
-
     clean_text = ' %s ' % str(user_text or '').strip().lower()
     if not clean_text.strip():
         return False
@@ -424,69 +452,3 @@ def _coerce_str_list(value) -> list[str]:
     if not isinstance(value, (list, tuple)):
         return []
     return [str(item).strip() for item in value if str(item).strip()]
-
-
-def _coerce_plan(value) -> list[dict]:
-    if not isinstance(value, list):
-        return []
-    return [step for step in value if isinstance(step, dict)]
-
-
-def _requested_plan_from_user_intent(user_intent: dict, *, ack_text: str = '') -> list[dict]:
-    requested_steps = []
-    raw_plan = _coerce_plan(user_intent.get('plan'))
-    if not raw_plan:
-        return requested_steps
-
-    clean_ack_text = str(ack_text or '').strip().lower()
-    has_non_say_step = any(_normalize_token(step.get('type', '')) != 'say' for step in raw_plan)
-
-    for step in raw_plan:
-        step_type = _normalize_token(step.get('type', ''))
-        step_name = str(step.get('name', '')).strip()
-        step_args = step.get('args', {}) if isinstance(step.get('args'), dict) else {}
-
-        if step_type == 'say' and has_non_say_step:
-            step_text = str(step_args.get('text', step_args.get('object', ''))).strip().lower()
-            if clean_ack_text and step_text == clean_ack_text:
-                continue
-
-        requested_steps.append(
-            {
-                'type': step_type,
-                'name': step_name,
-                'args': step_args,
-            }
-        )
-
-    return requested_steps
-
-
-def _plan_intent_hints(plan_steps: list[dict]) -> list[str]:
-    hints: list[str] = []
-    for step in plan_steps:
-        step_type = _normalize_token(step.get('type', ''))
-        step_name = _normalize_token(step.get('name', ''))
-        step_args = step.get('args', {}) if isinstance(step.get('args'), dict) else {}
-
-        if step_type == 'look_at':
-            hints.append('look_at')
-            continue
-
-        if step_type != 'skill':
-            continue
-
-        if step_name == 'look_at':
-            hints.append('look_at')
-            continue
-
-        if step_name not in ('', 'motion', 'perform_motion'):
-            continue
-
-        motion_object = _normalize_token(
-            step_args.get('object', step_args.get('motion_name', ''))
-        )
-        hinted_intent = _MOTION_OBJECT_INTENT_HINTS.get(motion_object, '')
-        if hinted_intent:
-            hints.append(hinted_intent)
-    return hints
