@@ -64,3 +64,98 @@ def test_ollama_transport_accepts_openai_compatible_choices(monkeypatch):
 
     assert text == '{"verbal_ack":"Sure.","route":"execution"}'
     assert logger.warnings == []
+
+
+def test_ollama_transport_disables_format_for_gemma_models(monkeypatch):
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured['timeout'] = timeout
+        captured['url'] = request.full_url
+        captured['payload'] = json.loads(request.data.decode('utf-8'))
+        return _FakeResponse({'message': {'content': '{"verbal_ack":"Sure."}'}})
+
+    monkeypatch.setattr('urllib.request.urlopen', fake_urlopen)
+    logger = _FakeLogger()
+    transport = OllamaTransport(
+        server_url='http://localhost:11434/api/chat',
+        context_window_tokens=4096,
+        logger=logger,
+    )
+
+    text = transport.query(
+        messages=[{'role': 'user', 'content': 'stand up'}],
+        timeout_sec=3.0,
+        model='gemma4:31b-cloud',
+        temperature=0.2,
+        top_p=0.9,
+        max_tokens=64,
+        response_format={'type': 'object'},
+    )
+
+    assert text == '{"verbal_ack":"Sure."}'
+    assert captured['timeout'] == 3.0
+    assert 'format' not in captured['payload']
+
+
+def test_ollama_transport_falls_back_to_message_thinking(monkeypatch):
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured['payload'] = json.loads(request.data.decode('utf-8'))
+        return _FakeResponse(
+            {
+                'message': {
+                    'content': '',
+                    'thinking': '{"verbal_ack":"Sure.","route":"execution"}',
+                },
+            }
+        )
+
+    monkeypatch.setattr('urllib.request.urlopen', fake_urlopen)
+    logger = _FakeLogger()
+    transport = OllamaTransport(
+        server_url='http://localhost:11434/api/chat',
+        context_window_tokens=4096,
+        logger=logger,
+    )
+
+    text = transport.query(
+        messages=[{'role': 'system', 'content': 'Return JSON only.'}],
+        timeout_sec=3.0,
+        model='qwen3.5:cloud',
+        temperature=0.0,
+        top_p=0.9,
+        max_tokens=64,
+        response_format={'type': 'object'},
+    )
+
+    assert text == '{"verbal_ack":"Sure.","route":"execution"}'
+    assert captured['payload']['messages'][0]['content'].startswith('/no_think')
+    assert logger.warnings == []
+
+
+def test_ollama_transport_preflight_accepts_ready_json(monkeypatch):
+    captured = {}
+
+    def fake_urlopen(request, timeout):
+        captured['timeout'] = timeout
+        captured['payload'] = json.loads(request.data.decode('utf-8'))
+        return _FakeResponse({'message': {'content': '{"ready":true}'}})
+
+    monkeypatch.setattr('urllib.request.urlopen', fake_urlopen)
+    transport = OllamaTransport(
+        server_url='http://localhost:11434/api/chat',
+        context_window_tokens=4096,
+        logger=_FakeLogger(),
+    )
+
+    assert transport.preflight(
+        model='gemma4:31b-cloud',
+        timeout_sec=4.0,
+        temperature=0.2,
+        top_p=0.9,
+        think=False,
+    )
+    assert captured['timeout'] == 4.0
+    assert captured['payload']['options']['num_predict'] == 16

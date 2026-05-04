@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import threading
 import time
 from dataclasses import dataclass, field
@@ -16,7 +15,6 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.lifecycle import Node
 from rclpy.lifecycle import State
 from rclpy.lifecycle import TransitionCallbackReturn
-from std_msgs.msg import String
 
 from chatbot_llm.backend_config import ChatbotConfig
 from chatbot_llm.backend_config import declare_backend_parameters
@@ -30,8 +28,7 @@ from chatbot_llm.knowledge_snapshot import extract_scene_memory_entry
 from chatbot_llm.knowledge_snapshot import resolve_knowledge_snapshot_settings
 from chatbot_llm.knowledge_snapshot_client import KnowledgeSnapshotClient
 from chatbot_llm.ollama_transport import OllamaTransport
-from chatbot_llm.planner_request_adapter import build_planner_request_intent
-from chatbot_llm.planner_request_adapter import should_route_intents_through_planner
+from chatbot_llm.planner_handoff import PlannerHandoff
 from chatbot_llm.skill_catalog import build_skill_catalog_text
 from chatbot_llm.turn_engine import DialogueTurnEngine
 from chatbot_llm.turn_engine import _extract_ack_text
@@ -94,10 +91,8 @@ class LLMChatbot(Node):
 
         self._diag_pub = None
         self._diag_timer = None
-        self._planner_request_pub = None
-        self._planner_scene_summary_sub = None
-        self._planner_world_model_snapshot_sub = None
-        self._planner_world_model_text_sub = None
+        self._llm_keepalive_timer = None
+        self._planner_handoff: PlannerHandoff | None = None
 
         self._config: ChatbotConfig | None = None
         self._transport = None
@@ -110,9 +105,6 @@ class LLMChatbot(Node):
         self._dialogue_id: tuple[int, ...] | None = None
         self._dialogue_result: Dialogue.Result | None = None
         self._session: DialogueSession | None = None
-        self._planner_scene_summary_payload: dict = {}
-        self._planner_world_model_snapshot: dict = {}
-        self._planner_world_model_text = ''
 
         self.get_logger().info('Chatbot backend created, awaiting lifecycle configuration.')
 
@@ -308,7 +300,7 @@ class LLMChatbot(Node):
                 raw_input=text,
                 confidence=result.intent_confidence,
             )
-        if self._publish_planner_request(
+        if self._planner_handoff is not None and self._planner_handoff.publish_execution_turn_if_needed(
             session=session,
             user_id=user_id,
             turn_id=turn_id,
@@ -379,31 +371,18 @@ class LLMChatbot(Node):
 
         self._diag_pub = self.create_publisher(DiagnosticArray, '/diagnostics', 1)
         self._diag_timer = self.create_timer(1.0, self.publish_diagnostics)
-        self._planner_request_pub = None
+        self._planner_handoff = None
         if self._config.planner_mode_enabled:
-            self._planner_request_pub = self.create_publisher(
-                Intent,
-                self._config.planner_request_topic,
-                10,
+            self._planner_handoff = PlannerHandoff(
+                self,
+                self._config,
+                trace=self._trace,
+                on_planner_goal_id=self._on_planner_goal_committed,
             )
-            self._planner_scene_summary_sub = self.create_subscription(
-                String,
-                self._config.planner_scene_summary_topic,
-                self._on_planner_scene_summary,
-                10,
-            )
-            self._planner_world_model_snapshot_sub = self.create_subscription(
-                String,
-                self._config.planner_world_model_snapshot_topic,
-                self._on_planner_world_model_snapshot,
-                10,
-            )
-            self._planner_world_model_text_sub = self.create_subscription(
-                String,
-                self._config.planner_world_model_text_topic,
-                self._on_planner_world_model_text,
-                10,
-            )
+
+        if not self._run_llm_preflight():
+            return TransitionCallbackReturn.FAILURE
+        self._start_llm_keepalive()
 
         if GetLocales is not None and SetLocale is not None:
             self._get_supported_locales_server = self.create_service(
@@ -425,7 +404,7 @@ class LLMChatbot(Node):
             )
 
         self.get_logger().info(
-            'Configured chatbot_llm | server_url=%s model=%s intent_model=%s '
+            '[STACK READY] chatbot_llm configured | server_url=%s model=%s intent_model=%s '
             'intent_mode=%s skill_catalog=%s planner_mode=%s planner_topic=%s'
             % (
                 self._config.server_url,
@@ -483,21 +462,15 @@ class LLMChatbot(Node):
         if self._diag_timer is not None:
             self.destroy_timer(self._diag_timer)
             self._diag_timer = None
+        if self._llm_keepalive_timer is not None:
+            self.destroy_timer(self._llm_keepalive_timer)
+            self._llm_keepalive_timer = None
         if self._diag_pub is not None:
             self.destroy_publisher(self._diag_pub)
             self._diag_pub = None
-        if self._planner_request_pub is not None:
-            self.destroy_publisher(self._planner_request_pub)
-            self._planner_request_pub = None
-        if self._planner_scene_summary_sub is not None:
-            self.destroy_subscription(self._planner_scene_summary_sub)
-            self._planner_scene_summary_sub = None
-        if self._planner_world_model_snapshot_sub is not None:
-            self.destroy_subscription(self._planner_world_model_snapshot_sub)
-            self._planner_world_model_snapshot_sub = None
-        if self._planner_world_model_text_sub is not None:
-            self.destroy_subscription(self._planner_world_model_text_sub)
-            self._planner_world_model_text_sub = None
+        if self._planner_handoff is not None:
+            self._planner_handoff.destroy()
+            self._planner_handoff = None
 
         if self._dialogue_start_action is not None:
             self._dialogue_start_action.destroy()
@@ -580,98 +553,11 @@ class LLMChatbot(Node):
             if self._session is not None and self._session.dialogue_id == session.dialogue_id:
                 self._session.history = new_history
 
-    def _publish_planner_request(
-        self,
-        *,
-        session: DialogueSession,
-        user_id: str,
-        turn_id: str,
-        user_text: str,
-        knowledge_context: str,
-        result,
-        direct_intents: list[Intent],
-    ) -> bool:
-        """Publish the current turn to planner_llm when planner mode is enabled."""
-        if self._config is None or not self._config.planner_mode_enabled:
-            return False
-        if self._planner_request_pub is None:
-            self.get_logger().warn('planner mode is enabled but planner request publisher is unavailable')
-            return False
-        if not should_route_intents_through_planner(
-            direct_intents,
-            turn_result=result,
-            user_text=user_text,
-        ):
-            return False
-
-        try:
-            planner_msg = build_planner_request_intent(
-                turn_id=turn_id,
-                user_text=user_text,
-                source_user_id=user_id,
-                turn_result=result,
-                knowledge_context=knowledge_context,
-                grounded_context=self._planner_grounded_context(knowledge_context),
-                planner_request_intent=self._config.planner_request_intent,
-                active_goal_id=session.active_planner_goal_id,
-            )
-            self._planner_request_pub.publish(planner_msg)
-        except Exception as err:  # pragma: no cover - ROS publish failures are runtime-only
-            self.get_logger().warn('failed to publish planner request: %s' % err)
-            self._trace(turn_id, 'PLANNER_REQUEST', 'publish failed: %s' % err, level='warn')
-            return False
-
-        planner_payload = {}
-        try:
-            planner_payload = json.loads(planner_msg.data)
-        except Exception:
-            planner_payload = {}
-        planner_goal_id = str(planner_payload.get('goal_id', '')).strip()
-        if planner_goal_id:
-            with self._session_lock:
-                if self._session is not None and self._session.dialogue_id == session.dialogue_id:
-                    self._session.active_planner_goal_id = planner_goal_id
-
-        self._trace(
-            turn_id,
-            'PLANNER_REQUEST',
-            'published planner request on %s goal_id=%s kind=%s'
-            % (
-                self._config.planner_request_topic,
-                planner_payload.get('goal_id', ''),
-                planner_payload.get('request_kind', ''),
-            ),
-        )
-        return True
-
-    def _on_planner_scene_summary(self, msg: String) -> None:
-        try:
-            payload = json.loads(str(msg.data or '').strip() or '{}')
-        except json.JSONDecodeError:
-            payload = {}
-        self._planner_scene_summary_payload = payload if isinstance(payload, dict) else {}
-
-    def _on_planner_world_model_snapshot(self, msg: String) -> None:
-        try:
-            payload = json.loads(str(msg.data or '').strip() or '{}')
-        except json.JSONDecodeError:
-            payload = {}
-        self._planner_world_model_snapshot = payload if isinstance(payload, dict) else {}
-
-    def _on_planner_world_model_text(self, msg: String) -> None:
-        self._planner_world_model_text = str(msg.data or '').strip()
-
-    def _planner_grounded_context(self, knowledge_context: str) -> dict:
-        knowledge_snapshot = {}
-        clean_knowledge_context = str(knowledge_context or '').strip()
-        if clean_knowledge_context:
-            knowledge_snapshot['summary_text'] = clean_knowledge_context
-        return {
-            'knowledge_snapshot': knowledge_snapshot,
-            'scene_summary': dict(self._planner_scene_summary_payload),
-            'world_model_snapshot': dict(self._planner_world_model_snapshot),
-            'world_model_text': self._planner_world_model_text,
-        }
+    def _on_planner_goal_committed(self, session: DialogueSession, goal_id: str) -> None:
+        """Persist planner goal id on the active session when it matches this dialogue."""
+        with self._session_lock:
+            if self._session is not None and self._session.dialogue_id == session.dialogue_id:
+                self._session.active_planner_goal_id = goal_id
 
     def _terminate_active_dialogue(self, error_msg: str) -> None:
         """Unblock the action execution loop if a dialogue is still active."""
@@ -718,6 +604,67 @@ class LLMChatbot(Node):
             return
         self.get_logger().info(line)
 
+    def _run_llm_preflight(self) -> bool:
+        """Warm response and intent models before lifecycle activation."""
+        config = self._config
+        if config is None or self._transport is None or not config.preflight_enabled:
+            return True
+
+        models = _unique_models(config.model, config.intent_model)
+        self.get_logger().info(
+            '[LLM PREFLIGHT] chatbot starting | models=%s timeout=%.1fs required=%s'
+            % (','.join(models), config.preflight_timeout_sec, config.preflight_required)
+        )
+        failed_models = []
+        for model in models:
+            if self._transport.preflight(
+                model=model,
+                timeout_sec=config.preflight_timeout_sec,
+                temperature=config.temperature,
+                top_p=config.top_p,
+                think=config.think,
+            ):
+                self.get_logger().info('[LLM PREFLIGHT] chatbot model ready | model=%s' % model)
+                continue
+            failed_models.append(model)
+            self.get_logger().error('[LLM PREFLIGHT] chatbot model failed | model=%s' % model)
+
+        if failed_models and config.preflight_required:
+            self.get_logger().error(
+                '[LLM PREFLIGHT] chatbot required preflight failed | models=%s'
+                % ','.join(failed_models)
+            )
+            return False
+        return True
+
+    def _start_llm_keepalive(self) -> None:
+        config = self._config
+        if (
+            config is None
+            or self._transport is None
+            or not config.preflight_enabled
+            or config.preflight_keepalive_interval_sec <= 0.0
+        ):
+            return
+        self._llm_keepalive_timer = self.create_timer(
+            config.preflight_keepalive_interval_sec,
+            self._llm_keepalive,
+        )
+
+    def _llm_keepalive(self) -> None:
+        config = self._config
+        if config is None or self._transport is None:
+            return
+        for model in _unique_models(config.model, config.intent_model):
+            if not self._transport.preflight(
+                model=model,
+                timeout_sec=min(config.preflight_timeout_sec, 15.0),
+                temperature=config.temperature,
+                top_p=config.top_p,
+                think=config.think,
+            ):
+                self.get_logger().warn('[LLM PREFLIGHT] chatbot keepalive failed | model=%s' % model)
+
 
 # ---------------------------------------------------------------------------
 # Module-local helpers
@@ -737,6 +684,18 @@ def _seed_history(role_name: str, role_configuration: str) -> list[str]:
         entries.append('system:Dialogue configuration: %s' % clean_config)
 
     return entries
+
+
+def _unique_models(*models: str) -> list[str]:
+    unique = []
+    seen = set()
+    for model in models:
+        clean_model = str(model or '').strip()
+        if not clean_model or clean_model in seen:
+            continue
+        seen.add(clean_model)
+        unique.append(clean_model)
+    return unique
 
 
 def _short_uuid(dialogue_id: tuple[int, ...] | None) -> str:

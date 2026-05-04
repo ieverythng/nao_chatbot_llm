@@ -2,19 +2,36 @@
 
 from __future__ import annotations
 
+from dataclasses import asdict
 import json
 
 from kb_skills.intent_labels import KB_QUERY_INTENTS
+from chatbot_llm.prompt_pack import default_prompt_pack
+from planner_common import PLANNER_REQUEST_KINDS
+from planner_common import PlannerRequest
+from planner_common import extract_json_object
+from planner_common import IntentLabels
+from planner_common import is_perform_motion_object_label
 from planner_common import normalize_grounded_context
 
-try:  # pragma: no cover - optional dependency in local unit tests
+try:  # pragma: no cover - ROS runtime dependency
     from hri_actions_msgs.msg import Intent
-except ImportError:  # pragma: no cover - import-light fallback
+except ImportError:  # pragma: no cover - import-light unit tests
     class Intent:  # type: ignore[no-redef]
-        SAY = 'say'
-        GREET = 'greet'
-        RAW_USER_INPUT = 'raw_user_input'
-        PERFORM_MOTION = 'perform_motion'
+        BRING_OBJECT = IntentLabels.BRING_OBJECT
+        GRAB_OBJECT = IntentLabels.GRAB_OBJECT
+        GREET = IntentLabels.GREET
+        GUIDE = IntentLabels.GUIDE
+        MOVE_TO = IntentLabels.MOVE_TO
+        PERFORM_MOTION = IntentLabels.PERFORM_MOTION
+        PLACE_OBJECT = IntentLabels.PLACE_OBJECT
+        PRESENT_CONTENT = IntentLabels.PRESENT_CONTENT
+        RAW_USER_INPUT = IntentLabels.RAW_USER_INPUT
+        SAY = IntentLabels.SAY
+        START_ACTIVITY = IntentLabels.START_ACTIVITY
+        STOP_ACTIVITY = IntentLabels.STOP_ACTIVITY
+        SUSPEND = IntentLabels.SUSPEND
+        WAKEUP = IntentLabels.WAKEUP
         MODALITY_SPEECH = 'speech'
         UNKNOWN_AGENT = 'unknown_agent'
 
@@ -42,55 +59,6 @@ _NON_PLANNER_INTENT_NAMES = {
         'help',
     )
 }
-_NON_SCENE_TARGET_OBJECTS = {
-    'stand',
-    'sit',
-    'kneel',
-    'head_center',
-    'head_look_left',
-    'head_look_right',
-    'head_look_up',
-    'head_look_down',
-    'look_at_reset',
-}
-_MULTI_STEP_COORDINATION_MARKERS = (
-    ' and then ',
-    ' then ',
-    ' while ',
-    ' while also ',
-    ' also ',
-    ' after that ',
-    ' after you ',
-    ' before that ',
-    ' before you ',
-    ' once you ',
-    ' once that ',
-    ' at the same time ',
-    ' simultaneously ',
-)
-_ACTION_HINT_TOKENS = (
-    'stand',
-    'sit',
-    'kneel',
-    'crouch',
-    'look',
-    'move',
-    'turn',
-    'head',
-    'bring',
-    'grab',
-    'pick',
-    'place',
-    'go',
-    'guide',
-    'walk',
-)
-_PLANNER_REQUEST_KINDS = {
-    'new_goal',
-    'goal_update',
-    'clarification_answer',
-    'cancel_request',
-}
 _CANCEL_INTENT_TYPES = {
     'cancel',
     'cancel_request',
@@ -100,6 +68,7 @@ _CANCEL_INTENT_TYPES = {
 }
 _DEFAULT_PLANNER_PRIORITY = 128
 _MIN_PLANNER_CONFIDENCE = 0.5
+_MAX_ACK_PARSE_DEPTH = 3
 
 
 def should_route_intents_through_planner(
@@ -107,6 +76,7 @@ def should_route_intents_through_planner(
     *,
     turn_result=None,
     user_text: str = '',
+    multi_step_heuristics: dict | None = None,
 ) -> bool:
     """Return true when the turn contains execution-oriented intents."""
     if _normalize_token(getattr(turn_result, 'route', '')) == 'execution':
@@ -120,6 +90,7 @@ def should_route_intents_through_planner(
         user_intent=user_intent,
         resolved_intent=getattr(turn_result, 'intent', ''),
         user_text=user_text,
+        heuristics=multi_step_heuristics,
     )
 
 
@@ -131,6 +102,7 @@ def build_planner_request_payload(
     knowledge_context: str,
     grounded_context: dict | None = None,
     planner_mode: str = 'auto',
+    multi_step_heuristics: dict | None = None,
     max_history_entries: int = 6,
     active_goal_id: str = '',
 ) -> dict:
@@ -141,6 +113,7 @@ def build_planner_request_payload(
         planner_mode=planner_mode,
         turn_result=turn_result,
         user_text=user_text,
+        multi_step_heuristics=multi_step_heuristics,
     )
     ack_text = _resolved_ack_text(user_intent, getattr(turn_result, 'verbal_ack', ''))
     ack_mode = _resolved_ack_mode(user_intent)
@@ -156,7 +129,7 @@ def build_planner_request_payload(
         request_kind=request_kind,
     )
 
-    return {
+    payload = {
         'request_id': str(turn_id).strip(),
         'goal_id': goal_id,
         'parent_goal_id': str(user_intent.get('parent_goal_id', '')).strip(),
@@ -179,6 +152,7 @@ def build_planner_request_payload(
         'dialogue_turn_id': str(user_intent.get('dialogue_turn_id', turn_id)).strip()
         or str(turn_id).strip(),
     }
+    return _planner_request_payload(payload)
 
 
 def build_planner_request_intent(
@@ -191,6 +165,7 @@ def build_planner_request_intent(
     grounded_context: dict | None = None,
     planner_request_intent: str = 'planner_request',
     planner_mode: str = 'auto',
+    multi_step_heuristics: dict | None = None,
     max_history_entries: int = 6,
     active_goal_id: str = '',
 ) -> Intent:
@@ -202,17 +177,51 @@ def build_planner_request_intent(
         knowledge_context=knowledge_context,
         grounded_context=grounded_context,
         planner_mode=planner_mode,
+        multi_step_heuristics=multi_step_heuristics,
         max_history_entries=max_history_entries,
         active_goal_id=active_goal_id,
     )
+    return build_planner_request_intent_from_payload(
+        payload=payload,
+        source_user_id=source_user_id,
+        planner_request_intent=planner_request_intent,
+        confidence=_planner_confidence(turn_result),
+    )
+
+
+def build_planner_request_intent_from_payload(
+    *,
+    payload: dict,
+    source_user_id: str,
+    planner_request_intent: str = 'planner_request',
+    confidence: float = _MIN_PLANNER_CONFIDENCE,
+) -> Intent:
+    """Create a planner ``Intent`` from an already-normalized request payload."""
     intent = Intent()
     intent.intent = str(planner_request_intent or 'planner_request').strip() or 'planner_request'
     intent.source = str(source_user_id).strip() or getattr(Intent, 'UNKNOWN_AGENT', 'unknown_agent')
     intent.modality = getattr(Intent, 'MODALITY_SPEECH', 'speech')
-    intent.confidence = _planner_confidence(turn_result)
+    intent.confidence = max(0.0, min(1.0, float(confidence)))
     intent.priority = _DEFAULT_PLANNER_PRIORITY
     intent.data = json.dumps(payload, separators=(',', ':'))
     return intent
+
+
+def _planner_request_payload(payload: dict) -> dict:
+    request = PlannerRequest.from_payload(payload)
+    normalized = _jsonable(asdict(request))
+    normalized.pop('user_text', None)
+    return normalized
+
+
+def _jsonable(value):
+    if isinstance(value, tuple):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, list):
+        return [_jsonable(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    return value
 
 
 def _bounded_dialogue_context(history: list[str], *, max_history_entries: int) -> list[str]:
@@ -240,10 +249,10 @@ def _sanitize_dialogue_history_entry(entry: str) -> str:
 
 
 def _extract_assistant_ack_text(payload: str, *, _depth: int = 0) -> str:
-    if not payload or _depth > 3:
+    if not payload or _depth > _MAX_ACK_PARSE_DEPTH:
         return ''
 
-    parsed = _extract_json_dict(payload)
+    parsed = extract_json_object(payload)
     if parsed:
         for key in ('verbal_ack', 'ack_text'):
             text = str(parsed.get(key, '')).strip()
@@ -256,32 +265,6 @@ def _extract_assistant_ack_text(payload: str, *, _depth: int = 0) -> str:
                 return nested_text
             return response_text
     return ''
-
-
-def _extract_json_dict(payload: str) -> dict:
-    if not payload:
-        return {}
-    try:
-        parsed = json.loads(payload)
-    except json.JSONDecodeError:
-        parsed = None
-
-    if isinstance(parsed, str):
-        return _extract_json_dict(parsed)
-    if isinstance(parsed, dict):
-        return parsed
-
-    decoder = json.JSONDecoder()
-    for start, char in enumerate(payload):
-        if char != '{':
-            continue
-        try:
-            maybe_obj, _ = decoder.raw_decode(payload[start:])
-        except json.JSONDecodeError:
-            continue
-        if isinstance(maybe_obj, dict):
-            return maybe_obj
-    return {}
 
 
 def _normalized_intents(intent_name: str) -> list[str]:
@@ -308,7 +291,7 @@ def _scene_targets_from_user_intent(user_intent: dict) -> list[str]:
     if scene_targets:
         return scene_targets
     scene_object = str(user_intent.get('object', '')).strip()
-    if scene_object and _normalize_token(scene_object) not in _NON_SCENE_TARGET_OBJECTS:
+    if scene_object and not is_perform_motion_object_label(scene_object):
         return [scene_object]
     return []
 
@@ -351,6 +334,7 @@ def _resolved_planner_mode(
     planner_mode: str,
     turn_result,
     user_text: str,
+    multi_step_heuristics: dict | None,
 ) -> str:
     requested_mode = _normalize_token(planner_mode)
     if requested_mode not in ('', 'auto', 'default'):
@@ -359,6 +343,7 @@ def _resolved_planner_mode(
         user_intent=_turn_user_intent(turn_result),
         resolved_intent=getattr(turn_result, 'intent', ''),
         user_text=user_text,
+        heuristics=multi_step_heuristics,
     ):
         return 'multi_step'
     return 'default'
@@ -384,7 +369,7 @@ def _grounded_context_payload(
 
 def _resolved_request_kind(user_intent: dict, resolved_intent: str) -> str:
     explicit_kind = _normalize_token(user_intent.get('request_kind', ''))
-    if explicit_kind in _PLANNER_REQUEST_KINDS:
+    if explicit_kind in PLANNER_REQUEST_KINDS:
         return explicit_kind
 
     user_intent_type = _normalize_token(user_intent.get('type', ''))
@@ -431,19 +416,39 @@ def _contains_execution_intent(intents: list[Intent]) -> bool:
     )
 
 
-def _is_multi_step_turn(*, user_intent: dict, resolved_intent: str, user_text: str) -> bool:
+def _is_multi_step_turn(
+    *,
+    user_intent: dict,
+    resolved_intent: str,
+    user_text: str,
+    heuristics: dict | None = None,
+) -> bool:
     clean_text = ' %s ' % str(user_text or '').strip().lower()
     if not clean_text.strip():
         return False
-    if not any(marker in clean_text for marker in _MULTI_STEP_COORDINATION_MARKERS):
+    coordination_markers = _heuristic_values(heuristics, 'coordination_markers')
+    action_hint_tokens = _heuristic_values(heuristics, 'action_hint_tokens')
+    if not any(marker in clean_text for marker in coordination_markers):
         return False
-    if not any(token in clean_text for token in _ACTION_HINT_TOKENS):
+    if not any(token in clean_text for token in action_hint_tokens):
         return False
 
     clean_intent = _normalize_token(user_intent.get('type', '') or resolved_intent)
     if clean_intent and clean_intent not in _NON_PLANNER_INTENT_NAMES:
         return True
     return clean_intent in ('', 'fallback')
+
+
+def _heuristic_values(heuristics: dict | None, key: str) -> list[str]:
+    source = heuristics if isinstance(heuristics, dict) else None
+    if source is None:
+        source = default_prompt_pack().planner_multi_step_heuristics
+    value = source.get(key, [])
+    if isinstance(value, str):
+        return [value.lower()]
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [str(item).lower() for item in value if str(item)]
 
 
 def _coerce_str_list(value) -> list[str]:

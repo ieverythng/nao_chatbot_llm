@@ -50,6 +50,10 @@ class ChatbotConfig:
     think: bool
     response_max_tokens: int
     intent_max_tokens: int
+    preflight_enabled: bool
+    preflight_required: bool
+    preflight_timeout_sec: float
+    preflight_keepalive_interval_sec: float
     fallback_response: str
     max_history_messages: int
     scene_memory_turns: int
@@ -60,6 +64,7 @@ class ChatbotConfig:
     environment_description: str
     response_schema: dict
     intent_schema: dict
+    planner_multi_step_heuristics: dict
     identity_reminder_every_n_turns: int
     intent_detection_mode: str
     prompt_pack_path: str
@@ -91,7 +96,7 @@ class ChatbotConfig:
 def declare_backend_parameters(node) -> None:
     """Declare lifecycle parameters used by the migrated backend."""
     node.declare_parameter('server_url', 'http://localhost:11434/api/chat')
-    node.declare_parameter('model', 'qwen3.5:397b-cloud')
+    node.declare_parameter('model', 'gemma4:31b-cloud')
     node.declare_parameter('api_key', '')
     node.declare_parameter('system_prompt', '')
 
@@ -106,6 +111,10 @@ def declare_backend_parameters(node) -> None:
     node.declare_parameter('think', False)
     node.declare_parameter('response_max_tokens', 64)
     node.declare_parameter('intent_max_tokens', 64)
+    node.declare_parameter('preflight_enabled', True)
+    node.declare_parameter('preflight_required', False)
+    node.declare_parameter('preflight_timeout_sec', 45.0)
+    node.declare_parameter('preflight_keepalive_interval_sec', 0.0)
     node.declare_parameter(
         'fallback_response',
         'I am having trouble reaching my language model right now.',
@@ -217,6 +226,16 @@ def load_backend_config(node) -> ChatbotConfig:
         think=as_bool(node.get_parameter('think').value),
         response_max_tokens=max(1, int(node.get_parameter('response_max_tokens').value)),
         intent_max_tokens=max(1, int(node.get_parameter('intent_max_tokens').value)),
+        preflight_enabled=as_bool(node.get_parameter('preflight_enabled').value),
+        preflight_required=as_bool(node.get_parameter('preflight_required').value),
+        preflight_timeout_sec=max(
+            0.5,
+            float(node.get_parameter('preflight_timeout_sec').value),
+        ),
+        preflight_keepalive_interval_sec=max(
+            0.0,
+            float(node.get_parameter('preflight_keepalive_interval_sec').value),
+        ),
         fallback_response=str(node.get_parameter('fallback_response').value),
         max_history_messages=max(
             0,
@@ -233,6 +252,7 @@ def load_backend_config(node) -> ChatbotConfig:
         environment_description=environment_description,
         response_schema=loaded_pack.response_schema,
         intent_schema=loaded_pack.intent_schema,
+        planner_multi_step_heuristics=loaded_pack.planner_multi_step_heuristics,
         identity_reminder_every_n_turns=max(
             0,
             int(node.get_parameter('identity_reminder_every_n_turns').value),

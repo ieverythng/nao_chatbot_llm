@@ -7,6 +7,13 @@ import socket
 import urllib.error
 import urllib.request
 
+_FORMAT_DISABLED_MODEL_PREFIXES = ('gemma',)
+_NO_THINK_MODEL_PREFIXES = ('qwen3', 'qwen3.5')
+_NO_THINK_PREFIX = (
+    '/no_think\n'
+    'Return only the final answer. Do not emit reasoning, analysis, or thinking text.'
+)
+
 
 # ---------------------------------------------------------------------------
 # Ollama HTTP transport
@@ -33,9 +40,10 @@ class OllamaTransport:
         response_format: dict | None = None,
     ) -> str:
         """Run one non-streaming chat request against Ollama."""
+        request_messages = _no_think_messages(model, messages)
         payload = {
             'model': model,
-            'messages': messages,
+            'messages': request_messages,
             'stream': False,
             'think': bool(think),
             'options': {
@@ -44,7 +52,7 @@ class OllamaTransport:
                 'top_p': float(top_p),
             },
         }
-        if response_format is not None:
+        if response_format is not None and _uses_ollama_response_format(model):
             payload['format'] = response_format
         if max_tokens is not None:
             payload['options']['num_predict'] = max(1, int(max_tokens))
@@ -62,7 +70,7 @@ class OllamaTransport:
             text = _extract_chat_text(parsed)
             if not text:
                 self._logger.warn(
-                    'Ollama response did not include message content; keys=%s'
+                    'Ollama response did not include assistant text; keys=%s'
                     % ','.join(sorted(str(key) for key in parsed.keys()))
                 )
             return text
@@ -91,6 +99,36 @@ class OllamaTransport:
             self._logger.error(f'Ollama unexpected error: {err}')
             return ''
 
+    def preflight(
+        self,
+        *,
+        model: str,
+        timeout_sec: float,
+        temperature: float,
+        top_p: float,
+        think: bool,
+    ) -> bool:
+        """Return true when the configured model can answer a tiny JSON request."""
+        text = self.query(
+            messages=[
+                {
+                    'role': 'system',
+                    'content': 'Reply only with JSON. No prose.',
+                },
+                {
+                    'role': 'user',
+                    'content': 'Return {"ready":true}.',
+                },
+            ],
+            timeout_sec=timeout_sec,
+            model=model,
+            temperature=temperature,
+            top_p=top_p,
+            think=think,
+            max_tokens=16,
+        )
+        return _preflight_ready(text)
+
     # -----------------------------------------------------------------------
     # Debug and diagnostics helpers
     # -----------------------------------------------------------------------
@@ -118,11 +156,15 @@ def _extract_chat_text(payload: dict) -> str:
 
     message = payload.get('message', {})
     if isinstance(message, dict):
-        text = str(message.get('content', '')).strip()
+        text = _assistant_message_text(message)
         if text:
             return text
 
     text = str(payload.get('response', '')).strip()
+    if text:
+        return text
+
+    text = _thinking_text(payload)
     if text:
         return text
 
@@ -134,10 +176,60 @@ def _extract_chat_text(payload: dict) -> str:
             continue
         message = choice.get('message', {})
         if isinstance(message, dict):
-            text = str(message.get('content', '')).strip()
+            text = _assistant_message_text(message)
             if text:
                 return text
         text = str(choice.get('text', '')).strip()
         if text:
             return text
     return ''
+
+
+def _assistant_message_text(message: dict) -> str:
+    if not isinstance(message, dict):
+        return ''
+    text = str(message.get('content', '')).strip()
+    if text:
+        return text
+    return _thinking_text(message)
+
+
+def _thinking_text(payload: dict) -> str:
+    if not isinstance(payload, dict):
+        return ''
+    for key in ('thinking', 'reasoning'):
+        text = str(payload.get(key, '')).strip()
+        if text:
+            return text
+    return ''
+
+
+def _no_think_messages(model: str, messages: list[dict]) -> list[dict]:
+    clean_model = str(model or '').strip().lower()
+    if not any(clean_model.startswith(prefix) for prefix in _NO_THINK_MODEL_PREFIXES):
+        return list(messages)
+    if not messages:
+        return [{'role': 'system', 'content': _NO_THINK_PREFIX}]
+    prepared = [dict(message) for message in messages]
+    first = prepared[0]
+    if first.get('role') == 'system':
+        first['content'] = '%s\n\n%s' % (_NO_THINK_PREFIX, str(first.get('content', '')).strip())
+    else:
+        prepared.insert(0, {'role': 'system', 'content': _NO_THINK_PREFIX})
+    return prepared
+
+
+def _uses_ollama_response_format(model: str) -> bool:
+    clean_model = str(model or '').strip().lower()
+    return not any(clean_model.startswith(prefix) for prefix in _FORMAT_DISABLED_MODEL_PREFIXES)
+
+
+def _preflight_ready(text: str) -> bool:
+    clean_text = str(text or '').strip()
+    if not clean_text:
+        return False
+    try:
+        parsed = json.loads(clean_text)
+    except json.JSONDecodeError:
+        return '"ready"' in clean_text.lower() and 'true' in clean_text.lower()
+    return isinstance(parsed, dict) and parsed.get('ready') is True

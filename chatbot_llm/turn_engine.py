@@ -474,10 +474,27 @@ class DialogueTurnEngine:
         )
 
     def _execute_llm_failure_turn(self, user_text: str, history: list[str]) -> TurnExecutionResult:
+        if self._config.planner_mode_enabled and _looks_like_execution_text(user_text):
+            return self._execute_planner_timeout_turn(user_text=user_text, history=history)
         return self._execute_fallback_turn(
             user_text=user_text,
             history=history,
             intent_source='llm_response_failed',
+        )
+
+    def _execute_planner_timeout_turn(self, user_text: str, history: list[str]) -> TurnExecutionResult:
+        verbal_ack = 'I will try that now.'
+        updated_history = self._history_with_turn(history, user_text, verbal_ack)
+        self._handled_requests += 1
+        return self._build_result(
+            success=False,
+            verbal_ack=verbal_ack,
+            updated_history=updated_history,
+            intent='fallback',
+            intent_source='llm_response_failed_execution_handoff',
+            intent_confidence=0.0,
+            user_intent={'type': 'fallback', 'goal_text': str(user_text or '').strip()},
+            route=_EXECUTION_ROUTE,
         )
 
     def _execute_fallback_turn(

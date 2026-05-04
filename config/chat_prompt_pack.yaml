@@ -36,10 +36,45 @@ intent_prompt_addendum: |
   request to only the first action.
   If no single canonical label covers the whole request, you may keep the
   closest executable `user_intent.type` or use `fallback`.
+  Phrases that sequence actions ("and then", "after that", "while also", …)
+  together with motion or manipulation verbs should use a concise `goal`
+  covering the full user request so planner ingress can select multi-step mode.
   Do not include a top-level plan field or user_intent.plan. planner_llm owns
   executable steps.
 
 environment_description: "No specific objects described."
+
+planner_multi_step_heuristics:
+  coordination_markers:
+    - " and then "
+    - " then "
+    - " while "
+    - " while also "
+    - " also "
+    - " after that "
+    - " after you "
+    - " before that "
+    - " before you "
+    - " once you "
+    - " once that "
+    - " at the same time "
+    - " simultaneously "
+  action_hint_tokens:
+    - stand
+    - sit
+    - kneel
+    - crouch
+    - look
+    - move
+    - turn
+    - head
+    - bring
+    - grab
+    - pick
+    - place
+    - go
+    - guide
+    - walk
 
 response_schema:
   type: object

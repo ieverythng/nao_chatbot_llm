@@ -35,6 +35,10 @@ def make_config(
         think=False,
         response_max_tokens=64,
         intent_max_tokens=64,
+        preflight_enabled=True,
+        preflight_required=False,
+        preflight_timeout_sec=45.0,
+        preflight_keepalive_interval_sec=0.0,
         fallback_response='fallback',
         max_history_messages=20,
         scene_memory_turns=4,
@@ -45,6 +49,10 @@ def make_config(
         environment_description='No specific objects described.',
         response_schema={'type': 'object'},
         intent_schema={'type': 'object'},
+        planner_multi_step_heuristics={
+            'coordination_markers': [' and then ', ' then '],
+            'action_hint_tokens': ['stand', 'sit', 'look', 'move', 'head'],
+        },
         identity_reminder_every_n_turns=6,
         intent_detection_mode=intent_mode,
         prompt_pack_path='',
@@ -268,7 +276,7 @@ def test_turn_engine_planner_mode_infers_execution_route_without_second_call():
     assert result.intent_source == 'llm_response_inferred_route'
 
 
-def test_turn_engine_planner_mode_does_not_use_rules_when_llm_response_fails():
+def test_turn_engine_planner_mode_hands_execution_to_planner_when_llm_response_fails():
     engine = DialogueTurnEngine(
         config=make_config(intent_mode='llm_with_rules_fallback', planner_mode_enabled=True),
         transport=FakeTransport(['']),
@@ -283,9 +291,13 @@ def test_turn_engine_planner_mode_does_not_use_rules_when_llm_response_fails():
     )
 
     assert result.success is False
-    assert result.verbal_ack == 'fallback'
-    assert result.intent_source == 'llm_response_failed'
-    assert result.route == 'dialogue'
+    assert result.verbal_ack == 'I will try that now.'
+    assert result.intent_source == 'llm_response_failed_execution_handoff'
+    assert result.user_intent == {
+        'type': 'fallback',
+        'goal_text': 'can you look around and tell me what you see',
+    }
+    assert result.route == 'execution'
 
 
 def test_turn_engine_forwards_think_flag_to_transport():

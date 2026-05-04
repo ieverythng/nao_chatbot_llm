@@ -94,6 +94,7 @@ def test_build_planner_request_intent_encodes_expected_message_shape():
     assert payload['ack_mode'] == 'auto'
     assert payload['goal_id'] == 'goal_turn_2'
     assert payload['request_kind'] == 'new_goal'
+    assert 'user_text' not in payload
 
 
 def test_build_planner_request_intent_uses_confidence_floor_for_execution_route():
@@ -327,3 +328,39 @@ def test_should_route_intents_through_planner_for_explicit_execution_route() -> 
     )
 
     assert should_route_intents_through_planner([], turn_result=result) is True
+
+
+def test_build_planner_request_payload_uses_yaml_style_multi_step_heuristics():
+    payload = build_planner_request_payload(
+        turn_id='turn_custom_multi',
+        user_text='raise your arm despues sit down',
+        turn_result=_make_result(
+            intent='fallback',
+            user_intent={'type': 'fallback'},
+        ),
+        knowledge_context='',
+        multi_step_heuristics={
+            'coordination_markers': [' despues '],
+            'action_hint_tokens': ['raise', 'sit'],
+        },
+    )
+
+    assert payload['planner_mode'] == 'multi_step'
+
+
+def test_build_planner_request_payload_does_not_guess_when_heuristics_do_not_match():
+    payload = build_planner_request_payload(
+        turn_id='turn_custom_default',
+        user_text='move your head up and then sit down',
+        turn_result=_make_result(
+            intent='head_look_up',
+            user_intent={'type': 'head_look_up'},
+        ),
+        knowledge_context='',
+        multi_step_heuristics={
+            'coordination_markers': [' despues '],
+            'action_hint_tokens': ['raise'],
+        },
+    )
+
+    assert payload['planner_mode'] == 'default'
