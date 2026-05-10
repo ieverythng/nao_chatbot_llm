@@ -41,21 +41,17 @@ class OllamaTransport:
     ) -> str:
         """Run one non-streaming chat request against Ollama."""
         request_messages = _no_think_messages(model, messages)
-        payload = {
-            'model': model,
-            'messages': request_messages,
-            'stream': False,
-            'think': bool(think),
-            'options': {
-                'num_ctx': self._context_window_tokens,
-                'temperature': float(temperature),
-                'top_p': float(top_p),
-            },
-        }
-        if response_format is not None and _uses_ollama_response_format(model):
-            payload['format'] = response_format
-        if max_tokens is not None:
-            payload['options']['num_predict'] = max(1, int(max_tokens))
+        payload = _chat_payload(
+            server_url=self._server_url,
+            model=model,
+            messages=request_messages,
+            temperature=temperature,
+            top_p=top_p,
+            think=think,
+            context_window_tokens=self._context_window_tokens,
+            max_tokens=max_tokens,
+            response_format=response_format,
+        )
 
         request = urllib.request.Request(
             self._server_url,
@@ -129,6 +125,40 @@ class OllamaTransport:
         )
         return _preflight_ready(text)
 
+    def readiness_probe(
+        self,
+        *,
+        model: str,
+        timeout_sec: float,
+        temperature: float,
+        top_p: float,
+        think: bool,
+        max_tokens: int = 32,
+    ) -> bool:
+        """Return true when the model can answer a demo-shaped chatbot request."""
+        text = self.query(
+            messages=[
+                {
+                    'role': 'system',
+                    'content': (
+                        'You are a concise robot dialogue router. Reply with one short '
+                        'verbal acknowledgement for a live demo.'
+                    ),
+                },
+                {
+                    'role': 'user',
+                    'content': 'Move your head to the right and tell me what you see.',
+                },
+            ],
+            timeout_sec=timeout_sec,
+            model=model,
+            temperature=temperature,
+            top_p=top_p,
+            think=think,
+            max_tokens=max_tokens,
+        )
+        return bool(str(text or '').strip())
+
     # -----------------------------------------------------------------------
     # Debug and diagnostics helpers
     # -----------------------------------------------------------------------
@@ -136,17 +166,79 @@ class OllamaTransport:
     def log_model_inventory(self) -> None:
         """Log available model names from the Ollama tags endpoint."""
         try:
-            tags_url = self._server_url.replace('/api/chat', '/api/tags')
+            tags_url = _model_inventory_url(self._server_url)
             with urllib.request.urlopen(tags_url, timeout=5.0) as response:
                 payload = json.loads(response.read().decode('utf-8'))
-            models = [str(item.get('name', '')).strip() for item in payload.get('models', [])]
+            models = _model_names(payload)
             models = [name for name in models if name]
             if models:
-                self._logger.info('Ollama available models: %s' % ', '.join(models))
+                self._logger.info('Available LLM models: %s' % ', '.join(models))
             else:
-                self._logger.warn('Ollama tags endpoint returned no models')
+                self._logger.warn('LLM model inventory endpoint returned no models')
         except Exception as err:  # pragma: no cover - network dependent
-            self._logger.warn(f'Could not query Ollama model inventory: {err}')
+            self._logger.warn(f'Could not query LLM model inventory: {err}')
+
+
+def _chat_payload(
+    *,
+    server_url: str,
+    model: str,
+    messages: list[dict],
+    temperature: float,
+    top_p: float,
+    think: bool,
+    context_window_tokens: int,
+    max_tokens: int | None,
+    response_format: dict | None,
+) -> dict:
+    if _is_openai_chat_url(server_url):
+        payload = {
+            'model': model,
+            'messages': messages,
+            'temperature': float(temperature),
+            'top_p': float(top_p),
+        }
+        if max_tokens is not None:
+            payload['max_tokens'] = max(1, int(max_tokens))
+        return payload
+
+    payload = {
+        'model': model,
+        'messages': messages,
+        'stream': False,
+        'think': bool(think),
+        'options': {
+            'num_ctx': int(context_window_tokens),
+            'temperature': float(temperature),
+            'top_p': float(top_p),
+        },
+    }
+    if response_format is not None and _uses_ollama_response_format(model):
+        payload['format'] = response_format
+    if max_tokens is not None:
+        payload['options']['num_predict'] = max(1, int(max_tokens))
+    return payload
+
+
+def _is_openai_chat_url(server_url: str) -> bool:
+    return str(server_url or '').rstrip('/').endswith('/v1/chat/completions')
+
+
+def _model_inventory_url(server_url: str) -> str:
+    clean_url = str(server_url or '').rstrip('/')
+    if _is_openai_chat_url(clean_url):
+        return clean_url[: -len('/chat/completions')] + '/models'
+    return clean_url.replace('/api/chat', '/api/tags')
+
+
+def _model_names(payload: dict) -> list[str]:
+    if not isinstance(payload, dict):
+        return []
+    if isinstance(payload.get('models'), list):
+        return [str(item.get('name', '')).strip() for item in payload.get('models', [])]
+    if isinstance(payload.get('data'), list):
+        return [str(item.get('id', '')).strip() for item in payload.get('data', [])]
+    return []
 
 
 def _extract_chat_text(payload: dict) -> str:

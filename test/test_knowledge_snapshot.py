@@ -26,6 +26,8 @@ def make_config() -> ChatbotConfig:
         preflight_enabled=True,
         preflight_required=False,
         preflight_timeout_sec=45.0,
+        preflight_attempts=1,
+        preflight_realistic_enabled=False,
         preflight_keepalive_interval_sec=0.0,
         fallback_response='fallback',
         max_history_messages=20,

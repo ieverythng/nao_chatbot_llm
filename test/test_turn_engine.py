@@ -38,6 +38,8 @@ def make_config(
         preflight_enabled=True,
         preflight_required=False,
         preflight_timeout_sec=45.0,
+        preflight_attempts=1,
+        preflight_realistic_enabled=False,
         preflight_keepalive_interval_sec=0.0,
         fallback_response='fallback',
         max_history_messages=20,
@@ -296,6 +298,28 @@ def test_turn_engine_planner_mode_hands_execution_to_planner_when_llm_response_f
     assert result.user_intent == {
         'type': 'fallback',
         'goal_text': 'can you look around and tell me what you see',
+    }
+    assert result.route == 'execution'
+
+
+def test_turn_engine_planner_mode_hands_scan_timeout_to_planner():
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm_with_rules_fallback', planner_mode_enabled=True),
+        transport=FakeTransport(['']),
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='Can you scan the room for a person?',
+        history=[],
+        user_id='user1',
+    )
+
+    assert result.intent_source == 'llm_response_failed_execution_handoff'
+    assert result.user_intent == {
+        'type': 'fallback',
+        'goal_text': 'Can you scan the room for a person?',
     }
     assert result.route == 'execution'
 

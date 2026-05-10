@@ -300,14 +300,19 @@ class LLMChatbot(Node):
                 raw_input=text,
                 confidence=result.intent_confidence,
             )
-        if self._planner_handoff is not None and self._planner_handoff.publish_execution_turn_if_needed(
-            session=session,
-            user_id=user_id,
-            turn_id=turn_id,
-            user_text=text,
-            knowledge_context=knowledge_context,
-            result=result,
-            direct_intents=direct_intents,
+        planner_handoff_allowed = user_id != SYSTEM_USER_ID
+        if (
+            planner_handoff_allowed
+            and self._planner_handoff is not None
+            and self._planner_handoff.publish_execution_turn_if_needed(
+                session=session,
+                user_id=user_id,
+                turn_id=turn_id,
+                user_text=text,
+                knowledge_context=knowledge_context,
+                result=result,
+                direct_intents=direct_intents,
+            )
         ):
             response.intents = []
         else:
@@ -612,19 +617,19 @@ class LLMChatbot(Node):
 
         models = _unique_models(config.model, config.intent_model)
         self.get_logger().info(
-            '[LLM PREFLIGHT] chatbot starting | models=%s timeout=%.1fs required=%s'
-            % (','.join(models), config.preflight_timeout_sec, config.preflight_required)
+            '[LLM PREFLIGHT] chatbot starting | models=%s timeout=%.1fs required=%s '
+            'attempts=%d realistic=%s'
+            % (
+                ','.join(models),
+                config.preflight_timeout_sec,
+                config.preflight_required,
+                config.preflight_attempts,
+                config.preflight_realistic_enabled,
+            )
         )
         failed_models = []
         for model in models:
-            if self._transport.preflight(
-                model=model,
-                timeout_sec=config.preflight_timeout_sec,
-                temperature=config.temperature,
-                top_p=config.top_p,
-                think=config.think,
-            ):
-                self.get_logger().info('[LLM PREFLIGHT] chatbot model ready | model=%s' % model)
+            if self._run_model_readiness_probes(model):
                 continue
             failed_models.append(model)
             self.get_logger().error('[LLM PREFLIGHT] chatbot model failed | model=%s' % model)
@@ -636,6 +641,46 @@ class LLMChatbot(Node):
             )
             return False
         return True
+
+    def _run_model_readiness_probes(self, model: str) -> bool:
+        config = self._config
+        if config is None or self._transport is None:
+            return True
+
+        for attempt in range(1, config.preflight_attempts + 1):
+            if not self._transport.preflight(
+                model=model,
+                timeout_sec=config.preflight_timeout_sec,
+                temperature=config.temperature,
+                top_p=config.top_p,
+                think=config.think,
+            ):
+                self.get_logger().warn(
+                    '[LLM PREFLIGHT] chatbot tiny probe failed | model=%s attempt=%d/%d'
+                    % (model, attempt, config.preflight_attempts)
+                )
+                continue
+
+            if config.preflight_realistic_enabled and not self._transport.readiness_probe(
+                model=model,
+                timeout_sec=config.preflight_timeout_sec,
+                temperature=config.temperature,
+                top_p=config.top_p,
+                think=config.think,
+                max_tokens=config.response_max_tokens,
+            ):
+                self.get_logger().warn(
+                    '[LLM PREFLIGHT] chatbot realistic probe failed | model=%s attempt=%d/%d'
+                    % (model, attempt, config.preflight_attempts)
+                )
+                continue
+
+            self.get_logger().info(
+                '[LLM PREFLIGHT] chatbot model ready | model=%s attempt=%d/%d'
+                % (model, attempt, config.preflight_attempts)
+            )
+            return True
+        return False
 
     def _start_llm_keepalive(self) -> None:
         config = self._config

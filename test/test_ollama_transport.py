@@ -1,6 +1,71 @@
 import json
 
 from chatbot_llm.ollama_transport import OllamaTransport
+from chatbot_llm.ollama_transport import _chat_payload
+from chatbot_llm.ollama_transport import _model_inventory_url
+from chatbot_llm.ollama_transport import _model_names
+
+
+def test_openai_chat_url_uses_openai_payload_shape():
+    payload = _chat_payload(
+        server_url='http://10.7.138.215:8004/v1/chat/completions',
+        model='served-model',
+        messages=[{'role': 'user', 'content': 'hello'}],
+        temperature=0.2,
+        top_p=0.9,
+        think=False,
+        context_window_tokens=4096,
+        max_tokens=32,
+        response_format={'type': 'object'},
+    )
+
+    assert payload == {
+        'model': 'served-model',
+        'messages': [{'role': 'user', 'content': 'hello'}],
+        'temperature': 0.2,
+        'top_p': 0.9,
+        'max_tokens': 32,
+    }
+
+
+def test_ollama_chat_url_keeps_ollama_payload_shape():
+    payload = _chat_payload(
+        server_url='http://127.0.0.1:11434/api/chat',
+        model='llama3.2',
+        messages=[{'role': 'user', 'content': 'hello'}],
+        temperature=0.2,
+        top_p=0.9,
+        think=True,
+        context_window_tokens=2048,
+        max_tokens=16,
+        response_format={'type': 'object'},
+    )
+
+    assert payload['stream'] is False
+    assert payload['think'] is True
+    assert payload['options'] == {
+        'num_ctx': 2048,
+        'temperature': 0.2,
+        'top_p': 0.9,
+        'num_predict': 16,
+    }
+    assert payload['format'] == {'type': 'object'}
+
+
+def test_model_inventory_urls_match_backend_shape():
+    assert (
+        _model_inventory_url('http://10.7.138.215:8004/v1/chat/completions')
+        == 'http://10.7.138.215:8004/v1/models'
+    )
+    assert (
+        _model_inventory_url('http://127.0.0.1:11434/api/chat')
+        == 'http://127.0.0.1:11434/api/tags'
+    )
+
+
+def test_model_names_support_openai_and_ollama_inventory_payloads():
+    assert _model_names({'data': [{'id': 'openai-model'}]}) == ['openai-model']
+    assert _model_names({'models': [{'name': 'ollama-model'}]}) == ['ollama-model']
 
 
 class _FakeResponse:

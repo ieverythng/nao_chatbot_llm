@@ -41,6 +41,11 @@ _EXECUTION_HINT_MARKERS = (
     ' kneel',
     ' look ',
     ' move ',
+    ' scan ',
+    ' search ',
+    ' find ',
+    ' locate ',
+    ' detect ',
     ' turn ',
     ' head ',
     ' bring ',
@@ -49,6 +54,9 @@ _EXECUTION_HINT_MARKERS = (
     ' place ',
     ' guide ',
     ' walk ',
+    ' person',
+    ' people',
+    ' room',
 )
 
 

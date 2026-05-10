@@ -1,8 +1,8 @@
 /chatbot_llm:
   ros__parameters:
     enabled: true
-    server_url: 'http://localhost:11434/api/chat'
-    model: 'qwen3.5:397b-cloud'
+    server_url: 'http://10.7.138.215:8004/v1/chat/completions'
+    model: 'QuantTrio/Qwen3-VL-30B-A3B-Instruct-AWQ'
     intent_model: ''
     api_key: ''
     system_prompt: |

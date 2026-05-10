@@ -53,6 +53,8 @@ class ChatbotConfig:
     preflight_enabled: bool
     preflight_required: bool
     preflight_timeout_sec: float
+    preflight_attempts: int
+    preflight_realistic_enabled: bool
     preflight_keepalive_interval_sec: float
     fallback_response: str
     max_history_messages: int
@@ -114,6 +116,8 @@ def declare_backend_parameters(node) -> None:
     node.declare_parameter('preflight_enabled', True)
     node.declare_parameter('preflight_required', False)
     node.declare_parameter('preflight_timeout_sec', 45.0)
+    node.declare_parameter('preflight_attempts', 1)
+    node.declare_parameter('preflight_realistic_enabled', False)
     node.declare_parameter('preflight_keepalive_interval_sec', 0.0)
     node.declare_parameter(
         'fallback_response',
@@ -231,6 +235,13 @@ def load_backend_config(node) -> ChatbotConfig:
         preflight_timeout_sec=max(
             0.5,
             float(node.get_parameter('preflight_timeout_sec').value),
+        ),
+        preflight_attempts=max(
+            1,
+            int(node.get_parameter('preflight_attempts').value),
+        ),
+        preflight_realistic_enabled=as_bool(
+            node.get_parameter('preflight_realistic_enabled').value
         ),
         preflight_keepalive_interval_sec=max(
             0.0,
