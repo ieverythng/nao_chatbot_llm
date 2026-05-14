@@ -111,6 +111,10 @@ class LLMChatbot(Node):
         self._dialogue_id = None
         self._dialogue_result = None
         self._dialogue_done = threading.Event()
+        # Guards _dialogue_id, _dialogue_result, _msgs_history, _nb_requests
+        # against concurrent access from MultiThreadedExecutor callbacks. The
+        # lock is never held across HTTP calls.
+        self._state_lock = threading.Lock()
 
         self.get_logger().info('Chatbot chatbot_llm started, but not yet configured.')
 
@@ -141,21 +145,23 @@ class LLMChatbot(Node):
         # We also check if the dialogue role is supported by the chatbot.
         # In this example, we only support only the "__default__" role.
 
-        if self._dialogue_id or goal.role.name != '__default__':
-            return GoalResponse.REJECT
+        with self._state_lock:
+            if self._dialogue_id or goal.role.name != '__default__':
+                return GoalResponse.REJECT
         return GoalResponse.ACCEPT
 
     def on_dialog_accept(self, handle: ServerGoalHandle):
-        self._dialogue_id =  UUID(bytes=bytes(handle.goal_id.uuid))
-        self._dialogue_result = None
+        with self._state_lock:
+            self._dialogue_id = UUID(bytes=bytes(handle.goal_id.uuid))
+            self._dialogue_result = None
+            self._msgs_history = []
         self._dialogue_done.clear()
         handle.execute()
 
     def on_dialog_cancel(self, handle: ServerGoalHandle):
-        if self._dialogue_id:
-            return CancelResponse.ACCEPT
-        else:
-            return CancelResponse.REJECT
+        with self._state_lock:
+            has_dialogue = self._dialogue_id is not None
+        return CancelResponse.ACCEPT if has_dialogue else CancelResponse.REJECT
 
     def on_dialog_execute(self, handle: ServerGoalHandle):
         id = UUID(bytes=bytes(handle.goal_id.uuid))
@@ -170,17 +176,20 @@ class LLMChatbot(Node):
                 if handle.is_cancel_requested:
                     handle.canceled()
                     return Dialogue.Result(error_msg='Dialogue cancelled')
-                if self._dialogue_result:
-                    if self._dialogue_result.error_msg:
+                with self._state_lock:
+                    result = self._dialogue_result
+                if result:
+                    if result.error_msg:
                         handle.abort()
                     else:
                         handle.succeed()
-                    return self._dialogue_result
+                    return result
             return Dialogue.Result(error_msg='Dialogue execution interrupted')
         finally:
             self.get_logger().info(f"Dialogue {id} is finished")
-            self._dialogue_id = None
-            self._dialogue_result = None
+            with self._state_lock:
+                self._dialogue_id = None
+                self._dialogue_result = None
             self._dialogue_done.clear()
 
     def on_dialogue_interaction(self,
@@ -190,50 +199,39 @@ class LLMChatbot(Node):
         input = chatbot_request.input
         response_expected = chatbot_request.response_expected
         id = UUID(bytes=bytes(chatbot_request.dialogue_id.uuid))
-        if id != self._dialogue_id:
-            error_msg = f"Received a dialogue interaction for an unknown dialogue id: {id}"
-            self.get_logger().error(error_msg)
-            chatbot_response.error_msg = error_msg
-            return chatbot_response
 
-        # Implement here the logic to process the natural text input
-        #
-        # You might want to:
-        # - recognize and return the user intent (if any), and map it to the
-        #   Intent.msg semantics.
-        # - return a suggested response to the user (if any) - return a result
-        #   (if the dialogue has exhausted its role), which would close the
-        #   dialogue
-        #
-        # For now, we just try to recognize a greeting, and close the dialogue
-        # if requested
-        suggested_response = ""
-        intent = None
+        with self._state_lock:
+            if id != self._dialogue_id:
+                error_msg = f"Received a dialogue interaction for an unknown dialogue id: {id}"
+                self.get_logger().error(error_msg)
+                chatbot_response.error_msg = error_msg
+                return chatbot_response
 
         self.get_logger().info(f"input from {user_id}: {input}")
-        self._nb_requests += 1
-
         if not user_id:
             user_id = "anonymous_user"
 
-        system_prompt_msg = self._render_system_prompt(user_id)
-        if not self._msgs_history:
-            self._msgs_history = [system_prompt_msg]
-        else:
-            # Refresh the system prompt so user_id stays current across turns.
-            self._msgs_history[0] = system_prompt_msg
-        self._msgs_history.append(
-            {
+        # Build the message list under the lock, then snapshot it so the HTTP
+        # call below does not hold the lock for the duration of the request.
+        with self._state_lock:
+            self._nb_requests += 1
+            system_prompt_msg = self._render_system_prompt(user_id)
+            if not self._msgs_history:
+                self._msgs_history = [system_prompt_msg]
+            else:
+                # Refresh the system prompt so user_id stays current across turns.
+                self._msgs_history[0] = system_prompt_msg
+            self._msgs_history.append({
                 'role': 'user',
                 'content': f'{user_id} "{input}"',
-            }
-        )
-        self._trim_history()
+            })
+            self._trim_history()
+            messages_snapshot = list(self._msgs_history)
 
         if not response_expected:
             return chatbot_response
 
-        llm_response = self._llm_client.chat(self._msgs_history)
+        llm_response = self._llm_client.chat(messages_snapshot)
         if not llm_response:
             chatbot_response.error_msg = "LLM request failed"
             return chatbot_response
@@ -248,10 +246,9 @@ class LLMChatbot(Node):
 
             if json_res.verbal_ack is not None:
                 verbal_ack = json_res.verbal_ack
-                # if we have a verbal acknowledgement, add it to the dialogue history,
-                # and send it to the user
-                self._msgs_history.append({"role": "assistant", "content": verbal_ack})
-                self._trim_history()
+                with self._state_lock:
+                    self._msgs_history.append({"role": "assistant", "content": verbal_ack})
+                    self._trim_history()
                 chatbot_response.response = verbal_ack
 
             if json_res.user_intent is not None:
@@ -263,17 +260,16 @@ class LLMChatbot(Node):
 
         else:
             self.get_logger().warn("Unable to process user input. Forwarding a 'RAW_USER_INPUT'")
-            intent = Intent(intent=Intent.RAW_USER_INPUT,
-                            source=user_id,
-                            modality=Intent.MODALITY_SPEECH,
-                            confidence=1.0,
-                            data=json.dumps({
-                                "input": input,
-                                "suggested_response": raw_response,
-                            }))
-
-            chatbot_response.response = suggested_response
-            chatbot_response.intents = [intent]
+            chatbot_response.intents = [Intent(
+                intent=Intent.RAW_USER_INPUT,
+                source=user_id,
+                modality=Intent.MODALITY_SPEECH,
+                confidence=1.0,
+                data=json.dumps({
+                    "input": input,
+                    "suggested_response": raw_response,
+                }),
+            )]
 
         return chatbot_response
 
@@ -416,6 +412,8 @@ class LLMChatbot(Node):
     #################################
 
     def publish_diagnostics(self):
+        with self._state_lock:
+            nb_requests = self._nb_requests
 
         arr = DiagnosticArray()
         msg = DiagnosticStatus(
@@ -428,7 +426,7 @@ class LLMChatbot(Node):
                          value=self._state_machine.current_state[1]),
                 KeyValue(key="llm server", value=self._llm_client.server),
                 KeyValue(key="llm model", value=self._llm_client.model),
-                KeyValue(key="# requests since start", value=str(self._nb_requests)),
+                KeyValue(key="# requests since start", value=str(nb_requests)),
             ],
         )
 
