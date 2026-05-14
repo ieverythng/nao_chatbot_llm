@@ -97,7 +97,6 @@ class LLMChatbot(Node):
         self._get_supported_locales_server = None
         self._set_default_locale_server = None
 
-        self._timer = None
         self._diag_pub = None
         self._diag_timer = None
 
@@ -369,18 +368,13 @@ class LLMChatbot(Node):
         self._dialogue_interaction_srv = self.create_service(
             DialogueInteraction, '/chatbot/dialogue_interaction', self.on_dialogue_interaction)
 
-        # Define a timer that fires every second to call the run function
-        timer_period = 1  # in sec
-        self._timer = self.create_timer(timer_period, self.run)
-
         self.get_logger().info("Chatbot chatbot_llm is active and running")
         return super().on_activate(state)
 
     def on_deactivate(self, state: State) -> TransitionCallbackReturn:
-        """Stop the timer to stop calling the `run` function (main task of your application)."""
+        """Tear down the action server and service brought up by on_activate."""
         self.get_logger().info("Stopping chatbot...")
 
-        self.destroy_timer(self._timer)
         self._dialogue_start_action.destroy()
         self.destroy_service(self._dialogue_interaction_srv)
 
@@ -433,13 +427,3 @@ class LLMChatbot(Node):
         arr.header.stamp = self.get_clock().now().to_msg()
         arr.status = [msg]
         self._diag_pub.publish(arr)
-
-    def run(self) -> None:
-        """
-        Background task of the chatbot.
-
-        For now, we do not need to do anything here, as the chatbot is
-        event-driven, and the `on_user_input` callback is called when a new
-        user input is received.
-        """
-        pass
