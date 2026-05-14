@@ -145,8 +145,20 @@ class LLMChatbot(Node):
         # In this example, we only support only the "__default__" role.
 
         with self._state_lock:
-            if self._dialogue_id or goal.role.name != '__default__':
-                return GoalResponse.REJECT
+            active_dialogue_id = self._dialogue_id
+
+        if active_dialogue_id is not None:
+            self.get_logger().warn(
+                f"Rejecting start_dialogue goal: another dialogue ({active_dialogue_id}) "
+                "is already active. Only one dialogue at a time is supported."
+            )
+            return GoalResponse.REJECT
+        if goal.role.name != '__default__':
+            self.get_logger().warn(
+                f"Rejecting start_dialogue goal: role '{goal.role.name}' is not supported. "
+                "Only the '__default__' role is handled by this chatbot."
+            )
+            return GoalResponse.REJECT
         return GoalResponse.ACCEPT
 
     def on_dialog_accept(self, handle: ServerGoalHandle):
