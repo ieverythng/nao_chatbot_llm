@@ -80,7 +80,7 @@ def build_llm_messages(
       ... one entry per history utterance, mapped by speaker:
             SYSTEM    -> {'role': 'system',    'content': text}
             ASSISTANT -> {'role': 'assistant', 'content': text}
-            <user>    -> {'role': 'user',      'content': '<user> "<text>"'}
+            <user>    -> {'role': 'user',      'content': '<user>: "<text>"'}
     """
     messages = [{"role": "system", "content": system_prompt}]
     if summary:
@@ -97,7 +97,7 @@ def build_llm_messages(
             speaker = utt.speaker or "anonymous_user"
             messages.append({
                 "role": "user",
-                "content": f'{speaker} "{utt.text}"',
+                "content": f'{speaker}: "{utt.text}"',
             })
     return messages
 
