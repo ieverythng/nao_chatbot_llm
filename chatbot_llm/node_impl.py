@@ -131,6 +131,7 @@ class LLMChatbot(Node):
         json_data = json.dumps({
             "model": model,
             "messages": messages,
+            "think": False,
 
             "format": ChatbotResponse.model_json_schema() if hasattr(ChatbotResponse, "model_json_schema") else ChatbotResponse.schema_json()
         })
