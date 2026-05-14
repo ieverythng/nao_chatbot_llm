@@ -95,6 +95,10 @@ class LLMChatbot(Node):
             'system_prompt', "You are a helpful interactive robot.",
             ParameterDescriptor(description='System prompt to use for the LLM')
         )
+        self.declare_parameter(
+            'request_timeout', 30.0,
+            ParameterDescriptor(description='Timeout (in seconds) for HTTP requests to the LLM server')
+        )
 
         self.get_logger().info("Initialising...")
 
@@ -110,6 +114,7 @@ class LLMChatbot(Node):
         self._llm_server = None
         self._llm_model = None
         self._api_key = None
+        self._request_timeout = None
         self._system_prompt_msg = None
 
         self._nb_requests = 0
@@ -137,16 +142,20 @@ class LLMChatbot(Node):
             "format": ChatbotResponse.model_json_schema() if hasattr(ChatbotResponse, "model_json_schema") else ChatbotResponse.schema_json()
         })
 
+        response = None
         try:
             self.get_logger().info("Sending request to LLM and waiting for response...")
-            response = requests.post(url, headers=headers, data=json_data)
+            response = requests.post(url, headers=headers, data=json_data,
+                                     timeout=self._request_timeout)
             response.raise_for_status()
             return response.json()['choices'][0]
         except requests.exceptions.RequestException as e:
-            try:
-                error_msg = response.json()['error']['message']
-            except (ValueError, KeyError):
-                error_msg = "Unable to decode error message from server"
+            error_msg = "Unable to decode error message from server"
+            if response is not None:
+                try:
+                    error_msg = response.json()['error']['message']
+                except (ValueError, KeyError):
+                    pass
             self.get_logger().error(f"Error while sending request to {url}:\n{e}\n{error_msg}\n"
                                     "Is the server running, or the URL incorrect "
                                     f"(eg wrong port)? I was trying to connect to: {url}")
@@ -282,7 +291,8 @@ class LLMChatbot(Node):
             api_key=self._api_key
         )
         if not llm_response:
-            return
+            chatbot_response.error_msg = "LLM request failed"
+            return chatbot_response
 
         raw_response = self.preprocess_llm_response(llm_response['message']['content'])
         self.get_logger().info(f"Raw LLM response: {raw_response}")
@@ -386,6 +396,7 @@ class LLMChatbot(Node):
         self._llm_server = self.get_parameter('server_url').value
         self._llm_model = self.get_parameter('model').value
         self._api_key = self.get_parameter_or('api_key', None).value
+        self._request_timeout = self.get_parameter('request_timeout').value
         system_prompt = self.get_parameter('system_prompt').value
 
         tpl = Template(system_prompt)
