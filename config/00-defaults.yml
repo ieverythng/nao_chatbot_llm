@@ -4,6 +4,7 @@
     model: llama3.2:1b # model (or model family) name
     api_key: "" # for cloud services requiring an API key. Not needed when using eg ollama
     request_timeout: 30.0 # HTTP timeout (in seconds) for requests to the LLM server
+    robot_name: "robot" # substituted into $robot_name in the system prompt
     system_prompt: |
         You are a friendly robot called $robot_name. You try to help the user to the best of your abilities.
         You are always helpful, and ask further questions if the desires of the user are unclear.

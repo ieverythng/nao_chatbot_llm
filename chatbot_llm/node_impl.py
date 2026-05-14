@@ -95,6 +95,10 @@ class LLMChatbot(Node):
             ParameterDescriptor(description='System prompt to use for the LLM')
         )
         self.declare_parameter(
+            'robot_name', "robot",
+            ParameterDescriptor(description='Name of the robot, substituted into $robot_name in the system prompt')
+        )
+        self.declare_parameter(
             'request_timeout', 30.0,
             ParameterDescriptor(description='Timeout (in seconds) for HTTP requests to the LLM server')
         )
@@ -114,7 +118,8 @@ class LLMChatbot(Node):
         self._llm_model = None
         self._api_key = None
         self._request_timeout = None
-        self._system_prompt_msg = None
+        self._system_prompt_tpl = None
+        self._robot_name = None
 
         self._nb_requests = 0
         self._msgs_history = []
@@ -192,6 +197,16 @@ class LLMChatbot(Node):
     def escape_json(self, text):
         """Escape all json special characters that might appear in the text."""
         return text.replace('"', '\\"').replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
+
+    def _render_system_prompt(self, user_id: str) -> dict:
+        """Render the system prompt template with the current user_id."""
+        rendered = self._system_prompt_tpl.safe_substitute(
+            user_id=user_id,
+            robot_name=self._robot_name,
+            action_list=self.make_action_list(),
+            environment=self.get_environment_description(),
+        )
+        return {'role': 'system', 'content': rendered}
 
     def on_dialog_goal(self, goal: Dialogue.Goal):
         # Check if the goal is valid and the node is able to accept it
@@ -277,8 +292,12 @@ class LLMChatbot(Node):
         if not user_id:
             user_id = "anonymous_user"
 
+        system_prompt_msg = self._render_system_prompt(user_id)
         if not self._msgs_history:
-            self._msgs_history = [self._system_prompt_msg]
+            self._msgs_history = [system_prompt_msg]
+        else:
+            # Refresh the system prompt so user_id stays current across turns.
+            self._msgs_history[0] = system_prompt_msg
         self._msgs_history.append(
             {
                 'role': 'user',
@@ -402,14 +421,8 @@ class LLMChatbot(Node):
         self._llm_model = self.get_parameter('model').value
         self._api_key = self.get_parameter_or('api_key', None).value
         self._request_timeout = self.get_parameter('request_timeout').value
-        system_prompt = self.get_parameter('system_prompt').value
-
-        tpl = Template(system_prompt)
-        rendered_system_prompt = tpl.safe_substitute(
-                                                user_id="a human",
-                                                action_list=self.make_action_list(),
-                                                environment=self.get_environment_description())
-        self._system_prompt_msg = {'role': 'system', 'content': rendered_system_prompt}
+        self._robot_name = self.get_parameter('robot_name').value
+        self._system_prompt_tpl = Template(self.get_parameter('system_prompt').value)
 
         self.get_logger().info(f"I will connect to the LLM server on {self._llm_server}.")
 
