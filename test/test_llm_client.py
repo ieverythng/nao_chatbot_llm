@@ -17,9 +17,9 @@
 import json
 from unittest.mock import MagicMock, patch
 
-import requests
-
 from chatbot_llm.llm_client import LLMClient
+
+import requests
 
 
 class _CapturingLogger:

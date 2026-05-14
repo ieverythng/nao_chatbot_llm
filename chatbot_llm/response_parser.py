@@ -18,6 +18,7 @@ import json
 from typing import Literal, Optional
 
 from hri_actions_msgs.msg import Intent
+
 import pydantic
 from pydantic import BaseModel, ValidationError
 
@@ -51,7 +52,7 @@ class ChatbotResponse(BaseModel):
 
 
 def extract_json_object(raw_text: str) -> str:
-    """Return the first balanced JSON object substring in `raw_text`, or `raw_text` itself if none."""
+    """Return the first balanced JSON object substring, or `raw_text` itself if none is found."""
     start = raw_text.find('{')
     if start < 0:
         return raw_text
