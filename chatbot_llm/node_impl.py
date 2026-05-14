@@ -27,6 +27,7 @@ from rcl_interfaces.msg import ParameterDescriptor
 from rclpy.action import ActionServer, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.lifecycle import Node, State, TransitionCallbackReturn
+from rclpy.logging import LoggingSeverity
 
 from .llm_client import LLMClient
 from .messages import (
@@ -228,6 +229,26 @@ class LLMChatbot(Node):
             f"DialogueInteraction id={dialogue_id} role={role!r} "
             f"user={user_id!r} history_len={len(history)}"
         )
+
+        # Verbose dump of the full pre- and post-translation views, gated
+        # at DEBUG so a 50-turn conversation doesn't bloat normal runs.
+        # The `if` short-circuits the string formatting when DEBUG is off
+        # (rclpy's log call itself would no-op, but the f-strings here
+        # are non-trivial). Enable with e.g.
+        # `--ros-args --log-level chatbot_llm:=debug`.
+        if self.get_logger().get_effective_level() <= LoggingSeverity.DEBUG:
+            inbound_dump = "\n".join(
+                f"  [{u.speaker}] {u.text!r}" for u in history
+            )
+            self.get_logger().debug(
+                f"Inbound history ({len(history)} entries):\n{inbound_dump}"
+            )
+            messages_dump = "\n".join(
+                f"  [{m['role']}] {m['content']!r}" for m in messages
+            )
+            self.get_logger().debug(
+                f"Messages to LLM ({len(messages)} entries):\n{messages_dump}"
+            )
 
         llm_response = self._llm_client.chat(messages)
         if not llm_response:
