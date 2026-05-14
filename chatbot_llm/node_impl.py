@@ -194,10 +194,6 @@ class LLMChatbot(Node):
 
         return text
 
-    def escape_json(self, text):
-        """Escape all json special characters that might appear in the text."""
-        return text.replace('"', '\\"').replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
-
     def _render_system_prompt(self, user_id: str) -> dict:
         """Render the system prompt template with the current user_id."""
         rendered = self._system_prompt_tpl.safe_substitute(
@@ -364,8 +360,10 @@ class LLMChatbot(Node):
                             source=user_id,
                             modality=Intent.MODALITY_SPEECH,
                             confidence=1.0,
-                            data='{ {"input": "' + input + '", ' + '"suggested_response": "' +
-                                 self.escape_json(raw_response) + '"} }')
+                            data=json.dumps({
+                                "input": input,
+                                "suggested_response": raw_response,
+                            }))
 
             chatbot_response.response = suggested_response
             chatbot_response.intents = [intent]
