@@ -17,6 +17,7 @@ import requests
 import json
 from string import Template
 import time
+from uuid import UUID
 
 from rclpy.lifecycle import Node
 from rclpy.lifecycle import State
@@ -197,7 +198,7 @@ class LLMChatbot(Node):
         return GoalResponse.ACCEPT
 
     def on_dialog_accept(self, handle: ServerGoalHandle):
-        self._dialogue_id = tuple(handle.goal_id.uuid)
+        self._dialogue_id =  UUID(bytes=bytes(handle.goal_id.uuid))
         self._dialogue_result = None
         handle.execute()
 
@@ -208,8 +209,8 @@ class LLMChatbot(Node):
             return CancelResponse.REJECT
 
     def on_dialog_execute(self, handle: ServerGoalHandle):
-        id = tuple(handle.goal_id.uuid)
-        self.get_logger().warn(f"Starting '{handle.request.role.name}' dialogue with id {id}")
+        id = UUID(bytes=bytes(handle.goal_id.uuid))
+        self.get_logger().info(f"Starting '{handle.request.role.name}' dialogue with id {id}")
 
         try:
             while handle.is_active:
@@ -225,7 +226,7 @@ class LLMChatbot(Node):
                 time.sleep(1e-2)
             return Dialogue.Result(error_msg='Dialogue execution interrupted')
         finally:
-            self.get_logger().warn(f"Dialogue {id} is finished")
+            self.get_logger().info(f"Dialogue {id} is finished")
             self._dialogue_id = None
             self._dialogue_result = None
 
@@ -235,7 +236,7 @@ class LLMChatbot(Node):
         user_id = chatbot_request.user_id
         input = chatbot_request.input
         response_expected = chatbot_request.response_expected
-        id = tuple(chatbot_request.dialogue_id.uuid)
+        id = UUID(bytes=bytes(chatbot_request.dialogue_id.uuid))
         if id != self._dialogue_id:
             error_msg = f"Received a dialogue interaction for an unknown dialogue id: {id}"
             self.get_logger().error(error_msg)
@@ -292,25 +293,35 @@ class LLMChatbot(Node):
         else:
             try:
                 json_res = json.loads(raw_response)
+                # check that the json response is valid according to the ChatbotResponse model
+                json_res = ChatbotResponse(**json_res)
+
             except json.decoder.JSONDecodeError as e:
                 self.get_logger().warn(f"Malformed JSON response: {e}")
+            except Exception as e:
+                self.get_logger().warn(f"LLM response does not match expected format: {e}")
 
 
         if json_res:
             self.get_logger().info(f"Parsed LLM response: {json_res}")
 
-            if "verbal_ack" in json_res:
-                verbal_ack = json_res["verbal_ack"]
+            if json_res.verbal_ack is not None:
+                verbal_ack = json_res.verbal_ack
                 # if we have a verbal acknowledgement, add it to the dialogue history,
                 # and send it to the user
                 self._msgs_history.append({"role": "assistant", "content": verbal_ack})
                 chatbot_response.response = verbal_ack
 
-            if "user_intent" in json_res:
-                user_intent = json_res["user_intent"]
+            if json_res.user_intent is not None:
+                user_intent = json_res.user_intent
+                intent_dict = (
+                    user_intent.model_dump()
+                    if hasattr(user_intent, "model_dump")
+                    else user_intent.dict()
+                )
                 chatbot_response.intents = [Intent(
-                    intent=user_intent["type"],
-                    data=json.dumps(user_intent)
+                    intent=user_intent.type,
+                    data=json.dumps(intent_dict)
                 )]
 
         else:
