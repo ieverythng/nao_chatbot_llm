@@ -286,12 +286,14 @@ class LLMChatbot(Node):
         raw_response = self.preprocess_llm_response(llm_response['message']['content'])
         self.get_logger().info(f"Raw LLM response: {raw_response}")
 
+        json_res = None
         if hasattr(ChatbotResponse, "model_validate_json"):
             json_res = ChatbotResponse.model_validate_json(raw_response)
         else:
-            #try:
-            json_res = json.loads(raw_response)
-            #except...
+            try:
+                json_res = json.loads(raw_response)
+            except json.decoder.JSONDecodeError as e:
+                self.get_logger().warn(f"Malformed JSON response: {e}")
 
 
         if json_res:
