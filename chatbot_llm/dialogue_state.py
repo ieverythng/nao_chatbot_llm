@@ -22,7 +22,8 @@ from uuid import UUID
 
 @dataclass
 class Dialogue:
-    """The in-memory state of a single open dialogue.
+    """
+    In-memory state of a single open dialogue.
 
     Owned by a DialoguesRegistry. Mutations to `msgs_history` and
     `result` must be done while holding the registry's lock; reads
@@ -38,7 +39,8 @@ class Dialogue:
 
 
 class DialoguesRegistry:
-    """Thread-safe map of UUID -> Dialogue.
+    """
+    Thread-safe map of UUID -> Dialogue.
 
     The lock guards both the dict structure and the per-dialogue
     fields. It is intentionally a single lock for simplicity: callers
@@ -53,7 +55,7 @@ class DialoguesRegistry:
 
     @property
     def lock(self) -> threading.Lock:
-        """The single mutex guarding the registry and all dialogues it holds."""
+        """Return the single mutex guarding the registry and all dialogues it holds."""
         return self._lock
 
     def add(self, dialogue: Dialogue) -> bool:

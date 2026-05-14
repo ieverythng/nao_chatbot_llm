@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Per-role policy for chatbot_llm dialogues.
+"""
+Per-role policy for chatbot_llm dialogues.
 
 A RoleHandler bundles the small role-specific concerns that the rest
 of the node should not need to know about: any system-prompt extension
@@ -32,7 +33,8 @@ from .response_parser import ChatbotResponse
 
 @dataclass
 class TurnOutcome:
-    """The result of processing a single LLM turn for a dialogue.
+    """
+    Result of processing a single LLM turn for a dialogue.
 
     `response_text` is the text to surface in the
     DialogueInteraction.Response (typically the LLM's verbal_ack).
@@ -47,7 +49,8 @@ class TurnOutcome:
 
 
 class RoleHandler:
-    """Base class for per-role policies. Subclasses configure behaviour.
+    """
+    Base class for per-role policies. Subclasses configure behaviour.
 
     The default implementation in this base class is a sensible
     "passive" role: no prompt extension, surface the verbal_ack
@@ -61,7 +64,8 @@ class RoleHandler:
         self.dialogue = dialogue
 
     def system_prompt_extension(self) -> str:
-        """Extra text appended to the global system prompt for this dialogue.
+        """
+        Return extra text appended to the global system prompt for this dialogue.
 
         Returns an empty string by default. Subclasses override to add
         role-specific instructions to the LLM.
@@ -69,7 +73,8 @@ class RoleHandler:
         return ""
 
     def on_llm_response(self, parsed: ChatbotResponse) -> TurnOutcome:
-        """Decide what to do with the LLM's parsed response.
+        """
+        Decide what to do with the LLM's parsed response.
 
         The default implementation surfaces `verbal_ack` and never
         self-closes the dialogue.
@@ -81,7 +86,8 @@ class RoleHandler:
 
 
 class DefaultRoleHandler(RoleHandler):
-    """Handler for the __default__ role.
+    """
+    Handler for the __default__ role.
 
     Generic open-ended chat: surface the verbal_ack, never self-close.
     Identical to the base class behaviour; named for clarity in the
@@ -92,7 +98,8 @@ class DefaultRoleHandler(RoleHandler):
 
 
 def handler_for_role(role: str, dialogue: DialogueState) -> RoleHandler:
-    """Return the RoleHandler to use for `role`.
+    """
+    Return the RoleHandler to use for `role`.
 
     Falls back to DefaultRoleHandler for unknown roles.
     """
