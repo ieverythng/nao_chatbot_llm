@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <package format="3">
     <name>chatbot_llm</name>
-    <version>0.1.1</version>
+    <version>1.0.0</version>
     <description>A ollama-based LLM bridge for robotic applications</description>
 
   <!-- One maintainer tag required, multiple allowed, one person per tag -->

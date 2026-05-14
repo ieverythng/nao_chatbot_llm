@@ -2,8 +2,8 @@
 Changelog for package chatbot_llm
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Forthcoming
------------
+1.0.0 (2026-05-14)
+------------------
 * user utterances now are: <person_id>: "<text>"
 * node_impl: expose ~/{get,set}_logger_levels services
   Pass enable_logger_service=True to the LifecycleNode constructor so
