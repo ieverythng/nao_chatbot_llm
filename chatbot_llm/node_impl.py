@@ -12,11 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import yaml
 import requests
 import json
+import threading
 from string import Template
-import time
 from uuid import UUID
 
 from rclpy.lifecycle import Node
@@ -121,6 +120,7 @@ class LLMChatbot(Node):
         self._msgs_history = []
         self._dialogue_id = None
         self._dialogue_result = None
+        self._dialogue_done = threading.Event()
 
         self.get_logger().info('Chatbot chatbot_llm started, but not yet configured.')
 
@@ -209,6 +209,7 @@ class LLMChatbot(Node):
     def on_dialog_accept(self, handle: ServerGoalHandle):
         self._dialogue_id =  UUID(bytes=bytes(handle.goal_id.uuid))
         self._dialogue_result = None
+        self._dialogue_done.clear()
         handle.execute()
 
     def on_dialog_cancel(self, handle: ServerGoalHandle):
@@ -223,21 +224,25 @@ class LLMChatbot(Node):
 
         try:
             while handle.is_active:
+                # Wait for either a terminal result (set elsewhere) or a cancel
+                # request. The Event lets us avoid a tight polling loop while
+                # still checking is_cancel_requested at a reasonable cadence.
+                self._dialogue_done.wait(timeout=0.1)
                 if handle.is_cancel_requested:
                     handle.canceled()
                     return Dialogue.Result(error_msg='Dialogue cancelled')
-                elif self._dialogue_result:
+                if self._dialogue_result:
                     if self._dialogue_result.error_msg:
                         handle.abort()
                     else:
                         handle.succeed()
                     return self._dialogue_result
-                time.sleep(1e-2)
             return Dialogue.Result(error_msg='Dialogue execution interrupted')
         finally:
             self.get_logger().info(f"Dialogue {id} is finished")
             self._dialogue_id = None
             self._dialogue_result = None
+            self._dialogue_done.clear()
 
     def on_dialogue_interaction(self,
                                 chatbot_request: DialogueInteraction.Request,
