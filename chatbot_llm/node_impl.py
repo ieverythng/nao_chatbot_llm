@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import json
-import threading
 from string import Template
 from uuid import UUID
 
@@ -32,6 +31,8 @@ from rclpy.action import CancelResponse
 from rclpy.action.server import ServerGoalHandle
 from rclpy.callback_groups import ReentrantCallbackGroup
 
+from .dialogue_state import Dialogue as DialogueState
+from .dialogue_state import DialoguesRegistry
 from .llm_client import LLMClient
 from .response_parser import (
     chatbot_response_schema,
@@ -39,6 +40,13 @@ from .response_parser import (
     intent_to_dict,
     parse_chatbot_response,
 )
+from .role_handlers import handler_for_role
+
+
+# Sentinel values defined in chatbot_msgs/DialogueInteraction.srv. The
+# srv module exposes them as class attributes on the Request type.
+_SYSTEM_USER_ID = DialogueInteraction.Request.SYSTEM_USER_ID
+_ASSISTANT_USER_ID = DialogueInteraction.Request.ASSISTANT_USER_ID
 
 
 class LLMChatbot(Node):
@@ -105,90 +113,92 @@ class LLMChatbot(Node):
         self._robot_name = None
         self._max_history_turns = None
 
+        # Multi-dialogue state. The registry owns the single lock that
+        # guards the dialogue dict and all per-dialogue fields. It is
+        # never held across LLM HTTP round-trips: we snapshot history
+        # under the lock, drop it for the request, re-acquire it to
+        # commit any history extension that the call produced.
+        self._dialogues = DialoguesRegistry()
         self._nb_requests = 0
-        self._msgs_history = []
-        self._dialogue_id = None
-        self._dialogue_result = None
-        self._dialogue_done = threading.Event()
-        # Guards _dialogue_id, _dialogue_result, _msgs_history, _nb_requests
-        # against concurrent access from MultiThreadedExecutor callbacks. The
-        # lock is never held across HTTP calls.
-        self._state_lock = threading.Lock()
 
         self.get_logger().info('Chatbot chatbot_llm started, but not yet configured.')
 
-    def _trim_history(self) -> None:
-        """Bound `_msgs_history` while always keeping the system prompt at index 0."""
+    def _trim_history(self, dialogue: DialogueState) -> None:
+        """Bound a dialogue's `msgs_history` while keeping the system prompt at index 0."""
         max_msgs = 1 + 2 * self._max_history_turns
-        if len(self._msgs_history) > max_msgs:
-            self._msgs_history = (
-                [self._msgs_history[0]] + self._msgs_history[-(max_msgs - 1):]
+        if len(dialogue.msgs_history) > max_msgs:
+            dialogue.msgs_history = (
+                [dialogue.msgs_history[0]] + dialogue.msgs_history[-(max_msgs - 1):]
             )
 
-    def _render_system_prompt(self, user_id: str) -> dict:
-        """Render the system prompt template with the current user_id."""
+    def _render_system_prompt(self, dialogue: DialogueState, user_id: str) -> dict:
+        """Render the system prompt template for `dialogue`, with the role handler's extension."""
         rendered = self._system_prompt_tpl.safe_substitute(
             user_id=user_id,
             robot_name=self._robot_name,
+            role=dialogue.role,
             action_list=self.make_action_list(),
             environment=self.get_environment_description(),
         )
+        extension = handler_for_role(dialogue.role, dialogue).system_prompt_extension()
+        if extension:
+            rendered = rendered + "\n\n" + extension
         return {'role': 'system', 'content': rendered}
 
     def on_dialog_goal(self, goal: Dialogue.Goal):
-        # Check if the goal is valid and the node is able to accept it
-        #
-        # For simplicity, we allow only one dialogue at a time.
-        # You might want to change this to allow multiple dialogues at the same time.
-        #
-        # We also check if the dialogue role is supported by the chatbot.
-        # In this example, we only support only the "__default__" role.
-
-        with self._state_lock:
-            active_dialogue_id = self._dialogue_id
-
-        if active_dialogue_id is not None:
+        """Accept any non-empty role name. dialogue_manager owns role semantics."""
+        if not goal.role.name:
             self.get_logger().warn(
-                f"Rejecting start_dialogue goal: another dialogue ({active_dialogue_id}) "
-                "is already active. Only one dialogue at a time is supported."
-            )
-            return GoalResponse.REJECT
-        if goal.role.name != '__default__':
-            self.get_logger().warn(
-                f"Rejecting start_dialogue goal: role '{goal.role.name}' is not supported. "
-                "Only the '__default__' role is handled by this chatbot."
+                "Rejecting start_dialogue goal: empty role name."
             )
             return GoalResponse.REJECT
         return GoalResponse.ACCEPT
 
     def on_dialog_accept(self, handle: ServerGoalHandle):
-        with self._state_lock:
-            self._dialogue_id = UUID(bytes=bytes(handle.goal_id.uuid))
-            self._dialogue_result = None
-            self._msgs_history = []
-        self._dialogue_done.clear()
+        """Create a new Dialogue, register it, and start its execute callback."""
+        dialogue_id = UUID(bytes=bytes(handle.goal_id.uuid))
+        dialogue = DialogueState(
+            id=dialogue_id,
+            role=handle.request.role.name,
+            role_configuration=handle.request.role.configuration,
+        )
+        if not self._dialogues.add(dialogue):
+            self.get_logger().error(
+                f"Refusing to register dialogue {dialogue_id}: id already in use."
+            )
+            handle.abort()
+            return
         handle.execute()
 
     def on_dialog_cancel(self, handle: ServerGoalHandle):
-        with self._state_lock:
-            has_dialogue = self._dialogue_id is not None
-        return CancelResponse.ACCEPT if has_dialogue else CancelResponse.REJECT
+        """Accept the cancel request iff we know about the dialogue."""
+        dialogue_id = UUID(bytes=bytes(handle.goal_id.uuid))
+        return CancelResponse.ACCEPT if dialogue_id in self._dialogues else CancelResponse.REJECT
 
     def on_dialog_execute(self, handle: ServerGoalHandle):
-        id = UUID(bytes=bytes(handle.goal_id.uuid))
-        self.get_logger().info(f"Starting '{handle.request.role.name}' dialogue with id {id}")
+        """Block until the dialogue ends (external cancel or role-driven conclusion)."""
+        dialogue_id = UUID(bytes=bytes(handle.goal_id.uuid))
+        dialogue = self._dialogues.get(dialogue_id)
+        if dialogue is None:
+            handle.abort()
+            return Dialogue.Result(error_msg='Dialogue not registered')
+
+        self.get_logger().info(
+            f"Starting '{handle.request.role.name}' dialogue with id {dialogue_id}"
+        )
 
         try:
             while handle.is_active:
-                # Wait for either a terminal result (set elsewhere) or a cancel
-                # request. The Event lets us avoid a tight polling loop while
-                # still checking is_cancel_requested at a reasonable cadence.
-                self._dialogue_done.wait(timeout=0.1)
+                # Wait for either a terminal result (set by on_dialogue_interaction
+                # via the role handler) or a cancel request. The Event lets us
+                # avoid a tight polling loop while still checking
+                # is_cancel_requested at a reasonable cadence.
+                dialogue.done.wait(timeout=0.1)
                 if handle.is_cancel_requested:
                     handle.canceled()
                     return Dialogue.Result(error_msg='Dialogue cancelled')
-                with self._state_lock:
-                    result = self._dialogue_result
+                with self._dialogues.lock:
+                    result = dialogue.result
                 if result:
                     if result.error_msg:
                         handle.abort()
@@ -197,47 +207,61 @@ class LLMChatbot(Node):
                     return result
             return Dialogue.Result(error_msg='Dialogue execution interrupted')
         finally:
-            self.get_logger().info(f"Dialogue {id} is finished")
-            with self._state_lock:
-                self._dialogue_id = None
-                self._dialogue_result = None
-            self._dialogue_done.clear()
+            self.get_logger().info(f"Dialogue {dialogue_id} is finished")
+            self._dialogues.remove(dialogue_id)
 
     def on_dialogue_interaction(self,
                                 chatbot_request: DialogueInteraction.Request,
                                 chatbot_response: DialogueInteraction.Response):
+        """Route one event into the appropriate dialogue's history."""
         user_id = chatbot_request.user_id
         input = chatbot_request.input
         response_expected = chatbot_request.response_expected
-        id = UUID(bytes=bytes(chatbot_request.dialogue_id.uuid))
+        dialogue_id = UUID(bytes=bytes(chatbot_request.dialogue_id.uuid))
 
-        with self._state_lock:
-            if id != self._dialogue_id:
-                error_msg = f"Received a dialogue interaction for an unknown dialogue id: {id}"
-                self.get_logger().error(error_msg)
-                chatbot_response.error_msg = error_msg
-                return chatbot_response
+        dialogue = self._dialogues.get(dialogue_id)
+        if dialogue is None:
+            error_msg = (
+                f"Received a dialogue interaction for an unknown dialogue id: {dialogue_id}"
+            )
+            self.get_logger().error(error_msg)
+            chatbot_response.error_msg = error_msg
+            return chatbot_response
 
-        self.get_logger().info(f"input from {user_id}: {input}")
+        # Route by user_id. dialogue_manager is authoritative for everything
+        # that ends up in the LLM history: real user turns, the robot's
+        # already-spoken assistant turns (echoed back with __assistant__)
+        # and system/world updates (__system__).
+        if user_id == _ASSISTANT_USER_ID:
+            self._append_history(dialogue, 'assistant', input)
+            return chatbot_response
+        if user_id == _SYSTEM_USER_ID:
+            self._append_history(dialogue, 'system', input)
+            return chatbot_response
+
         if not user_id:
             user_id = "anonymous_user"
 
-        # Build the message list under the lock, then snapshot it so the HTTP
-        # call below does not hold the lock for the duration of the request.
-        with self._state_lock:
+        self.get_logger().info(
+            f"input for dialogue {dialogue_id} from {user_id}: {input}"
+        )
+
+        # Real user turn: append to the dialogue's history and snapshot the
+        # message list for the LLM call. The system prompt is (re)rendered
+        # under the lock so each turn sees the current user_id.
+        with self._dialogues.lock:
             self._nb_requests += 1
-            system_prompt_msg = self._render_system_prompt(user_id)
-            if not self._msgs_history:
-                self._msgs_history = [system_prompt_msg]
+            system_prompt_msg = self._render_system_prompt(dialogue, user_id)
+            if not dialogue.msgs_history:
+                dialogue.msgs_history = [system_prompt_msg]
             else:
-                # Refresh the system prompt so user_id stays current across turns.
-                self._msgs_history[0] = system_prompt_msg
-            self._msgs_history.append({
+                dialogue.msgs_history[0] = system_prompt_msg
+            dialogue.msgs_history.append({
                 'role': 'user',
                 'content': f'{user_id} "{input}"',
             })
-            self._trim_history()
-            messages_snapshot = list(self._msgs_history)
+            self._trim_history(dialogue)
+            messages_snapshot = list(dialogue.msgs_history)
 
         if not response_expected:
             return chatbot_response
@@ -255,12 +279,23 @@ class LLMChatbot(Node):
         if json_res:
             self.get_logger().info(f"Parsed LLM response: {json_res}")
 
-            if json_res.verbal_ack is not None:
-                verbal_ack = json_res.verbal_ack
-                with self._state_lock:
-                    self._msgs_history.append({"role": "assistant", "content": verbal_ack})
-                    self._trim_history()
-                chatbot_response.response = verbal_ack
+            # NOTE: we deliberately do NOT append the LLM's proposed verbal_ack
+            # to the dialogue's history here. dialogue_manager is the
+            # authority on what the robot actually said: once the Say
+            # sub-skill plays the utterance, dialogue_manager will call
+            # back into this service with user_id=__assistant__ and the
+            # actually-spoken text — and that round-trip is what extends
+            # the LLM history. If Say is preempted or the text gets
+            # markup-stripped, the LLM context reflects reality rather
+            # than the LLM's proposal.
+            handler = handler_for_role(dialogue.role, dialogue)
+            outcome = handler.on_llm_response(json_res)
+            if outcome.response_text:
+                chatbot_response.response = outcome.response_text
+            if outcome.terminal_result is not None:
+                with self._dialogues.lock:
+                    dialogue.result = outcome.terminal_result
+                dialogue.done.set()
 
             if json_res.user_intent is not None:
                 user_intent = json_res.user_intent
@@ -283,6 +318,19 @@ class LLMChatbot(Node):
             )]
 
         return chatbot_response
+
+    def _append_history(self, dialogue: DialogueState, role: str, content: str) -> None:
+        """Append one entry to `dialogue`'s history under the registry lock, then trim."""
+        with self._dialogues.lock:
+            # Ensure the system prompt slot exists; we don't re-render it here
+            # because there's no user_id context. It will get refreshed on the
+            # next real user turn via _render_system_prompt.
+            if not dialogue.msgs_history:
+                dialogue.msgs_history.append(
+                    self._render_system_prompt(dialogue, user_id="anonymous_user")
+                )
+            dialogue.msgs_history.append({'role': role, 'content': content})
+            self._trim_history(dialogue)
 
     def make_action_list(self) -> str:
         # List all the actions available to the robot, with their corresponding
@@ -418,8 +466,9 @@ class LLMChatbot(Node):
     #################################
 
     def publish_diagnostics(self):
-        with self._state_lock:
+        with self._dialogues.lock:
             nb_requests = self._nb_requests
+        active_ids = self._dialogues.ids()
 
         arr = DiagnosticArray()
         msg = DiagnosticStatus(
@@ -432,6 +481,9 @@ class LLMChatbot(Node):
                          value=self._state_machine.current_state[1]),
                 KeyValue(key="llm server", value=self._llm_client.server),
                 KeyValue(key="llm model", value=self._llm_client.model),
+                KeyValue(key="# active dialogues", value=str(len(active_ids))),
+                KeyValue(key="active dialogue ids",
+                         value=", ".join(str(uid) for uid in active_ids)),
                 KeyValue(key="# requests since start", value=str(nb_requests)),
             ],
         )
