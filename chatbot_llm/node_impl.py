@@ -34,9 +34,10 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 
 from .llm_client import LLMClient
 from .response_parser import (
-    ChatbotResponse,
+    chatbot_response_schema,
+    extract_json_object,
+    intent_to_dict,
     parse_chatbot_response,
-    preprocess_llm_response,
 )
 
 
@@ -223,7 +224,7 @@ class LLMChatbot(Node):
             chatbot_response.error_msg = "LLM request failed"
             return chatbot_response
 
-        raw_response = preprocess_llm_response(llm_response['message']['content'])
+        raw_response = extract_json_object(llm_response['message']['content'])
         self.get_logger().info(f"Raw LLM response: {raw_response}")
 
         json_res = parse_chatbot_response(raw_response, logger=self.get_logger())
@@ -240,14 +241,9 @@ class LLMChatbot(Node):
 
             if json_res.user_intent is not None:
                 user_intent = json_res.user_intent
-                intent_dict = (
-                    user_intent.model_dump()
-                    if hasattr(user_intent, "model_dump")
-                    else user_intent.dict()
-                )
                 chatbot_response.intents = [Intent(
                     intent=user_intent.type,
-                    data=json.dumps(intent_dict)
+                    data=json.dumps(intent_to_dict(user_intent))
                 )]
 
         else:
@@ -314,15 +310,12 @@ class LLMChatbot(Node):
         self._robot_name = self.get_parameter('robot_name').value
         self._system_prompt_tpl = Template(self.get_parameter('system_prompt').value)
 
-        schema = (ChatbotResponse.model_json_schema()
-                  if hasattr(ChatbotResponse, "model_json_schema")
-                  else ChatbotResponse.schema())
         self._llm_client = LLMClient(
             server=self.get_parameter('server_url').value,
             model=self.get_parameter('model').value,
             api_key=self.get_parameter_or('api_key', None).value,
             timeout=self.get_parameter('request_timeout').value,
-            response_schema=schema,
+            response_schema=chatbot_response_schema(),
             logger=self.get_logger(),
         )
 

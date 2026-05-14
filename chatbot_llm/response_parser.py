@@ -18,7 +18,10 @@ import json
 from typing import Literal, Optional
 
 from hri_actions_msgs.msg import Intent
-from pydantic import BaseModel
+import pydantic
+from pydantic import BaseModel, ValidationError
+
+_PYDANTIC_V2 = pydantic.VERSION.startswith("2.")
 
 
 class IntentModel(BaseModel):
@@ -47,47 +50,39 @@ class ChatbotResponse(BaseModel):
     user_intent: Optional[IntentModel] = None
 
 
-def preprocess_llm_response(raw_text: str) -> str:
-    """Extract the first balanced {...} substring from `raw_text`."""
-    # extract the substring between the first
-    # opening and closing curly braces (accounting for nested braces).
-    start_idx = 0
-    end_idx = len(raw_text) - 1
-    nested = 0
-    for i, c in enumerate(raw_text):
-        if c == '{':
-            start_idx = i
-            break
-    for i in range(start_idx, len(raw_text)):
-        if raw_text[i] == '{':
-            nested += 1
-        elif raw_text[i] == '}':
-            nested -= 1
-            if nested == 0:
-                end_idx = i
-                break
-
-    text = raw_text[start_idx:end_idx + 1]
-
-    # the LLM tends to remove spaces before colons, which cause
-    # invalid YAML parsing.
-    text = text.replace(":", ": ")
-
-    return text
+def extract_json_object(raw_text: str) -> str:
+    """Return the first balanced JSON object substring in `raw_text`, or `raw_text` itself if none."""
+    start = raw_text.find('{')
+    if start < 0:
+        return raw_text
+    try:
+        _, end = json.JSONDecoder().raw_decode(raw_text, start)
+    except json.JSONDecodeError:
+        return raw_text[start:]
+    return raw_text[start:end]
 
 
 def parse_chatbot_response(raw_text: str, logger=None) -> Optional[ChatbotResponse]:
-    """Parse the LLM response into a ChatbotResponse, or return None on failure."""
-    if hasattr(ChatbotResponse, "model_validate_json"):
-        return ChatbotResponse.model_validate_json(raw_text)
-
+    """Parse and validate an LLM response; return None and log a warning on failure."""
     try:
-        as_dict = json.loads(raw_text)
-        return ChatbotResponse(**as_dict)
-    except json.decoder.JSONDecodeError as e:
+        if _PYDANTIC_V2:
+            return ChatbotResponse.model_validate_json(raw_text)
+        return ChatbotResponse.parse_raw(raw_text)
+    except ValidationError as e:
         if logger is not None:
-            logger.warn(f"Malformed JSON response: {e}")
-    except Exception as e:
-        if logger is not None:
-            logger.warn(f"LLM response does not match expected format: {e}")
+            logger.warn(f"Failed to parse LLM response: {e}")
     return None
+
+
+def chatbot_response_schema() -> dict:
+    """Return the JSON schema for ChatbotResponse, across pydantic versions."""
+    if _PYDANTIC_V2:
+        return ChatbotResponse.model_json_schema()
+    return ChatbotResponse.schema()
+
+
+def intent_to_dict(intent_model) -> dict:
+    """Serialize an IntentModel to a dict, across pydantic versions."""
+    if _PYDANTIC_V2:
+        return intent_model.model_dump()
+    return intent_model.dict()
