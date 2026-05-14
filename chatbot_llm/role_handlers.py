@@ -20,15 +20,17 @@ of the node should not need to know about: any system-prompt extension
 that should be injected for that role, and the decision (after each
 LLM turn) about whether the dialogue has reached its natural
 conclusion. See docs/ARCHITECTURE.md for the broader context.
+
+Handlers are stateless wrt. the dialogue history: they hold only the
+role configuration (parsed once at construction) and re-derive their
+view of "what's been collected so far" from the parsed LLM response
+each turn. dialogue_manager owns the authoritative conversation
+history and ships it in full on every DialogueInteraction call.
 """
 
 import json
 from dataclasses import dataclass
-from typing import Optional
 
-from chatbot_msgs.action import Dialogue
-
-from .dialogue_state import Dialogue as DialogueState
 from .response_parser import ChatbotResponse
 
 
@@ -40,18 +42,20 @@ class TurnOutcome:
     `response_text` is the text to surface in the
     DialogueInteraction.Response (typically the LLM's verbal_ack).
 
-    `terminal_result`, if set, indicates the dialogue has reached its
-    natural conclusion: the node will set this on the action goal and
-    finalise the action. If None, the dialogue stays open.
+    `dialogue_terminal`, when True, signals that the role considers
+    the dialogue naturally complete; `results` carries the role-specific
+    JSON-encoded outcome (empty when not terminal). dialogue_manager
+    is responsible for actually closing the dialogue.
     """
 
     response_text: str = ""
-    terminal_result: Optional[Dialogue.Result] = None
+    dialogue_terminal: bool = False
+    results: str = ""
 
 
 class RoleHandler:
     """
-    Base class for per-role policies. Subclasses configure behaviour.
+    Base class for per-role policies.
 
     The default implementation in this base class is a sensible
     "passive" role: no prompt extension, surface the verbal_ack
@@ -60,13 +64,13 @@ class RoleHandler:
 
     role_name: str = ""
 
-    def __init__(self, dialogue: DialogueState):
-        """Bind the handler to its dialogue."""
-        self.dialogue = dialogue
+    def __init__(self, role_configuration: str = ""):
+        """Hold the (opaque JSON) role configuration verbatim."""
+        self.role_configuration = role_configuration
 
     def system_prompt_extension(self) -> str:
         """
-        Return extra text appended to the global system prompt for this dialogue.
+        Return extra text appended to the global system prompt for this role.
 
         Returns an empty string by default. Subclasses override to add
         role-specific instructions to the LLM.
@@ -82,7 +86,8 @@ class RoleHandler:
         """
         return TurnOutcome(
             response_text=parsed.verbal_ack or "",
-            terminal_result=None,
+            dialogue_terminal=False,
+            results="",
         )
 
 
@@ -110,16 +115,17 @@ class AskRoleHandler(RoleHandler):
 
     The handler asks the LLM (via a prompt extension) to fill those
     fields under the `extracted` key of ChatbotResponse. Once all the
-    required field keys are present, the dialogue is closed and the
-    extracted answer is JSON-serialised into the action's `results`.
+    required field keys are present, the dialogue is marked terminal
+    and the extracted answer is JSON-serialised into the response's
+    `results`.
     """
 
     role_name = "__ask__"
 
-    def __init__(self, dialogue: DialogueState):
+    def __init__(self, role_configuration: str = ""):
         """Parse the role configuration JSON and cache the question/schema."""
-        super().__init__(dialogue)
-        self._config = self._parse_config(dialogue.role_configuration)
+        super().__init__(role_configuration)
+        self._config = self._parse_config(role_configuration)
 
     @staticmethod
     def _parse_config(raw: str) -> dict:
@@ -171,23 +177,30 @@ class AskRoleHandler(RoleHandler):
         return "\n".join(parts)
 
     def on_llm_response(self, parsed: ChatbotResponse) -> TurnOutcome:
-        """Close the dialogue iff `extracted` covers all required keys."""
+        """Mark terminal iff `extracted` covers all required keys."""
         verbal_ack = parsed.verbal_ack or ""
         extracted = parsed.extracted
         if extracted and all(k in extracted for k in self.required_keys):
-            result = Dialogue.Result(results=json.dumps(extracted))
-            return TurnOutcome(response_text=verbal_ack, terminal_result=result)
-        return TurnOutcome(response_text=verbal_ack, terminal_result=None)
+            return TurnOutcome(
+                response_text=verbal_ack,
+                dialogue_terminal=True,
+                results=json.dumps(extracted),
+            )
+        return TurnOutcome(
+            response_text=verbal_ack,
+            dialogue_terminal=False,
+            results="",
+        )
 
 
-def handler_for_role(role: str, dialogue: DialogueState) -> RoleHandler:
+def handler_for_role(role: str, role_configuration: str = "") -> RoleHandler:
     """
     Return the RoleHandler to use for `role`.
 
     Falls back to DefaultRoleHandler for unknown roles.
     """
     cls = _HANDLERS.get(role, DefaultRoleHandler)
-    return cls(dialogue)
+    return cls(role_configuration)
 
 
 # Registered role handlers. Subclasses register themselves here so that
