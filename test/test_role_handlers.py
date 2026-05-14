@@ -14,11 +14,13 @@
 
 """Unit tests for chatbot_llm.role_handlers."""
 
+import json
 from uuid import uuid4
 
 from chatbot_llm.dialogue_state import Dialogue as DialogueState
 from chatbot_llm.response_parser import ChatbotResponse
 from chatbot_llm.role_handlers import (
+    AskRoleHandler,
     DefaultRoleHandler,
     handler_for_role,
 )
@@ -61,8 +63,89 @@ class TestHandlerDispatch:
         assert isinstance(h, DefaultRoleHandler)
         assert h.dialogue is d
 
+    def test_ask_role_dispatches_to_ask_handler(self):
+        """A __ask__ role yields an AskRoleHandler."""
+        d = _dialogue("__ask__")
+        h = handler_for_role(d.role, d)
+        assert isinstance(h, AskRoleHandler)
+
     def test_unknown_role_falls_back_to_default(self):
         """Unknown role names fall back to the default handler."""
         d = _dialogue("__some_custom_role__")
         h = handler_for_role(d.role, d)
         assert isinstance(h, DefaultRoleHandler)
+
+
+class TestAskRoleHandler:
+    """Tests for the __ask__ role handler."""
+
+    @staticmethod
+    def _ask_dialogue(configuration: dict) -> DialogueState:
+        return _dialogue("__ask__", configuration=json.dumps(configuration))
+
+    def test_empty_configuration_yields_empty_extension(self):
+        """No schema means no prompt extension and no self-close."""
+        h = AskRoleHandler(self._ask_dialogue({}))
+        assert h.system_prompt_extension() == ""
+        outcome = h.on_llm_response(ChatbotResponse(verbal_ack="ok"))
+        assert outcome.terminal_result is None
+        assert outcome.response_text == "ok"
+
+    def test_invalid_configuration_json_is_ignored(self):
+        """A malformed configuration JSON falls back to empty config."""
+        d = _dialogue("__ask__", configuration="this is not json")
+        h = AskRoleHandler(d)
+        assert h.required_keys == []
+        assert h.system_prompt_extension() == ""
+
+    def test_extension_includes_question_and_schema(self):
+        """When configuration is set, the extension mentions the question and the schema keys."""
+        config = {
+            "question": "What is your age?",
+            "result_schema_properties": {
+                "age": {"type": "integer", "minimum": 0},
+            },
+        }
+        h = AskRoleHandler(self._ask_dialogue(config))
+        ext = h.system_prompt_extension()
+        assert "What is your age?" in ext
+        assert '"age"' in ext
+        assert h.required_keys == ["age"]
+
+    def test_stays_open_when_extracted_missing(self):
+        """If the LLM hasn't filled `extracted`, the dialogue stays open."""
+        config = {"result_schema_properties": {"age": {"type": "integer"}}}
+        h = AskRoleHandler(self._ask_dialogue(config))
+        outcome = h.on_llm_response(ChatbotResponse(verbal_ack="please tell me your age"))
+        assert outcome.terminal_result is None
+        assert outcome.response_text == "please tell me your age"
+
+    def test_stays_open_when_extracted_partial(self):
+        """Missing any required key keeps the dialogue open."""
+        config = {
+            "result_schema_properties": {
+                "first_name": {"type": "string"},
+                "last_name": {"type": "string"},
+            },
+        }
+        h = AskRoleHandler(self._ask_dialogue(config))
+        partial = ChatbotResponse(
+            verbal_ack="and your last name?", extracted={"first_name": "Ada"}
+        )
+        outcome = h.on_llm_response(partial)
+        assert outcome.terminal_result is None
+        assert outcome.response_text == "and your last name?"
+
+    def test_closes_when_extracted_complete(self):
+        """When `extracted` covers every required key, the dialogue self-closes."""
+        config = {
+            "result_schema_properties": {
+                "age": {"type": "integer"},
+            },
+        }
+        h = AskRoleHandler(self._ask_dialogue(config))
+        outcome = h.on_llm_response(ChatbotResponse(verbal_ack="thanks!", extracted={"age": 42}))
+        assert outcome.terminal_result is not None
+        assert outcome.terminal_result.error_msg == ""
+        assert json.loads(outcome.terminal_result.results) == {"age": 42}
+        assert outcome.response_text == "thanks!"

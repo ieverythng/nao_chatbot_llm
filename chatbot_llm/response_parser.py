@@ -15,7 +15,7 @@
 """Data models and parsing for LLM responses."""
 
 import json
-from typing import Literal, Optional
+from typing import Any, Dict, Literal, Optional
 
 from hri_actions_msgs.msg import Intent
 
@@ -49,6 +49,10 @@ class ChatbotResponse(BaseModel):
 
     verbal_ack: Optional[str] = None
     user_intent: Optional[IntentModel] = None
+    # Free-form structured answer used by role handlers that elicit a
+    # specific schema from the user (e.g. AskRoleHandler). Default-role
+    # dialogues ignore this field.
+    extracted: Optional[Dict[str, Any]] = None
 
 
 def extract_json_object(raw_text: str) -> str:
