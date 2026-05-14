@@ -85,6 +85,10 @@ class LLMChatbot(Node):
             'request_timeout', 30.0,
             ParameterDescriptor(description='Timeout (in seconds) for HTTP requests to the LLM server')
         )
+        self.declare_parameter(
+            'max_history_turns', 10,
+            ParameterDescriptor(description='Maximum number of user/assistant turn pairs kept in the conversation history (the system prompt is always preserved)')
+        )
 
         self.get_logger().info("Initialising...")
 
@@ -100,6 +104,7 @@ class LLMChatbot(Node):
         self._llm_client = None
         self._system_prompt_tpl = None
         self._robot_name = None
+        self._max_history_turns = None
 
         self._nb_requests = 0
         self._msgs_history = []
@@ -108,6 +113,14 @@ class LLMChatbot(Node):
         self._dialogue_done = threading.Event()
 
         self.get_logger().info('Chatbot chatbot_llm started, but not yet configured.')
+
+    def _trim_history(self) -> None:
+        """Bound `_msgs_history` while always keeping the system prompt at index 0."""
+        max_msgs = 1 + 2 * self._max_history_turns
+        if len(self._msgs_history) > max_msgs:
+            self._msgs_history = (
+                [self._msgs_history[0]] + self._msgs_history[-(max_msgs - 1):]
+            )
 
     def _render_system_prompt(self, user_id: str) -> dict:
         """Render the system prompt template with the current user_id."""
@@ -215,6 +228,7 @@ class LLMChatbot(Node):
                 'content': f'{user_id} "{input}"',
             }
         )
+        self._trim_history()
 
         if not response_expected:
             return chatbot_response
@@ -237,6 +251,7 @@ class LLMChatbot(Node):
                 # if we have a verbal acknowledgement, add it to the dialogue history,
                 # and send it to the user
                 self._msgs_history.append({"role": "assistant", "content": verbal_ack})
+                self._trim_history()
                 chatbot_response.response = verbal_ack
 
             if json_res.user_intent is not None:
@@ -309,6 +324,7 @@ class LLMChatbot(Node):
 
         self._robot_name = self.get_parameter('robot_name').value
         self._system_prompt_tpl = Template(self.get_parameter('system_prompt').value)
+        self._max_history_turns = self.get_parameter('max_history_turns').value
 
         self._llm_client = LLMClient(
             server=self.get_parameter('server_url').value,
