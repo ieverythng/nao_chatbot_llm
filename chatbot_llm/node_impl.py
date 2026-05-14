@@ -64,7 +64,14 @@ class LLMChatbot(Node):
 
     def __init__(self) -> None:
         """Construct the node."""
-        super().__init__('intent_extractor_chatbot_llm')
+        # enable_logger_service=True exposes ~/get_logger_levels and
+        # ~/set_logger_levels services so log levels (including the
+        # DEBUG dump in on_dialogue_interaction) can be flipped at
+        # runtime without restarting the node.
+        super().__init__(
+            'intent_extractor_chatbot_llm',
+            enable_logger_service=True,
+        )
 
         # Declare ROS parameters. Should mimick the one listed in config/00-defaults.yaml
         self.declare_parameter(
