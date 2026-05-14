@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import requests
 import json
 import threading
 from string import Template
@@ -33,29 +32,12 @@ from rclpy.action import CancelResponse
 from rclpy.action.server import ServerGoalHandle
 from rclpy.callback_groups import ReentrantCallbackGroup
 
-from pydantic import BaseModel
-from typing import Literal
-from hri_actions_msgs.msg import Intent
-
-# Define the data models for the chatbot response and the user intent
-class IntentModel(BaseModel):
-    type: Literal[Intent.BRING_OBJECT,
-                  Intent.GRAB_OBJECT,
-                  Intent.PLACE_OBJECT,
-                  Intent.GUIDE,
-                  Intent.MOVE_TO,
-                  Intent.SAY,
-                  Intent.GREET,
-                  Intent.START_ACTIVITY,
-                  ]
-    object: str | None
-    recipient: str | None
-    input: str | None
-    goal: str | None
-
-class ChatbotResponse(BaseModel):
-    verbal_ack: str | None
-    user_intent: IntentModel | None
+from .llm_client import LLMClient
+from .response_parser import (
+    ChatbotResponse,
+    parse_chatbot_response,
+    preprocess_llm_response,
+)
 
 
 class LLMChatbot(Node):
@@ -114,10 +96,7 @@ class LLMChatbot(Node):
         self._diag_pub = None
         self._diag_timer = None
 
-        self._llm_server = None
-        self._llm_model = None
-        self._api_key = None
-        self._request_timeout = None
+        self._llm_client = None
         self._system_prompt_tpl = None
         self._robot_name = None
 
@@ -128,71 +107,6 @@ class LLMChatbot(Node):
         self._dialogue_done = threading.Event()
 
         self.get_logger().info('Chatbot chatbot_llm started, but not yet configured.')
-
-    def perform_request(self, server, model, messages, api_key=None):
-        headers = {
-                   'Content-Type': 'application/json',
-                  }
-
-        if api_key:
-            headers['Authorization'] = f"Bearer {api_key}"
-
-        url = f"{server}/v1/chat/completions"
-
-        json_data = json.dumps({
-            "model": model,
-            "messages": messages,
-            "think": False,
-
-            "format": ChatbotResponse.model_json_schema() if hasattr(ChatbotResponse, "model_json_schema") else ChatbotResponse.schema_json()
-        })
-
-        response = None
-        try:
-            self.get_logger().info("Sending request to LLM and waiting for response...")
-            response = requests.post(url, headers=headers, data=json_data,
-                                     timeout=self._request_timeout)
-            response.raise_for_status()
-            return response.json()['choices'][0]
-        except requests.exceptions.RequestException as e:
-            error_msg = "Unable to decode error message from server"
-            if response is not None:
-                try:
-                    error_msg = response.json()['error']['message']
-                except (ValueError, KeyError):
-                    pass
-            self.get_logger().error(f"Error while sending request to {url}:\n{e}\n{error_msg}\n"
-                                    "Is the server running, or the URL incorrect "
-                                    f"(eg wrong port)? I was trying to connect to: {url}")
-            return None
-
-    def preprocess_llm_response(self, raw_text):
-
-        # extract the substring between the first
-        # opening and closing curly braces (accounting for nested braces).
-        start_idx = 0
-        end_idx = len(raw_text) - 1
-        nested = 0
-        for i, c in enumerate(raw_text):
-            if c == '{':
-                start_idx = i
-                break
-        for i in range(start_idx, len(raw_text)):
-            if raw_text[i] == '{':
-                nested += 1
-            elif raw_text[i] == '}':
-                nested -= 1
-                if nested == 0:
-                    end_idx = i
-                    break
-
-        text = raw_text[start_idx:end_idx+1]
-
-        # the LLM tends to remove spaces before colons, which cause
-        # invalid YAML parsing.
-        text = text.replace(":", ": ")
-
-        return text
 
     def _render_system_prompt(self, user_id: str) -> dict:
         """Render the system prompt template with the current user_id."""
@@ -304,33 +218,15 @@ class LLMChatbot(Node):
         if not response_expected:
             return chatbot_response
 
-        llm_response = self.perform_request(
-            server=self._llm_server,
-            model=self._llm_model,
-            messages=self._msgs_history,
-            api_key=self._api_key
-        )
+        llm_response = self._llm_client.chat(self._msgs_history)
         if not llm_response:
             chatbot_response.error_msg = "LLM request failed"
             return chatbot_response
 
-        raw_response = self.preprocess_llm_response(llm_response['message']['content'])
+        raw_response = preprocess_llm_response(llm_response['message']['content'])
         self.get_logger().info(f"Raw LLM response: {raw_response}")
 
-        json_res = None
-        if hasattr(ChatbotResponse, "model_validate_json"):
-            json_res = ChatbotResponse.model_validate_json(raw_response)
-        else:
-            try:
-                json_res = json.loads(raw_response)
-                # check that the json response is valid according to the ChatbotResponse model
-                json_res = ChatbotResponse(**json_res)
-
-            except json.decoder.JSONDecodeError as e:
-                self.get_logger().warn(f"Malformed JSON response: {e}")
-            except Exception as e:
-                self.get_logger().warn(f"LLM response does not match expected format: {e}")
-
+        json_res = parse_chatbot_response(raw_response, logger=self.get_logger())
 
         if json_res:
             self.get_logger().info(f"Parsed LLM response: {json_res}")
@@ -415,14 +311,22 @@ class LLMChatbot(Node):
     #
     def on_configure(self, state: State) -> TransitionCallbackReturn:
 
-        self._llm_server = self.get_parameter('server_url').value
-        self._llm_model = self.get_parameter('model').value
-        self._api_key = self.get_parameter_or('api_key', None).value
-        self._request_timeout = self.get_parameter('request_timeout').value
         self._robot_name = self.get_parameter('robot_name').value
         self._system_prompt_tpl = Template(self.get_parameter('system_prompt').value)
 
-        self.get_logger().info(f"I will connect to the LLM server on {self._llm_server}.")
+        schema = (ChatbotResponse.model_json_schema()
+                  if hasattr(ChatbotResponse, "model_json_schema")
+                  else ChatbotResponse.schema())
+        self._llm_client = LLMClient(
+            server=self.get_parameter('server_url').value,
+            model=self.get_parameter('model').value,
+            api_key=self.get_parameter_or('api_key', None).value,
+            timeout=self.get_parameter('request_timeout').value,
+            response_schema=schema,
+            logger=self.get_logger(),
+        )
+
+        self.get_logger().info(f"I will connect to the LLM server on {self._llm_client.server}.")
 
         # configure and start diagnostics publishing
         self._nb_requests = 0
@@ -513,8 +417,8 @@ class LLMChatbot(Node):
                 KeyValue(key="Module name", value="chatbot_llm"),
                 KeyValue(key="Current lifecycle state",
                          value=self._state_machine.current_state[1]),
-                KeyValue(key="llm server", value=self._llm_server),
-                KeyValue(key="llm model", value=self._llm_model),
+                KeyValue(key="llm server", value=self._llm_client.server),
+                KeyValue(key="llm model", value=self._llm_client.model),
                 KeyValue(key="# requests since start", value=str(self._nb_requests)),
             ],
         )
