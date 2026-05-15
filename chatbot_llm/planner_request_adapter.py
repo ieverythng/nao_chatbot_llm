@@ -105,6 +105,7 @@ def build_planner_request_payload(
     multi_step_heuristics: dict | None = None,
     max_history_entries: int = 6,
     active_goal_id: str = '',
+    active_goal_token: str = '',
 ) -> dict:
     """Build the planner ingress payload from the current turn result."""
     user_intent = _turn_user_intent(turn_result)
@@ -128,10 +129,18 @@ def build_planner_request_payload(
         active_goal_id=active_goal_id,
         request_kind=request_kind,
     )
+    goal_token = _resolved_goal_token(
+        user_intent=user_intent,
+        turn_id=turn_id,
+        goal_id=goal_id,
+        request_kind=request_kind,
+        active_goal_token=active_goal_token,
+    )
 
     payload = {
         'request_id': str(turn_id).strip(),
         'goal_id': goal_id,
+        'goal_token': goal_token,
         'parent_goal_id': str(user_intent.get('parent_goal_id', '')).strip(),
         'supersedes_goal_id': str(user_intent.get('supersedes_goal_id', '')).strip(),
         'request_kind': request_kind,
@@ -168,6 +177,7 @@ def build_planner_request_intent(
     multi_step_heuristics: dict | None = None,
     max_history_entries: int = 6,
     active_goal_id: str = '',
+    active_goal_token: str = '',
 ) -> Intent:
     """Create the ``Intent`` message published on ``/planner/request``."""
     payload = build_planner_request_payload(
@@ -180,6 +190,7 @@ def build_planner_request_intent(
         multi_step_heuristics=multi_step_heuristics,
         max_history_entries=max_history_entries,
         active_goal_id=active_goal_id,
+        active_goal_token=active_goal_token,
     )
     return build_planner_request_intent_from_payload(
         payload=payload,
@@ -401,6 +412,31 @@ def _resolved_goal_id(
         if normalized_turn_id:
             return 'goal_%s' % normalized_turn_id
     return 'goal_unknown'
+
+
+def _resolved_goal_token(
+    *,
+    user_intent: dict,
+    turn_id: str,
+    goal_id: str,
+    request_kind: str,
+    active_goal_token: str,
+) -> str:
+    explicit_goal_token = str(user_intent.get('goal_token', '')).strip()
+    if explicit_goal_token:
+        return explicit_goal_token
+    if request_kind in {'goal_update', 'clarification_answer', 'cancel_request'}:
+        clean_active_goal_token = str(active_goal_token or '').strip()
+        if clean_active_goal_token:
+            return clean_active_goal_token
+        clean_active_goal_id = str(goal_id or '').strip()
+        if clean_active_goal_id:
+            return f'{clean_active_goal_id}:active'
+    clean_goal_id = str(goal_id or '').strip()
+    clean_turn_id = str(turn_id or '').strip()
+    if clean_goal_id and clean_turn_id:
+        return f'{clean_goal_id}:{clean_turn_id}'
+    return clean_goal_id
 
 
 def _normalize_token(value) -> str:

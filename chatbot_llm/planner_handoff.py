@@ -17,7 +17,7 @@ from chatbot_llm.planner_request_adapter import build_planner_request_payload
 from chatbot_llm.planner_request_adapter import should_route_intents_through_planner
 
 TraceFn = Callable[..., None]
-GoalIdCallback = Callable[[Any, str], None]
+GoalIdCallback = Callable[[Any, str, str], None]
 
 
 class PlannerHandoff:
@@ -126,6 +126,7 @@ class PlannerHandoff:
                 grounded_context=self.grounded_context(knowledge_context),
                 multi_step_heuristics=self._config.planner_multi_step_heuristics,
                 active_goal_id=session.active_planner_goal_id,
+                active_goal_token=getattr(session, 'active_planner_goal_token', ''),
             )
             planner_msg = build_planner_request_intent_from_payload(
                 payload=planner_payload,
@@ -140,8 +141,9 @@ class PlannerHandoff:
             return False
 
         planner_goal_id = str(planner_payload.get('goal_id', '')).strip()
+        planner_goal_token = str(planner_payload.get('goal_token', '')).strip()
         if planner_goal_id and self._on_planner_goal_id is not None:
-            self._on_planner_goal_id(session, planner_goal_id)
+            self._on_planner_goal_id(session, planner_goal_id, planner_goal_token)
 
         self._trace(
             turn_id,

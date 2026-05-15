@@ -321,7 +321,57 @@ def test_turn_engine_planner_mode_hands_scan_timeout_to_planner():
         'type': 'fallback',
         'goal_text': 'Can you scan the room for a person?',
     }
-    assert result.route == 'execution'
+
+
+def test_turn_engine_renders_planner_completion_for_system_payload_with_llm():
+    transport = FakeTransport(
+        [
+            '{"verbal_ack":"I scanned the room and found one person."}',
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='rules'),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text=(
+            '{"planner_completion":{"goal_text":"scan the room",'
+            '"result_summary":"found one person","requested_intents":["scan"]}}'
+        ),
+        history=['system:planner finished goal_1'],
+        user_id='__system__',
+    )
+
+    assert result.success is True
+    assert result.route == 'dialogue'
+    assert result.intent == ''
+    assert result.intent_source == 'planner_completion'
+    assert result.verbal_ack == 'I scanned the room and found one person.'
+    assert result.updated_history[-1] == 'assistant:I scanned the room and found one person.'
+    assert len(transport.calls) == 1
+
+
+def test_turn_engine_planner_completion_fallback_without_llm_response():
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='rules'),
+        transport=FakeTransport(['']),
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='{"planner_completion":{"result_summary":"Head motion completed."}}',
+        history=[],
+        user_id='__system__',
+    )
+
+    assert result.success is True
+    assert result.intent_source == 'planner_completion'
+    assert result.verbal_ack == 'Head motion completed.'
+    assert result.route == 'dialogue'
 
 
 def test_turn_engine_forwards_think_flag_to_transport():

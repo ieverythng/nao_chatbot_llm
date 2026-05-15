@@ -41,6 +41,7 @@ def test_build_planner_request_payload_derives_scene_targets_and_bounds_context(
     assert payload == {
         'request_id': 'turn_1',
         'goal_id': 'goal_turn_1',
+        'goal_token': 'goal_turn_1:turn_1',
         'parent_goal_id': '',
         'supersedes_goal_id': '',
         'request_kind': 'new_goal',
@@ -93,6 +94,7 @@ def test_build_planner_request_intent_encodes_expected_message_shape():
     assert payload['normalized_intents'] == ['head_look_left']
     assert payload['ack_mode'] == 'auto'
     assert payload['goal_id'] == 'goal_turn_2'
+    assert payload['goal_token'] == 'goal_turn_2:turn_2'
     assert payload['request_kind'] == 'new_goal'
     assert 'user_text' not in payload
 
@@ -294,6 +296,7 @@ def test_build_planner_request_payload_reuses_active_goal_for_cancel_request():
 
     assert payload['request_kind'] == 'cancel_request'
     assert payload['goal_id'] == 'goal_existing'
+    assert payload['goal_token'] == 'goal_existing:active'
 
 
 def test_should_route_intents_through_planner_ignores_fallback_plan_hint() -> None:

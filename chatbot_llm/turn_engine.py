@@ -60,6 +60,15 @@ _EXECUTION_HINT_MARKERS = (
 )
 
 
+_PLANNER_COMPLETION_KEYS = (
+    'goal_text',
+    'result_summary',
+    'text_hint',
+    'requested_intents',
+    'result_payload',
+)
+
+
 # ---------------------------------------------------------------------------
 # Turn execution result model
 # ---------------------------------------------------------------------------
@@ -121,6 +130,16 @@ class DialogueTurnEngine:
         self._publish_progress(progress_callback, 'thinking', 0.1)
         if cancel_requested():
             return self._cancelled_result(history)
+
+        planner_completion = _extract_planner_completion_context(user_text)
+        if user_id == '__system__' and planner_completion:
+            result = self._execute_planner_completion_turn(
+                history=history,
+                completion_context=planner_completion,
+            )
+            self._publish_progress(progress_callback, 'complete', 1.0)
+            self._trace(trace, turn_id, 'TURN_DONE', 'planner completion wording complete')
+            return result
 
         if self._config.intent_detection_mode == 'rules':
             result = self._execute_rule_turn(user_text=user_text, history=history, source='rules')
@@ -481,6 +500,30 @@ class DialogueTurnEngine:
             intent_source='llm_disabled',
         )
 
+    def _execute_planner_completion_turn(
+        self,
+        *,
+        history: list[str],
+        completion_context: dict,
+    ) -> TurnExecutionResult:
+        verbal_ack = self._query_planner_completion_ack(completion_context)
+        if not verbal_ack:
+            verbal_ack = _fallback_planner_completion_ack(completion_context)
+        if not verbal_ack:
+            verbal_ack = self._config.fallback_response
+        updated_history = self._history_with_assistant_text(history, verbal_ack)
+        self._handled_requests += 1
+        return self._build_result(
+            success=True,
+            verbal_ack=verbal_ack,
+            updated_history=updated_history,
+            intent='',
+            intent_source='planner_completion',
+            intent_confidence=1.0,
+            user_intent={},
+            route=_DIALOGUE_ROUTE,
+        )
+
     def _execute_llm_failure_turn(self, user_text: str, history: list[str]) -> TurnExecutionResult:
         if self._config.planner_mode_enabled and _looks_like_execution_text(user_text):
             return self._execute_planner_timeout_turn(user_text=user_text, history=history)
@@ -663,6 +706,42 @@ class DialogueTurnEngine:
             return {}
         return parsed
 
+    def _query_planner_completion_ack(self, completion_context: dict) -> str:
+        if not self._config.enabled:
+            return ''
+
+        prompt = (
+            'You are writing one spoken completion sentence for a user after robot task execution. '
+            'Use only facts from the JSON payload. Do not mention planner internals or JSON. '
+            'If facts are missing, briefly say no confirmed result was available.'
+        )
+        payload = json.dumps(
+            {'planner_completion': completion_context},
+            sort_keys=True,
+            separators=(',', ':'),
+        )
+        raw_response = self._transport.query(
+            messages=[
+                {'role': 'system', 'content': prompt},
+                {'role': 'user', 'content': payload},
+            ],
+            timeout_sec=self._config.request_timeout_sec,
+            model=self._config.model,
+            temperature=self._config.temperature,
+            top_p=self._config.top_p,
+            think=self._config.think,
+            max_tokens=self._config.response_max_tokens,
+            response_format=self._config.response_schema,
+        )
+        if not raw_response:
+            return ''
+        parsed = _extract_json_object(raw_response)
+        if parsed:
+            candidate = _ack_from_parsed_response(parsed)
+            if candidate:
+                return candidate
+        return _extract_ack_text(raw_response) or str(raw_response).strip()
+
     # -----------------------------------------------------------------------
     # Prompt-history helper methods
     # -----------------------------------------------------------------------
@@ -699,6 +778,17 @@ class DialogueTurnEngine:
                 {'role': 'user', 'content': user_text},
                 {'role': 'assistant', 'content': assistant_text},
             ],
+            max_history_messages=self._config.max_history_messages,
+        )
+
+    def _history_with_assistant_text(self, history: list[str], assistant_text: str) -> list[str]:
+        messages = history_to_messages(
+            history,
+            max_history_messages=self._config.max_history_messages,
+        )
+        messages.append({'role': 'assistant', 'content': assistant_text})
+        return messages_to_history(
+            messages,
             max_history_messages=self._config.max_history_messages,
         )
 
@@ -865,6 +955,7 @@ def _coerce_user_intent(user_intent) -> dict:
             'ack_mode',
             'request_kind',
             'goal_id',
+            'goal_token',
             'parent_goal_id',
             'supersedes_goal_id',
             'interaction_mode',
@@ -899,3 +990,46 @@ def _normalize_route(value) -> str:
 def _looks_like_execution_text(user_text: str) -> bool:
     lowered = ' %s ' % ' '.join(str(user_text or '').strip().lower().split())
     return any(marker in lowered for marker in _EXECUTION_HINT_MARKERS)
+
+
+def _extract_planner_completion_context(payload: str) -> dict:
+    parsed = _extract_json_object(str(payload or '').strip())
+    context = parsed.get('planner_completion', {}) if isinstance(parsed, dict) else {}
+    if not isinstance(context, dict):
+        return {}
+    normalized = {
+        'goal_text': str(context.get('goal_text', '')).strip(),
+        'result_summary': str(context.get('result_summary', '')).strip(),
+        'text_hint': str(context.get('text_hint', '')).strip(),
+        'requested_intents': [
+            str(item).strip()
+            for item in context.get('requested_intents', [])
+            if str(item).strip()
+        ]
+        if isinstance(context.get('requested_intents', []), list)
+        else [],
+        'result_payload': context.get('result_payload', {})
+        if isinstance(context.get('result_payload', {}), dict)
+        else {},
+    }
+    if not any(normalized.get(key) for key in _PLANNER_COMPLETION_KEYS):
+        return {}
+    return normalized
+
+
+def _fallback_planner_completion_ack(completion_context: dict) -> str:
+    text_hint = str(completion_context.get('text_hint', '')).strip()
+    if text_hint:
+        return text_hint
+    result_summary = str(completion_context.get('result_summary', '')).strip()
+    if result_summary:
+        return result_summary
+    result_payload = completion_context.get('result_payload', {})
+    if isinstance(result_payload, dict):
+        summary_text = str(result_payload.get('summary_text', '')).strip()
+        if summary_text:
+            return summary_text
+    goal_text = str(completion_context.get('goal_text', '')).strip()
+    if goal_text:
+        return 'I finished: %s.' % goal_text.rstrip('.')
+    return ''

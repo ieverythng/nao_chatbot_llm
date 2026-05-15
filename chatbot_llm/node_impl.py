@@ -30,6 +30,7 @@ from chatbot_llm.knowledge_snapshot_client import KnowledgeSnapshotClient
 from chatbot_llm.ollama_transport import OllamaTransport
 from chatbot_llm.planner_handoff import PlannerHandoff
 from chatbot_llm.skill_catalog import build_skill_catalog_text
+from chatbot_llm.skill_catalog import build_skill_catalog_text_from_shared_registry
 from chatbot_llm.turn_engine import DialogueTurnEngine
 from chatbot_llm.turn_engine import _extract_ack_text
 from chatbot_llm.turn_engine import _looks_like_json_payload
@@ -66,6 +67,7 @@ class DialogueSession:
     request_count: int = 0
     last_user_id: str = 'anonymous_user'
     active_planner_goal_id: str = ''
+    active_planner_goal_token: str = ''
 
 
 # ---------------------------------------------------------------------------
@@ -317,6 +319,8 @@ class LLMChatbot(Node):
             response.intents = []
         else:
             response.intents = direct_intents
+        if user_id == SYSTEM_USER_ID:
+            response.intents = []
         response.error_msg = ''
         return response
 
@@ -352,12 +356,17 @@ class LLMChatbot(Node):
         self._skill_catalog_text = ''
         self._skill_catalog_size = 0
         if self._config.use_skill_catalog and self._config.skill_catalog_packages:
-            self._skill_catalog_text, descriptors = build_skill_catalog_text(
-                package_names=self._config.skill_catalog_packages,
+            self._skill_catalog_text, descriptors = build_skill_catalog_text_from_shared_registry(
                 max_entries=self._config.skill_catalog_max_entries,
                 max_chars=self._config.skill_catalog_max_chars,
-                logger=self.get_logger(),
             )
+            if not descriptors:
+                self._skill_catalog_text, descriptors = build_skill_catalog_text(
+                    package_names=self._config.skill_catalog_packages,
+                    max_entries=self._config.skill_catalog_max_entries,
+                    max_chars=self._config.skill_catalog_max_chars,
+                    logger=self.get_logger(),
+                )
             self._skill_catalog_size = len(descriptors)
 
         self._knowledge_snapshot_client = KnowledgeSnapshotClient(
@@ -558,11 +567,17 @@ class LLMChatbot(Node):
             if self._session is not None and self._session.dialogue_id == session.dialogue_id:
                 self._session.history = new_history
 
-    def _on_planner_goal_committed(self, session: DialogueSession, goal_id: str) -> None:
-        """Persist planner goal id on the active session when it matches this dialogue."""
+    def _on_planner_goal_committed(
+        self,
+        session: DialogueSession,
+        goal_id: str,
+        goal_token: str,
+    ) -> None:
+        """Persist planner goal metadata on the active session when it matches this dialogue."""
         with self._session_lock:
             if self._session is not None and self._session.dialogue_id == session.dialogue_id:
                 self._session.active_planner_goal_id = goal_id
+                self._session.active_planner_goal_token = goal_token
 
     def _terminate_active_dialogue(self, error_msg: str) -> None:
         """Unblock the action execution loop if a dialogue is still active."""
