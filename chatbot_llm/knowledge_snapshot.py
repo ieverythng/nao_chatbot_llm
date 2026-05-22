@@ -163,6 +163,57 @@ def build_scene_context(
     return '\n\n'.join(sections).strip()
 
 
+def build_grounded_context_block(grounded_context: dict) -> str:
+    """Build a compact structured block from planner/world-model grounded context."""
+    payload = dict(grounded_context or {})
+    scene_summary = payload.get('scene_summary', {})
+    world_snapshot = payload.get('world_model_snapshot', {})
+    world_text = str(payload.get('world_model_text', '')).strip()
+
+    lines: list[str] = []
+
+    entities = world_snapshot.get('entities', []) if isinstance(world_snapshot, dict) else []
+    if isinstance(entities, list) and entities:
+        entity_labels: list[str] = []
+        for item in entities[:8]:
+            if not isinstance(item, dict):
+                continue
+            label = _first_non_empty_value(item, 'label', 'entity_id', fallback='entity')
+            kb_class = str(item.get('kb_class', '')).strip()
+            if kb_class:
+                entity_labels.append('%s (%s)' % (label, kb_class))
+            else:
+                entity_labels.append(label)
+        if entity_labels:
+            lines.append('Grounded entities now: %s' % ', '.join(entity_labels))
+
+    objects = scene_summary.get('objects', []) if isinstance(scene_summary, dict) else []
+    if isinstance(objects, list) and objects:
+        object_labels: list[str] = []
+        for item in objects[:8]:
+            if not isinstance(item, dict):
+                continue
+            object_labels.append(_first_non_empty_value(item, 'label', 'entity_id', fallback='object'))
+        object_labels = [label for label in object_labels if label]
+        if object_labels:
+            lines.append('Detector objects now: %s' % ', '.join(object_labels))
+
+    scene_targets = world_snapshot.get('scene_targets', []) if isinstance(world_snapshot, dict) else []
+    if isinstance(scene_targets, list) and scene_targets:
+        targets = [str(item).strip() for item in scene_targets if str(item).strip()]
+        if targets:
+            lines.append('Active scene targets: %s' % ', '.join(targets[:6]))
+
+    if world_text and not lines:
+        first_line = str(world_text.splitlines()[0]).strip()
+        if first_line:
+            lines.append('World model: %s' % first_line)
+
+    if not lines:
+        return ''
+    return 'Grounded context snapshot:\n%s' % '\n'.join('- %s' % line for line in lines)
+
+
 def extract_scene_memory_entry(snapshot: str) -> str:
     """Extract one compact scene summary line to retain across turns."""
     for raw_line in str(snapshot or '').splitlines():
@@ -173,6 +224,14 @@ def extract_scene_memory_entry(snapshot: str) -> str:
             clean_line = clean_line[2:].strip()
         return clean_line
     return ''
+
+
+def _first_non_empty_value(payload: dict, *keys: str, fallback: str = '') -> str:
+    for key in keys:
+        value = str(payload.get(key, '')).strip()
+        if value:
+            return value
+    return str(fallback or '').strip()
 
 
 # ---------------------------------------------------------------------------

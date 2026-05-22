@@ -68,6 +68,8 @@ def make_config(
         planner_scene_summary_topic='/scene/summary',
         planner_world_model_snapshot_topic='/world_model/enriched_snapshot',
         planner_world_model_text_topic='/world_model/enriched_text',
+        turn_trace_enabled=True,
+        turn_trace_topic='/chatbot_llm/turn_trace',
         knowledge_enabled=False,
         knowledge_query_service_name='/kb/query',
         knowledge_query_timeout_sec=0.5,
@@ -543,3 +545,80 @@ def test_turn_engine_falls_back_when_json_has_no_safe_ack():
 
     assert result.verbal_ack == 'fallback'
     assert result.updated_history == ['user:stand up', 'assistant:fallback']
+
+
+def test_turn_engine_escalates_dialogue_route_when_ack_promises_execution():
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"I cannot confirm the book now. I will scan the area to locate it.",'
+                '"route":"dialogue","user_intent":{"type":"fallback"}}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='Can you navigate to the book?',
+        history=[],
+        user_id='user1',
+    )
+
+    assert result.route == 'execution'
+    assert result.user_intent.get('goal', '') == 'Can you navigate to the book?'
+
+
+def test_turn_engine_overrides_dialogue_route_for_execution_skill_intent() -> None:
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"Sure, I will wave now.",'
+                '"route":"dialogue","user_intent":{"type":"wave_greet"}}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='Please wave and greet me.',
+        history=[],
+        user_id='user1',
+    )
+
+    assert result.route == 'execution'
+    assert result.intent == 'wave_greet'
+
+
+def test_turn_engine_keeps_social_greeting_on_dialogue_route() -> None:
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"Sure, I will look for a blueberry.",'
+                '"route":"execution","user_intent":{"type":"fallback"}}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='hey!',
+        history=[],
+        user_id='user1',
+    )
+
+    assert result.route == 'dialogue'

@@ -8,6 +8,8 @@ from kb_skills.intent_labels import KB_QUERY_INTENTS
 from kb_skills.intent_labels import KB_QUERY_SCENE_CHANGE
 from kb_skills.intent_labels import KB_QUERY_VISIBLE_OBJECTS
 from kb_skills.intent_labels import KB_QUERY_VISIBLE_PEOPLE
+from planner_common import load_shared_skill_manifest
+from planner_common import names_from_manifest
 
 
 # ---------------------------------------------------------------------------
@@ -31,6 +33,18 @@ SUPPORTED_INTENTS = (
     'fallback',
 )
 
+_FALLBACK_EXECUTION_SKILL_INTENTS = {
+    'perform_motion',
+    'look_at',
+    'scan',
+    'report_result',
+    'find_object',
+    'navigate_to',
+    'inspect_area',
+    'walk_to',
+    'wave_greet',
+}
+
 INTENT_ALIASES = {
     '__intent_greet__': 'greet',
     '__intent_hello__': 'greet',
@@ -51,6 +65,32 @@ INTENT_ALIASES = {
 }
 
 
+def _load_shared_execution_skill_intents() -> set[str]:
+    execution_labels = set(_FALLBACK_EXECUTION_SKILL_INTENTS)
+    try:
+        manifest = load_shared_skill_manifest()
+    except Exception:
+        manifest = []
+
+    for skill_payload in manifest:
+        execution_labels.update(names_from_manifest(skill_payload))
+
+    execution_labels.difference_update(
+        {
+            'greet',
+            'identity',
+            'wellbeing',
+            'help',
+            'fallback',
+            *KB_QUERY_INTENTS,
+        }
+    )
+    return execution_labels
+
+
+_EXECUTION_SKILL_INTENTS = _load_shared_execution_skill_intents()
+
+
 # ---------------------------------------------------------------------------
 # Intent normalization and rules fallback
 # ---------------------------------------------------------------------------
@@ -69,6 +109,8 @@ def normalize_intent(intent: str, default: str = 'fallback', hint_text: str = ''
         return raw
     if raw in INTENT_ALIASES:
         return INTENT_ALIASES[raw]
+    if raw in _EXECUTION_SKILL_INTENTS:
+        return raw
 
     search_space = f'{raw} {hints}'.strip().replace('_', ' ').replace('-', ' ')
     if 'stand' in search_space or search_space.endswith(' up'):
@@ -137,6 +179,26 @@ def normalize_intent(intent: str, default: str = 'fallback', hint_text: str = ''
 def detect_intent(text: str) -> str:
     """Infer one of the local canonical intents from free text."""
     lowered = text.lower()
+    if _contains_any_phrase(
+        lowered,
+        ('navigate to', 'go to', 'move to', 'walk to'),
+    ):
+        return 'navigate_to'
+    if _contains_any_phrase(
+        lowered,
+        ('wave hello', 'wave at', 'please wave', 'greet with a wave'),
+    ):
+        return 'wave_greet'
+    if _contains_any_phrase(
+        lowered,
+        ('find object', 'find the', 'locate the', 'look for the'),
+    ):
+        return 'find_object'
+    if _contains_any_phrase(
+        lowered,
+        ('inspect area', 'check the area'),
+    ):
+        return 'inspect_area'
     if _contains_any_phrase(lowered, ('look left', 'turn your head left', 'head left')):
         return 'head_look_left'
     if _contains_any_phrase(lowered, ('look right', 'turn your head right', 'head right')):
@@ -216,6 +278,15 @@ def detect_intent(text: str) -> str:
     ):
         return KB_QUERY_SCENE_CHANGE
     return 'fallback'
+
+
+def is_execution_intent_label(intent: str) -> bool:
+    clean_intent = str(intent or '').strip().lower()
+    if not clean_intent:
+        return False
+    if clean_intent in _EXECUTION_SKILL_INTENTS:
+        return True
+    return clean_intent not in {'fallback', 'greet', 'identity', 'wellbeing', 'help', *KB_QUERY_INTENTS}
 
 
 # ---------------------------------------------------------------------------

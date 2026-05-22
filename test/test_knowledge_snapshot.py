@@ -1,5 +1,6 @@
 from chatbot_llm.backend_config import ChatbotConfig
 from chatbot_llm.knowledge_snapshot import build_scene_context
+from chatbot_llm.knowledge_snapshot import build_grounded_context_block
 from chatbot_llm.knowledge_snapshot import extract_scene_memory_entry
 from chatbot_llm.knowledge_snapshot import KnowledgeSnapshotSettings
 from chatbot_llm.knowledge_snapshot import format_knowledge_snapshot
@@ -56,6 +57,8 @@ def make_config() -> ChatbotConfig:
         planner_scene_summary_topic='/scene/summary',
         planner_world_model_snapshot_topic='/world_model/enriched_snapshot',
         planner_world_model_text_topic='/world_model/enriched_text',
+        turn_trace_enabled=True,
+        turn_trace_topic='/chatbot_llm/turn_trace',
         knowledge_enabled=False,
         knowledge_query_service_name='/kb/query',
         knowledge_query_timeout_sec=0.5,
@@ -199,3 +202,29 @@ def test_build_scene_context_includes_current_scene_and_recent_memory():
     assert 'Current grounded scene:' in context
     assert 'Recent scene memory from previous turns:' in context
     assert '- Entities currently seen by the robot: book bkjwb (Book)' in context
+
+
+def test_build_grounded_context_block_summarizes_entities_and_targets():
+    block = build_grounded_context_block(
+        {
+            'scene_summary': {
+                'objects': [
+                    {'label': 'book_qibia', 'entity_id': 'book_qibia'},
+                    {'label': 'apple_ktepg', 'entity_id': 'apple_ktepg'},
+                ]
+            },
+            'world_model_snapshot': {
+                'scene_targets': ['book', 'apple'],
+                'entities': [
+                    {'label': 'book_qibia', 'kb_class': 'Book'},
+                    {'label': 'anonymous_person_gjjbd', 'kb_class': 'Human'},
+                ],
+            },
+            'world_model_text': 'fallback text',
+        }
+    )
+
+    assert block.startswith('Grounded context snapshot:')
+    assert 'Grounded entities now:' in block
+    assert 'Detector objects now:' in block
+    assert 'Active scene targets:' in block

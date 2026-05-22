@@ -13,6 +13,7 @@ from chatbot_llm.chat_history import messages_to_history
 from chatbot_llm.chat_history import trim_messages
 from chatbot_llm.intent_rules import build_rule_response
 from chatbot_llm.intent_rules import detect_intent
+from chatbot_llm.intent_rules import is_execution_intent_label
 from chatbot_llm.intent_rules import normalize_intent
 from chatbot_llm.prompt_builders import build_intent_prompt
 from chatbot_llm.prompt_builders import build_response_prompt
@@ -58,6 +59,18 @@ _EXECUTION_HINT_MARKERS = (
     ' people',
     ' room',
 )
+_SOCIAL_TURN_MARKERS = {
+    'hi',
+    'hello',
+    'hey',
+    'hey there',
+    'good morning',
+    'good afternoon',
+    'good evening',
+    'how are you',
+    'thanks',
+    'thank you',
+}
 
 
 _PLANNER_COMPLETION_KEYS = (
@@ -385,6 +398,17 @@ class DialogueTurnEngine:
             resolved_intent=resolved_intent,
             user_intent=user_intent,
         )
+        if _is_social_turn(user_text) and not _looks_like_execution_text(user_text):
+            inferred_route = _DIALOGUE_ROUTE
+        if (
+            inferred_route == _DIALOGUE_ROUTE
+            and not _is_social_turn(user_text)
+            and _ack_implies_execution(verbal_ack)
+        ):
+            inferred_route = _EXECUTION_ROUTE
+            if not str(user_intent.get('goal', '')).strip():
+                user_intent = dict(user_intent)
+                user_intent['goal'] = str(user_text or '').strip()
 
         response_confidence = coerce_float(
             response_payload.get(
@@ -445,6 +469,11 @@ class DialogueTurnEngine:
         user_intent: dict,
     ) -> str:
         clean_route = _normalize_route(requested_route)
+        if (
+            clean_route == _DIALOGUE_ROUTE
+            and is_execution_intent_label(str(user_intent.get('type', '')).strip() or resolved_intent)
+        ):
+            return _EXECUTION_ROUTE
         if clean_route:
             return clean_route
 
@@ -990,6 +1019,34 @@ def _normalize_route(value) -> str:
 def _looks_like_execution_text(user_text: str) -> bool:
     lowered = ' %s ' % ' '.join(str(user_text or '').strip().lower().split())
     return any(marker in lowered for marker in _EXECUTION_HINT_MARKERS)
+
+
+def _is_social_turn(user_text: str) -> bool:
+    clean = ' '.join(str(user_text or '').strip().lower().split())
+    if not clean:
+        return False
+    normalized = ''.join(ch for ch in clean if ch.isalnum() or ch.isspace()).strip()
+    if normalized in _SOCIAL_TURN_MARKERS:
+        return True
+    token_count = len([token for token in normalized.split(' ') if token])
+    if token_count <= 2 and normalized in {'hi', 'hello', 'hey', 'thanks'}:
+        return True
+    return False
+
+
+def _ack_implies_execution(verbal_ack: str) -> bool:
+    clean_ack = ' %s ' % ' '.join(str(verbal_ack or '').strip().lower().split())
+    if not clean_ack.strip():
+        return False
+    commitment_markers = (
+        " i will ",
+        " i'll ",
+        ' let me ',
+        ' i can ',
+    )
+    if not any(marker in clean_ack for marker in commitment_markers):
+        return False
+    return _looks_like_execution_text(clean_ack)
 
 
 def _extract_planner_completion_context(payload: str) -> dict:

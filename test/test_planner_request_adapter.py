@@ -299,6 +299,23 @@ def test_build_planner_request_payload_reuses_active_goal_for_cancel_request():
     assert payload['goal_token'] == 'goal_existing:active'
 
 
+def test_build_planner_request_payload_supersedes_active_goal_for_new_goal():
+    payload = build_planner_request_payload(
+        turn_id='turn_10',
+        user_text='now scan for people',
+        turn_result=_make_result(
+            intent='inspect_scene',
+            user_intent={'type': 'inspect_scene'},
+        ),
+        knowledge_context='',
+        active_goal_id='goal_existing',
+    )
+
+    assert payload['request_kind'] == 'new_goal'
+    assert payload['goal_id'] == 'goal_turn_10'
+    assert payload['supersedes_goal_id'] == 'goal_existing'
+
+
 def test_should_route_intents_through_planner_ignores_fallback_plan_hint() -> None:
     result = _make_result(
         intent='fallback',

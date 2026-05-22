@@ -100,6 +100,7 @@ class PlannerHandoff:
         turn_id: str,
         user_text: str,
         knowledge_context: str,
+        grounded_context: dict | None = None,
         result,
         direct_intents: list[Intent],
     ) -> bool:
@@ -123,7 +124,7 @@ class PlannerHandoff:
                 user_text=user_text,
                 turn_result=result,
                 knowledge_context=knowledge_context,
-                grounded_context=self.grounded_context(knowledge_context),
+                grounded_context=grounded_context or self.grounded_context(knowledge_context),
                 multi_step_heuristics=self._config.planner_multi_step_heuristics,
                 active_goal_id=session.active_planner_goal_id,
                 active_goal_token=getattr(session, 'active_planner_goal_token', ''),

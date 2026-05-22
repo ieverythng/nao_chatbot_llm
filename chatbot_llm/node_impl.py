@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from dataclasses import dataclass, field
@@ -23,6 +24,7 @@ from chatbot_llm.chat_history import history_to_messages
 from chatbot_llm.chat_history import messages_to_history
 from chatbot_llm.intent_adapter import build_response_intents
 from chatbot_llm.knowledge_snapshot import KnowledgeSnapshotSettings
+from chatbot_llm.knowledge_snapshot import build_grounded_context_block
 from chatbot_llm.knowledge_snapshot import build_scene_context
 from chatbot_llm.knowledge_snapshot import extract_scene_memory_entry
 from chatbot_llm.knowledge_snapshot import resolve_knowledge_snapshot_settings
@@ -35,6 +37,7 @@ from chatbot_llm.turn_engine import DialogueTurnEngine
 from chatbot_llm.turn_engine import _extract_ack_text
 from chatbot_llm.turn_engine import _looks_like_json_payload
 from hri_actions_msgs.msg import Intent
+from std_msgs.msg import String
 
 try:  # pragma: no cover - optional dependency
     from i18n_msgs.action import SetLocale
@@ -95,6 +98,7 @@ class LLMChatbot(Node):
         self._diag_timer = None
         self._llm_keepalive_timer = None
         self._planner_handoff: PlannerHandoff | None = None
+        self._turn_trace_pub = None
 
         self._config: ChatbotConfig | None = None
         self._transport = None
@@ -258,10 +262,18 @@ class LLMChatbot(Node):
             turn_id=turn_id,
             trace=self._trace,
         )
+        grounded_context = {}
+        if self._planner_handoff is not None:
+            grounded_context = self._planner_handoff.grounded_context(current_snapshot)
         knowledge_context = build_scene_context(
             current_snapshot,
             recent_scene_memory=session.recent_scene_memory,
         )
+        grounded_context_block = build_grounded_context_block(grounded_context)
+        if grounded_context_block:
+            knowledge_context = '\n\n'.join(
+                section for section in (knowledge_context, grounded_context_block) if section
+            ).strip()
 
         result = self._turn_engine.execute_turn(
             user_text=text,
@@ -303,6 +315,7 @@ class LLMChatbot(Node):
                 confidence=result.intent_confidence,
             )
         planner_handoff_allowed = user_id != SYSTEM_USER_ID
+        planner_handoff_published = False
         if (
             planner_handoff_allowed
             and self._planner_handoff is not None
@@ -314,13 +327,31 @@ class LLMChatbot(Node):
                 knowledge_context=knowledge_context,
                 result=result,
                 direct_intents=direct_intents,
+                grounded_context=grounded_context,
             )
         ):
+            planner_handoff_published = True
             response.intents = []
         else:
             response.intents = direct_intents
         if user_id == SYSTEM_USER_ID:
             response.intents = []
+        self._publish_turn_trace_event(
+            {
+                'event_type': 'chatbot_turn_result',
+                'turn_id': turn_id,
+                'route': result.route,
+                'intent': result.intent,
+                'intent_source': result.intent_source,
+                'intent_confidence': result.intent_confidence,
+                'user_intent': dict(result.user_intent or {}),
+                'verbal_ack': response.response,
+                'planner_mode_enabled': bool(self._config.planner_mode_enabled),
+                'planner_handoff_allowed': planner_handoff_allowed,
+                'planner_handoff_published': planner_handoff_published,
+                'direct_intent_count': len(direct_intents),
+            }
+        )
         response.error_msg = ''
         return response
 
@@ -392,6 +423,12 @@ class LLMChatbot(Node):
                 self._config,
                 trace=self._trace,
                 on_planner_goal_id=self._on_planner_goal_committed,
+            )
+        if self._config.turn_trace_enabled:
+            self._turn_trace_pub = self.create_publisher(
+                String,
+                self._config.turn_trace_topic,
+                10,
             )
 
         if not self._run_llm_preflight():
@@ -482,6 +519,9 @@ class LLMChatbot(Node):
         if self._diag_pub is not None:
             self.destroy_publisher(self._diag_pub)
             self._diag_pub = None
+        if self._turn_trace_pub is not None:
+            self.destroy_publisher(self._turn_trace_pub)
+            self._turn_trace_pub = None
         if self._planner_handoff is not None:
             self._planner_handoff.destroy()
             self._planner_handoff = None
@@ -623,6 +663,13 @@ class LLMChatbot(Node):
             self.get_logger().error(line)
             return
         self.get_logger().info(line)
+
+    def _publish_turn_trace_event(self, payload: dict) -> None:
+        if self._turn_trace_pub is None:
+            return
+        msg = String()
+        msg.data = json.dumps(dict(payload or {}), separators=(',', ':'), ensure_ascii=True)
+        self._turn_trace_pub.publish(msg)
 
     def _run_llm_preflight(self) -> bool:
         """Warm response and intent models before lifecycle activation."""

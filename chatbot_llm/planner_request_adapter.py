@@ -142,7 +142,12 @@ def build_planner_request_payload(
         'goal_id': goal_id,
         'goal_token': goal_token,
         'parent_goal_id': str(user_intent.get('parent_goal_id', '')).strip(),
-        'supersedes_goal_id': str(user_intent.get('supersedes_goal_id', '')).strip(),
+        'supersedes_goal_id': _resolved_supersedes_goal_id(
+            user_intent=user_intent,
+            request_kind=request_kind,
+            active_goal_id=active_goal_id,
+            goal_id=goal_id,
+        ),
         'request_kind': request_kind,
         'goal_text': _goal_text_from_user_intent(user_intent, user_text=user_text),
         'normalized_intents': _normalized_intents_for_turn(turn_result),
@@ -437,6 +442,25 @@ def _resolved_goal_token(
     if clean_goal_id and clean_turn_id:
         return f'{clean_goal_id}:{clean_turn_id}'
     return clean_goal_id
+
+
+def _resolved_supersedes_goal_id(
+    *,
+    user_intent: dict,
+    request_kind: str,
+    active_goal_id: str,
+    goal_id: str,
+) -> str:
+    explicit_supersedes_goal_id = str(user_intent.get('supersedes_goal_id', '')).strip()
+    if explicit_supersedes_goal_id:
+        return explicit_supersedes_goal_id
+    if request_kind != 'new_goal':
+        return ''
+    clean_active_goal_id = str(active_goal_id or '').strip()
+    clean_goal_id = str(goal_id or '').strip()
+    if clean_active_goal_id and clean_active_goal_id != clean_goal_id:
+        return clean_active_goal_id
+    return ''
 
 
 def _normalize_token(value) -> str:
