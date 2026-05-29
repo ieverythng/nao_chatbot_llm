@@ -4,14 +4,12 @@ from __future__ import annotations
 
 import json
 import threading
-import time
 from dataclasses import dataclass, field
 
-from chatbot_msgs.action import Dialogue
-from chatbot_msgs.srv import DialogueInteraction
+from chatbot_msgs.msg import DialogueRole
+from chatbot_msgs.srv import DialogueInteraction, PrepareDialogue
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
-from rclpy.action import ActionServer, CancelResponse, GoalResponse
-from rclpy.action.server import ServerGoalHandle
+from rclpy.action import ActionServer, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.lifecycle import Node
 from rclpy.lifecycle import State
@@ -20,8 +18,6 @@ from rclpy.lifecycle import TransitionCallbackReturn
 from chatbot_llm.backend_config import ChatbotConfig
 from chatbot_llm.backend_config import declare_backend_parameters
 from chatbot_llm.backend_config import load_backend_config
-from chatbot_llm.chat_history import history_to_messages
-from chatbot_llm.chat_history import messages_to_history
 from chatbot_llm.intent_adapter import build_response_intents
 from chatbot_llm.knowledge_snapshot import KnowledgeSnapshotSettings
 from chatbot_llm.knowledge_snapshot import build_grounded_context_block
@@ -78,7 +74,7 @@ class DialogueSession:
 # ---------------------------------------------------------------------------
 
 class LLMChatbot(Node):
-    """Lifecycle chatbot backend exposing the upstream Dialogue contract."""
+    """Lifecycle chatbot backend exposing the stateless chatbot_msgs v4 contract."""
 
     def __init__(self) -> None:
         """Declare parameters and initialize backend state containers."""
@@ -89,7 +85,7 @@ class LLMChatbot(Node):
         self._callback_group = ReentrantCallbackGroup()
         self._session_lock = threading.Lock()
 
-        self._dialogue_start_action = None
+        self._prepare_dialogue_srv = None
         self._dialogue_interaction_srv = None
         self._get_supported_locales_server = None
         self._set_default_locale_server = None
@@ -108,143 +104,102 @@ class LLMChatbot(Node):
         self._skill_catalog_size = 0
         self._default_locale = ''
 
-        self._dialogue_id: tuple[int, ...] | None = None
-        self._dialogue_result: Dialogue.Result | None = None
         self._session: DialogueSession | None = None
+        self._dialogue_sessions: dict[tuple[int, ...], DialogueSession] = {}
 
         self.get_logger().info('Chatbot backend created, awaiting lifecycle configuration.')
 
     # -----------------------------------------------------------------------
-    # Dialogue action/service handlers
+    # Stateless dialogue services
     # -----------------------------------------------------------------------
 
-    def on_dialog_goal(self, goal_request: Dialogue.Goal):
-        """Accept one dialogue at a time."""
+    def on_prepare_dialogue(
+        self,
+        request: PrepareDialogue.Request,
+        response: PrepareDialogue.Response,
+    ):
+        """Seed per-dialogue metadata for later stateless interactions."""
+        dialogue_id = tuple(request.dialogue_id.uuid)
+        session = self._build_dialogue_session(
+            dialogue_id=dialogue_id,
+            role=request.role,
+            locale='',
+        )
         with self._session_lock:
-            if self._dialogue_id is not None:
-                self.get_logger().warn('Rejected dialogue goal because another dialogue is active')
-                return GoalResponse.REJECT
-
-        role_name = _normalize_role_name(goal_request.role.name)
-        if not role_name:
-            self.get_logger().warn('Rejected dialogue goal with empty role')
-            return GoalResponse.REJECT
-        return GoalResponse.ACCEPT
-
-    def on_dialog_accept(self, handle: ServerGoalHandle):
-        """Create dialogue session state and execute the long-lived goal."""
-        goal = handle.request
-        dialogue_id = tuple(handle.goal_id.uuid)
-        session = self._build_dialogue_session(goal, dialogue_id)
-        with self._session_lock:
-            self._dialogue_id = dialogue_id
-            self._dialogue_result = None
+            self._dialogue_sessions[dialogue_id] = session
             self._session = session
-
-        self.get_logger().info(
-            'Started dialogue role=%s id=%s'
+        self.get_logger().debug(
+            '[CHATBOT] prepare_dialogue role=%s id=%s'
             % (session.role_name, _short_uuid(dialogue_id))
         )
-        handle.execute()
-
-    def on_dialog_cancel(self, _handle: ServerGoalHandle):
-        """Allow dialogue_manager to cancel long-lived dialogues."""
-        return CancelResponse.ACCEPT
+        return response
 
     def _build_dialogue_session(
         self,
-        goal: Dialogue.Goal,
         dialogue_id: tuple[int, ...],
+        role: DialogueRole,
+        locale: str,
     ) -> DialogueSession:
-        role_name = _normalize_role_name(goal.role.name)
-        role_configuration = _normalize_role_configuration(goal.role.configuration)
+        role_name = _normalize_role_name(getattr(role, 'name', ''))
+        role_configuration = _normalize_role_configuration(
+            getattr(role, 'configuration', ''),
+        )
         return DialogueSession(
             dialogue_id=dialogue_id,
-            role_name=role_name,
+            role_name=role_name or DEFAULT_ROLE,
             role_configuration=role_configuration,
             knowledge_settings=resolve_knowledge_snapshot_settings(
                 role_configuration,
                 self._config,
                 logger=self.get_logger(),
             ),
-            locale=str(goal.locale or self._default_locale).strip(),
-            history=_seed_history(role_name, role_configuration),
+            locale=str(locale or self._default_locale).strip(),
+            history=_seed_history(role_name or DEFAULT_ROLE, role_configuration),
         )
-
-    def on_dialog_execute(self, handle: ServerGoalHandle):
-        """Keep the dialogue action alive until cancelled or explicitly terminated."""
-        dialogue_id = tuple(handle.goal_id.uuid)
-        try:
-            while handle.is_active:
-                if handle.is_cancel_requested:
-                    handle.canceled()
-                    return Dialogue.Result(error_msg='Dialogue cancelled')
-
-                with self._session_lock:
-                    result = self._dialogue_result
-                if result is not None:
-                    if result.error_msg:
-                        handle.abort()
-                    else:
-                        handle.succeed()
-                    return result
-
-                time.sleep(1e-2)
-
-            return Dialogue.Result(error_msg='Dialogue execution interrupted')
-        finally:
-            with self._session_lock:
-                if self._dialogue_id == dialogue_id:
-                    self._dialogue_id = None
-                    self._dialogue_result = None
-                    self._session = None
-            self.get_logger().info('Dialogue %s finished' % _short_uuid(dialogue_id))
 
     def on_dialogue_interaction(
         self,
         request: DialogueInteraction.Request,
         response: DialogueInteraction.Response,
     ):
-        """Advance the active dialogue and optionally generate a reply."""
+        """Process one stateless dialogue interaction request."""
         dialogue_id = tuple(request.dialogue_id.uuid)
         with self._session_lock:
-            session = self._session if self._dialogue_id == dialogue_id else None
+            session = self._dialogue_sessions.get(dialogue_id)
         if session is None:
-            response.error_msg = 'Received dialogue interaction for unknown dialogue id'
-            self.get_logger().error(
-                '[CHATBOT] Unknown dialogue interaction id=%s' % _short_uuid(dialogue_id)
+            session = self._build_dialogue_session(
+                dialogue_id=dialogue_id,
+                role=request.role,
+                locale=str(getattr(request, 'locale', '') or ''),
             )
+            with self._session_lock:
+                self._dialogue_sessions[dialogue_id] = session
+                self._session = session
+        clean_locale = str(getattr(request, 'locale', '') or '').strip()
+        if clean_locale:
+            with self._session_lock:
+                session.locale = clean_locale
+                self._session = session
+
+        history_entries = _history_entries_from_stateless_request(request)
+        if not history_entries:
+            response.error_msg = 'Dialogue interaction history is empty'
             return response
 
-        text = str(request.input or '').strip()
-        user_id = str(request.user_id or '').strip()
-        if not user_id:
-            user_id = session.last_user_id or 'anonymous_user'
-
-        if request.locale:
-            with self._session_lock:
-                if self._session is not None:
-                    self._session.locale = str(request.locale).strip()
-
+        turn_role, user_id, text = _last_turn_descriptor(request)
         if not text:
-            if request.response_expected:
-                response.error_msg = 'Dialogue interaction input is empty'
+            response.error_msg = 'Dialogue interaction input is empty'
             return response
 
-        if user_id == SYSTEM_USER_ID:
-            self._append_history_entry(session, 'system', text)
-            if not request.response_expected:
-                return response
-        elif user_id == ASSISTANT_USER_ID:
-            self._append_history_entry(session, 'assistant', text)
-            if not request.response_expected:
-                return response
-        elif not request.response_expected:
-            self._append_history_entry(session, 'user', text)
-            with self._session_lock:
-                if self._session is not None:
-                    self._session.last_user_id = user_id
-            return response
+        if turn_role == 'user':
+            engine_history = list(history_entries[:-1])
+        else:
+            engine_history = list(history_entries)
+
+        with self._session_lock:
+            session.history = list(engine_history)
+            session.last_user_id = user_id
+            self._session = session
 
         turn_id = '%s:%d' % (session.role_name, session.request_count + 1)
         self.get_logger().info(
@@ -291,14 +246,16 @@ class LLMChatbot(Node):
         )
 
         with self._session_lock:
-            if self._session is not None:
-                self._session.history = list(result.updated_history)
-                self._session.recent_scene_memory = self._remember_scene_memory(
-                    self._session.recent_scene_memory,
+            tracked = self._dialogue_sessions.get(dialogue_id)
+            if tracked is not None:
+                tracked.history = list(result.updated_history)
+                tracked.recent_scene_memory = self._remember_scene_memory(
+                    tracked.recent_scene_memory,
                     current_snapshot,
                 )
-                self._session.last_user_id = user_id
-                self._session.request_count += 1
+                tracked.last_user_id = user_id
+                tracked.request_count += 1
+                self._session = tracked
 
         response.response = _sanitize_spoken_response(
             result.verbal_ack,
@@ -336,6 +293,8 @@ class LLMChatbot(Node):
             response.intents = direct_intents
         if user_id == SYSTEM_USER_ID:
             response.intents = []
+        response.dialogue_terminal = False
+        response.results = ''
         self._publish_turn_trace_event(
             {
                 'event_type': 'chatbot_turn_result',
@@ -471,15 +430,11 @@ class LLMChatbot(Node):
         return TransitionCallbackReturn.SUCCESS
 
     def on_activate(self, state: State) -> TransitionCallbackReturn:
-        """Activate the upstream action/service contract."""
-        self._dialogue_start_action = ActionServer(
-            self,
-            Dialogue,
-            '~/start_dialogue',
-            execute_callback=self.on_dialog_execute,
-            goal_callback=self.on_dialog_goal,
-            handle_accepted_callback=self.on_dialog_accept,
-            cancel_callback=self.on_dialog_cancel,
+        """Activate the stateless dialogue services."""
+        self._prepare_dialogue_srv = self.create_service(
+            PrepareDialogue,
+            '~/prepare_dialogue',
+            self.on_prepare_dialogue,
             callback_group=self._callback_group,
         )
         self._dialogue_interaction_srv = self.create_service(
@@ -489,27 +444,27 @@ class LLMChatbot(Node):
             callback_group=self._callback_group,
         )
         self.get_logger().info(
-            'chatbot_llm is active and serving ~/start_dialogue and '
+            'chatbot_llm is active and serving ~/prepare_dialogue and '
             '~/dialogue_interaction'
         )
         return super().on_activate(state)
 
     def on_deactivate(self, state: State) -> TransitionCallbackReturn:
         """Stop serving dialogue requests and terminate any active session."""
-        self._terminate_active_dialogue('Dialogue backend deactivated')
-        if self._dialogue_start_action is not None:
-            self._dialogue_start_action.destroy()
-            self._dialogue_start_action = None
+        if self._prepare_dialogue_srv is not None:
+            self.destroy_service(self._prepare_dialogue_srv)
+            self._prepare_dialogue_srv = None
         if self._dialogue_interaction_srv is not None:
             self.destroy_service(self._dialogue_interaction_srv)
             self._dialogue_interaction_srv = None
+        with self._session_lock:
+            self._dialogue_sessions.clear()
+            self._session = None
         self.get_logger().info('chatbot_llm is inactive')
         return super().on_deactivate(state)
 
     def on_shutdown(self, _state: State) -> TransitionCallbackReturn:
         """Tear down timers, publishers, and optional locale endpoints."""
-        self._terminate_active_dialogue('Dialogue backend shutdown')
-
         if self._diag_timer is not None:
             self.destroy_timer(self._diag_timer)
             self._diag_timer = None
@@ -526,12 +481,15 @@ class LLMChatbot(Node):
             self._planner_handoff.destroy()
             self._planner_handoff = None
 
-        if self._dialogue_start_action is not None:
-            self._dialogue_start_action.destroy()
-            self._dialogue_start_action = None
+        if self._prepare_dialogue_srv is not None:
+            self.destroy_service(self._prepare_dialogue_srv)
+            self._prepare_dialogue_srv = None
         if self._dialogue_interaction_srv is not None:
             self.destroy_service(self._dialogue_interaction_srv)
             self._dialogue_interaction_srv = None
+        with self._session_lock:
+            self._dialogue_sessions.clear()
+            self._session = None
 
         if self._get_supported_locales_server is not None:
             self.destroy_service(self._get_supported_locales_server)
@@ -589,45 +547,22 @@ class LLMChatbot(Node):
         arr.header.stamp = self.get_clock().now().to_msg()
         self._diag_pub.publish(arr)
 
-    def _append_history_entry(self, session: DialogueSession, role: str, text: str) -> None:
-        """Append one system/user/assistant entry to the active session history."""
-        clean_text = str(text).strip()
-        if not clean_text:
-            return
-        messages = history_to_messages(
-            session.history,
-            max_history_messages=self._config.max_history_messages,
-        )
-        messages.append({'role': role, 'content': clean_text})
-        new_history = messages_to_history(
-            messages,
-            max_history_messages=self._config.max_history_messages,
-        )
-        with self._session_lock:
-            if self._session is not None and self._session.dialogue_id == session.dialogue_id:
-                self._session.history = new_history
-
     def _on_planner_goal_committed(
         self,
         session: DialogueSession,
         goal_id: str,
         goal_token: str,
     ) -> None:
-        """Persist planner goal metadata on the active session when it matches this dialogue."""
+        """Persist planner goal metadata for this dialogue id."""
         with self._session_lock:
+            tracked = self._dialogue_sessions.get(session.dialogue_id)
+            if tracked is None:
+                return
+            tracked.active_planner_goal_id = goal_id
+            tracked.active_planner_goal_token = goal_token
             if self._session is not None and self._session.dialogue_id == session.dialogue_id:
                 self._session.active_planner_goal_id = goal_id
                 self._session.active_planner_goal_token = goal_token
-
-    def _terminate_active_dialogue(self, error_msg: str) -> None:
-        """Unblock the action execution loop if a dialogue is still active."""
-        with self._session_lock:
-            if self._dialogue_id is None or self._dialogue_result is not None:
-                return
-            result = Dialogue.Result()
-            result.results = '{}'
-            result.error_msg = str(error_msg)
-            self._dialogue_result = result
 
     def _remember_scene_memory(
         self,
@@ -791,6 +726,45 @@ def _seed_history(role_name: str, role_configuration: str) -> list[str]:
         entries.append('system:Dialogue configuration: %s' % clean_config)
 
     return entries
+
+
+def _history_entries_from_stateless_request(request: DialogueInteraction.Request) -> list[str]:
+    """Convert stateless DialogueInteraction history into role-prefixed entries."""
+    entries: list[str] = []
+    summary = str(getattr(request, 'summary', '') or '').strip()
+    if summary:
+        entries.append('system:Prior conversation summary:\n%s' % summary)
+
+    for utterance in list(getattr(request, 'history', []) or []):
+        speaker = str(getattr(utterance, 'speaker', '') or '').strip()
+        text = str(getattr(utterance, 'text', '') or '').strip()
+        if not text:
+            continue
+        if speaker == SYSTEM_USER_ID:
+            role = 'system'
+        elif speaker == ASSISTANT_USER_ID:
+            role = 'assistant'
+        else:
+            role = 'user'
+        entries.append('%s:%s' % (role, text))
+    return entries
+
+
+def _last_turn_descriptor(request: DialogueInteraction.Request) -> tuple[str, str, str]:
+    """Return (role, user_id, text) for the latest utterance in one request."""
+    history = list(getattr(request, 'history', []) or [])
+    if not history:
+        return 'user', 'anonymous_user', ''
+
+    last = history[-1]
+    speaker = str(getattr(last, 'speaker', '') or '').strip()
+    text = str(getattr(last, 'text', '') or '').strip()
+    if speaker == SYSTEM_USER_ID:
+        return 'system', SYSTEM_USER_ID, text
+    if speaker == ASSISTANT_USER_ID:
+        return 'assistant', ASSISTANT_USER_ID, text
+    user_id = speaker or 'anonymous_user'
+    return 'user', user_id, text
 
 
 def _unique_models(*models: str) -> list[str]:

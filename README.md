@@ -9,8 +9,8 @@ the upstream backend contract.
 
 ## Owns
 
-- `chatbot_msgs/action/Dialogue` backend action.
-- `chatbot_msgs/srv/DialogueInteraction` backend service.
+- optional `chatbot_msgs/srv/PrepareDialogue` warm-up service.
+- `chatbot_msgs/srv/DialogueInteraction` stateless turn service.
 - prompt construction, history, and Ollama-compatible transport.
 - KnowledgeCore snapshot injection through `kb_skills`.
 - direct intent extraction and planner request publication.
@@ -21,7 +21,7 @@ It does not own robot execution, final skill dispatch, or planner supervision.
 
 | Interface | Type | Purpose |
 | --- | --- | --- |
-| `<prefix>/start_dialogue` | `chatbot_msgs/action/Dialogue` | Open backend dialogue |
+| `<prefix>/prepare_dialogue` | `chatbot_msgs/srv/PrepareDialogue` | Optional role-scoped warm-up |
 | `<prefix>/dialogue_interaction` | `chatbot_msgs/srv/DialogueInteraction` | Process one user turn |
 | `/planner/request` | `hri_actions_msgs/msg/Intent` | Planner ingress when planner mode is enabled |
 
