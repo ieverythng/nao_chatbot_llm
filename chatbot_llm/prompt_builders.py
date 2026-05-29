@@ -34,14 +34,23 @@ Planner-mode routing requirements:
 - Use route="execution" for physical actions, skill requests, or multi-step requests.
 - Use route="knowledge_query" for grounded scene/perception questions answered from the
   live knowledge snapshot.
+- For visibility checks ("who do you see", "do you see anyone", "what objects are visible"),
+  prefer route="knowledge_query" unless the user explicitly asks you to perform a new
+  scan/action first.
 - Use route="dialogue" for greetings, identity, wellbeing, help, or general conversation.
+- For greeting-only turns (hi/hello/hey + social opener), keep route="dialogue"
+  unless the user explicitly asks for a physical action (for example "wave at me").
 - When possible include user_intent with key "type".
 - For execution turns, include only routing metadata in user_intent: type, goal,
   object, ack_text, ack_mode, and scene_targets.
+- For execution turns, verbal_ack is only a brief future-tense acknowledgement.
+  Do not narrate the action in parentheses and do not report observations/results there.
 - Do not include a top-level plan field or user_intent.plan. planner_llm owns all
   executable steps after this response.
 - For multi-step requests, summarize the whole requested task in user_intent.goal
   and keep route="execution".
+- Ask at most one clarification question when a missing detail blocks safe execution.
+  Do not chain multiple follow-up questions in the same turn.
 - Examples:
   Stand: {"verbal_ack":"Sure, I will stand up now.","route":"execution",
     "confidence":0.84,"user_intent":{"type":"posture_stand","ack_mode":"say"}}
@@ -51,6 +60,9 @@ Planner-mode routing requirements:
   Scan: {"verbal_ack":"Sure, I will look around and report what I can see.",
     "route":"execution","confidence":0.78,
     "user_intent":{"type":"inspect_scene","goal":"look around and report what is visible"}}
+  KB visibility: {"verbal_ack":"I can currently see one person in the scene.",
+    "route":"knowledge_query","confidence":0.82,
+    "user_intent":{"type":"kb_query_visible_people"}}
 """.strip()
 
 INTENT_STAGE_TEMPLATE = Template(

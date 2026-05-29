@@ -280,6 +280,35 @@ def test_turn_engine_planner_mode_infers_execution_route_without_second_call():
     assert result.intent_source == 'llm_response_inferred_route'
 
 
+def test_turn_engine_planner_mode_promotes_dialogue_wave_ack_to_execution():
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"Sure, I will wave at you again.",'
+                '"route":"dialogue","confidence":0.0}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm_with_rules_fallback', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='Do it again!',
+        history=[],
+        user_id='user1',
+    )
+
+    assert len(transport.calls) == 1
+    assert result.route == 'execution'
+    assert result.intent == 'wave_greet'
+    assert result.intent_source == 'llm_response_route'
+    assert result.verbal_ack == 'Sure, I will wave at you again.'
+
+
 def test_turn_engine_planner_mode_hands_execution_to_planner_when_llm_response_fails():
     engine = DialogueTurnEngine(
         config=make_config(intent_mode='llm_with_rules_fallback', planner_mode_enabled=True),
@@ -373,6 +402,55 @@ def test_turn_engine_planner_completion_fallback_without_llm_response():
     assert result.success is True
     assert result.intent_source == 'planner_completion'
     assert result.verbal_ack == 'Head motion completed.'
+    assert result.route == 'dialogue'
+
+
+def test_turn_engine_renders_planner_dialogue_for_system_payload_with_llm():
+    transport = FakeTransport(
+        [
+            '{"verbal_ack":"Could you specify which cup you mean?"}',
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='rules'),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text=(
+            '{"planner_dialogue":{"act":"ask_clarification","reason":"target ambiguous",'
+            '"text_hint":"I need a little more detail before continuing."}}'
+        ),
+        history=[],
+        user_id='__system__',
+    )
+
+    assert result.success is True
+    assert result.route == 'dialogue'
+    assert result.intent_source == 'planner_dialogue'
+    assert result.verbal_ack == 'Could you specify which cup you mean?'
+    assert len(transport.calls) == 1
+
+
+def test_turn_engine_planner_dialogue_fallback_without_llm_response():
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='rules'),
+        transport=FakeTransport(['']),
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='{"planner_dialogue":{"act":"ask_for_help","reason":"please hold the object steady"}}',
+        history=[],
+        user_id='__system__',
+    )
+
+    assert result.success is True
+    assert result.intent_source == 'planner_dialogue'
+    assert result.verbal_ack == 'please hold the object steady'
     assert result.route == 'dialogue'
 
 
@@ -622,3 +700,137 @@ def test_turn_engine_keeps_social_greeting_on_dialogue_route() -> None:
     )
 
     assert result.route == 'dialogue'
+
+
+def test_turn_engine_keeps_named_greeting_on_dialogue_route() -> None:
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"Hello! How can I help you today?",'
+                '"route":"execution","user_intent":{"type":"greet"}}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='Hey Pop!',
+        history=[],
+        user_id='user1',
+    )
+
+    assert result.route == 'dialogue'
+    assert result.intent == 'greet'
+
+
+def test_turn_engine_planner_mode_forces_kb_query_route_for_visibility_question() -> None:
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"Sure, I will check that now.",'
+                '"route":"execution","user_intent":{"type":"inspect_scene"}}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='Can you tell me if you see anyone right now?',
+        history=[],
+        user_id='user1',
+    )
+
+    assert result.route == 'knowledge_query'
+    assert result.intent == 'kb_query_visible_people'
+    assert result.user_intent.get('type', '') == 'kb_query_visible_people'
+    assert 'fresh scan' not in result.verbal_ack.lower()
+
+
+def test_turn_engine_planner_mode_sanitizes_execution_ack_result_leak() -> None:
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"Sure, I will look around and report what I can see. '
+                '(performs a scan) I can currently see one person in the scene.",'
+                '"route":"execution","user_intent":{"type":"inspect_scene"}}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='can you scan for people?',
+        history=[],
+        user_id='user1',
+    )
+
+    assert result.route == 'execution'
+    assert result.verbal_ack == 'Sure, I will look around and report what I can see.'
+    assert '(performs' not in result.updated_history[-1]
+    assert 'currently see' not in result.updated_history[-1]
+
+
+def test_turn_engine_planner_mode_keeps_execution_route_when_scan_is_explicit() -> None:
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"Sure, I will scan and report.",'
+                '"route":"execution","user_intent":{"type":"inspect_scene"}}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='Can you scan the scene and tell me if you see anyone?',
+        history=[],
+        user_id='user1',
+    )
+
+    assert result.route == 'execution'
+
+
+def test_turn_engine_knowledge_query_does_not_duplicate_scan_offer() -> None:
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"I can currently see one person. If you want, I can run a fresh scan to confirm.",'
+                '"route":"knowledge_query","user_intent":{"type":"kb_query_visible_people"}}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='Do you see anyone right now?',
+        history=[],
+        user_id='user1',
+    )
+
+    assert result.route == 'knowledge_query'
+    assert result.verbal_ack.lower().count('fresh scan') == 1

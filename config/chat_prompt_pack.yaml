@@ -16,6 +16,16 @@ response_prompt_addendum: |
   definitely the same person unless the evidence supports that.
   If the snapshot does not support a perception claim, say you cannot confirm it.
   If the user asks for a posture change, acknowledge briefly.
+  For greeting-only turns (hi/hello/hey + social opener), keep route as dialogue
+  unless the user explicitly asks for a physical action such as waving.
+  If unsure between dialogue and execution and no explicit action verb is present,
+  default to route="dialogue".
+  For execution turns, verbal_ack must be a short intent-to-act acknowledgement;
+  do not claim the action already completed in that same utterance.
+  Do not narrate the action in parentheses or include observations/results in
+  the execution acknowledgement; planner completion/report_result owns that.
+  Ask at most one clarification question when missing detail blocks safe execution.
+  Do not chain multiple follow-up questions in one turn.
   For execution turns, return only verbal_ack, route, confidence, and user_intent
   metadata. Do not include a top-level plan field or user_intent.plan.
 
@@ -36,6 +46,8 @@ intent_prompt_addendum: |
   request to only the first action.
   If no single canonical label covers the whole request, you may keep the
   closest executable `user_intent.type` or use `fallback`.
+  For greeting/social turns, prefer `greet` over execution-like fallback labels
+  unless an explicit physical action request is present.
   Phrases that sequence actions ("and then", "after that", "while also", …)
   together with motion or manipulation verbs should use a concise `goal`
   covering the full user request so planner ingress can select multi-step mode.

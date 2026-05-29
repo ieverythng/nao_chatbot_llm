@@ -54,10 +54,9 @@ _EXECUTION_HINT_MARKERS = (
     ' pick ',
     ' place ',
     ' guide ',
+    ' navigate ',
     ' walk ',
-    ' person',
-    ' people',
-    ' room',
+    ' wave ',
 )
 _SOCIAL_TURN_MARKERS = {
     'hi',
@@ -79,6 +78,14 @@ _PLANNER_COMPLETION_KEYS = (
     'text_hint',
     'requested_intents',
     'result_payload',
+)
+_PLANNER_DIALOGUE_KEYS = (
+    'act',
+    'reason',
+    'text_hint',
+    'slots_needed',
+    'context',
+    'completion_context',
 )
 
 
@@ -144,15 +151,25 @@ class DialogueTurnEngine:
         if cancel_requested():
             return self._cancelled_result(history)
 
-        planner_completion = _extract_planner_completion_context(user_text)
-        if user_id == '__system__' and planner_completion:
-            result = self._execute_planner_completion_turn(
-                history=history,
-                completion_context=planner_completion,
-            )
-            self._publish_progress(progress_callback, 'complete', 1.0)
-            self._trace(trace, turn_id, 'TURN_DONE', 'planner completion wording complete')
-            return result
+        if user_id == '__system__':
+            planner_dialogue = _extract_planner_dialogue_context(user_text)
+            if planner_dialogue:
+                result = self._execute_planner_dialogue_turn(
+                    history=history,
+                    dialogue_context=planner_dialogue,
+                )
+                self._publish_progress(progress_callback, 'complete', 1.0)
+                self._trace(trace, turn_id, 'TURN_DONE', 'planner dialogue wording complete')
+                return result
+            planner_completion = _extract_planner_completion_context(user_text)
+            if planner_completion:
+                result = self._execute_planner_completion_turn(
+                    history=history,
+                    completion_context=planner_completion,
+                )
+                self._publish_progress(progress_callback, 'complete', 1.0)
+                self._trace(trace, turn_id, 'TURN_DONE', 'planner completion wording complete')
+                return result
 
         if self._config.intent_detection_mode == 'rules':
             result = self._execute_rule_turn(user_text=user_text, history=history, source='rules')
@@ -235,6 +252,8 @@ class DialogueTurnEngine:
                 verbal_ack=verbal_ack,
                 response_payload=response_payload,
             )
+            if route == _EXECUTION_ROUTE:
+                verbal_ack = _sanitize_execution_ack(verbal_ack)
             self._trace(
                 trace,
                 turn_id,
@@ -398,6 +417,12 @@ class DialogueTurnEngine:
             resolved_intent=resolved_intent,
             user_intent=user_intent,
         )
+        # Keep greeting-like turns dialogue-first unless the user clearly asked
+        # for an execution action. This avoids planner handoff on short social openers.
+        if _is_greeting_intent(resolved_intent, user_intent) and not _looks_like_execution_text(
+            user_text
+        ):
+            inferred_route = _DIALOGUE_ROUTE
         if _is_social_turn(user_text) and not _looks_like_execution_text(user_text):
             inferred_route = _DIALOGUE_ROUTE
         if (
@@ -418,7 +443,15 @@ class DialogueTurnEngine:
         )
 
         if not resolved_intent:
-            fallback_intent = normalize_intent(detect_intent(user_text), default='')
+            combined_hint_text = ' '.join(
+                item.strip()
+                for item in (str(user_text or ''), str(verbal_ack or ''))
+                if str(item or '').strip()
+            ).strip()
+            fallback_intent = normalize_intent(
+                detect_intent(combined_hint_text),
+                default='',
+            )
             if fallback_intent and fallback_intent != 'fallback':
                 resolved_intent = fallback_intent
                 if not user_intent:
@@ -426,6 +459,27 @@ class DialogueTurnEngine:
                 elif not str(user_intent.get('type', '')).strip():
                     user_intent = dict(user_intent)
                     user_intent['type'] = fallback_intent
+                # If route came back as dialogue but fallback intent is executable,
+                # prefer execution so action intents do not get spoken-only.
+                if (
+                    inferred_route == _DIALOGUE_ROUTE
+                    and is_execution_intent_label(fallback_intent)
+                ):
+                    inferred_route = _EXECUTION_ROUTE
+
+        kb_query_intent = _infer_kb_query_intent_from_text(user_text)
+        if kb_query_intent:
+            stated_intent = str(user_intent.get('type', '')).strip().lower()
+            if (
+                not _has_explicit_perception_action_request(user_text)
+                and stated_intent in {'', 'fallback', 'inspect_scene'}
+                and str(resolved_intent or '').strip().lower()
+                in {'', 'fallback', 'inspect_scene', kb_query_intent}
+            ):
+                inferred_route = _KNOWLEDGE_QUERY_ROUTE
+                resolved_intent = kb_query_intent
+                user_intent = dict(user_intent)
+                user_intent['type'] = kb_query_intent
 
         if inferred_route == _DIALOGUE_ROUTE and not resolved_intent and not user_intent:
             intent_source = 'llm_response_route'
@@ -548,6 +602,30 @@ class DialogueTurnEngine:
             updated_history=updated_history,
             intent='',
             intent_source='planner_completion',
+            intent_confidence=1.0,
+            user_intent={},
+            route=_DIALOGUE_ROUTE,
+        )
+
+    def _execute_planner_dialogue_turn(
+        self,
+        *,
+        history: list[str],
+        dialogue_context: dict,
+    ) -> TurnExecutionResult:
+        verbal_ack = self._query_planner_dialogue_ack(dialogue_context)
+        if not verbal_ack:
+            verbal_ack = _fallback_planner_dialogue_ack(dialogue_context)
+        if not verbal_ack:
+            verbal_ack = self._config.fallback_response
+        updated_history = self._history_with_assistant_text(history, verbal_ack)
+        self._handled_requests += 1
+        return self._build_result(
+            success=True,
+            verbal_ack=verbal_ack,
+            updated_history=updated_history,
+            intent='',
+            intent_source='planner_dialogue',
             intent_confidence=1.0,
             user_intent={},
             route=_DIALOGUE_ROUTE,
@@ -746,6 +824,42 @@ class DialogueTurnEngine:
         )
         payload = json.dumps(
             {'planner_completion': completion_context},
+            sort_keys=True,
+            separators=(',', ':'),
+        )
+        raw_response = self._transport.query(
+            messages=[
+                {'role': 'system', 'content': prompt},
+                {'role': 'user', 'content': payload},
+            ],
+            timeout_sec=self._config.request_timeout_sec,
+            model=self._config.model,
+            temperature=self._config.temperature,
+            top_p=self._config.top_p,
+            think=self._config.think,
+            max_tokens=self._config.response_max_tokens,
+            response_format=self._config.response_schema,
+        )
+        if not raw_response:
+            return ''
+        parsed = _extract_json_object(raw_response)
+        if parsed:
+            candidate = _ack_from_parsed_response(parsed)
+            if candidate:
+                return candidate
+        return _extract_ack_text(raw_response) or str(raw_response).strip()
+
+    def _query_planner_dialogue_ack(self, dialogue_context: dict) -> str:
+        if not self._config.enabled:
+            return ''
+
+        prompt = (
+            'You are writing one spoken robot sentence for a planner dialogue act. '
+            'Use only facts from the JSON payload. Keep it concise and first-person as the robot. '
+            'Do not mention JSON, planner internals, or policies.'
+        )
+        payload = json.dumps(
+            {'planner_dialogue': dialogue_context},
             sort_keys=True,
             separators=(',', ':'),
         )
@@ -1049,6 +1163,83 @@ def _ack_implies_execution(verbal_ack: str) -> bool:
     return _looks_like_execution_text(clean_ack)
 
 
+def _infer_kb_query_intent_from_text(user_text: str) -> str:
+    inferred = normalize_intent(detect_intent(user_text), default='')
+    if inferred in KB_QUERY_INTENTS:
+        return inferred
+    return ''
+
+
+def _is_greeting_intent(resolved_intent: str, user_intent: dict) -> bool:
+    if str(resolved_intent or '').strip().lower() == 'greet':
+        return True
+    return str(user_intent.get('type', '')).strip().lower() == 'greet'
+
+
+def _has_explicit_perception_action_request(user_text: str) -> bool:
+    lowered = ' %s ' % ' '.join(str(user_text or '').strip().lower().split())
+    return any(
+        marker in lowered
+        for marker in (
+            ' scan ',
+            ' look around ',
+            ' inspect the scene ',
+            ' inspect scene ',
+            ' search the area ',
+            ' search around ',
+            ' check the area ',
+            ' perform a scan ',
+        )
+    )
+
+
+def _sanitize_execution_ack(verbal_ack: str) -> str:
+    """Keep execution acknowledgements from claiming the result before execution."""
+    clean_ack = str(verbal_ack or '').strip()
+    if not clean_ack:
+        return 'Okay, I will do that.'
+    if clean_ack == 'fallback':
+        return clean_ack
+
+    clean_ack = re.sub(
+        r'\s*\((?:[^)]*\b(?:perform|performs|performed|move|moves|moved|'
+        r'scan|scans|scanned|look|looks|looked|turn|turns|turned|wave|waves|'
+        r'waved|navigate|navigates|navigated)[^)]*)\)',
+        '',
+        clean_ack,
+        flags=re.IGNORECASE,
+    ).strip()
+
+    result_markers = (
+        ' I can currently ',
+        ' I currently ',
+        ' I can see ',
+        ' I see ',
+        ' I found ',
+        ' I detected ',
+        ' I observed ',
+        ' I performed ',
+        ' I have moved ',
+        ' I have completed ',
+        ' I completed ',
+        ' I scanned ',
+        ' The scan ',
+    )
+    lowered = clean_ack.lower()
+    split_at = len(clean_ack)
+    for marker in result_markers:
+        index = lowered.find(marker.lower())
+        if index > 0:
+            split_at = min(split_at, index)
+    clean_ack = clean_ack[:split_at].strip()
+
+    if not clean_ack:
+        return 'Okay, I will do that.'
+    if clean_ack[-1] not in '.!?':
+        clean_ack += '.'
+    return clean_ack
+
+
 def _extract_planner_completion_context(payload: str) -> dict:
     parsed = _extract_json_object(str(payload or '').strip())
     context = parsed.get('planner_completion', {}) if isinstance(parsed, dict) else {}
@@ -1074,6 +1265,39 @@ def _extract_planner_completion_context(payload: str) -> dict:
     return normalized
 
 
+def _extract_planner_dialogue_context(payload: str) -> dict:
+    parsed = _extract_json_object(str(payload or '').strip())
+    context = parsed.get('planner_dialogue', {}) if isinstance(parsed, dict) else {}
+    if not isinstance(context, dict):
+        return {}
+    normalized = {
+        'act': str(context.get('act', '')).strip().lower(),
+        'goal_id': str(context.get('goal_id', '')).strip(),
+        'goal_token': str(context.get('goal_token', '')).strip(),
+        'plan_id': str(context.get('plan_id', '')).strip(),
+        'plan_version': int(coerce_float(context.get('plan_version', 0))),
+        'reason': str(context.get('reason', '')).strip(),
+        'text_hint': str(context.get('text_hint', '')).strip(),
+        'await_user_response': bool(context.get('await_user_response', False)),
+        'slots_needed': [
+            str(item).strip()
+            for item in context.get('slots_needed', [])
+            if str(item).strip()
+        ]
+        if isinstance(context.get('slots_needed', []), list)
+        else [],
+        'context': context.get('context', {})
+        if isinstance(context.get('context', {}), dict)
+        else {},
+        'completion_context': context.get('completion_context', {})
+        if isinstance(context.get('completion_context', {}), dict)
+        else {},
+    }
+    if not any(normalized.get(key) for key in _PLANNER_DIALOGUE_KEYS):
+        return {}
+    return normalized
+
+
 def _fallback_planner_completion_ack(completion_context: dict) -> str:
     text_hint = str(completion_context.get('text_hint', '')).strip()
     if text_hint:
@@ -1090,3 +1314,29 @@ def _fallback_planner_completion_ack(completion_context: dict) -> str:
     if goal_text:
         return 'I finished: %s.' % goal_text.rstrip('.')
     return ''
+
+
+def _fallback_planner_dialogue_ack(dialogue_context: dict) -> str:
+    completion_context = dialogue_context.get('completion_context', {})
+    if isinstance(completion_context, dict):
+        completion_text = _fallback_planner_completion_ack(completion_context)
+        if completion_text:
+            return completion_text
+
+    text_hint = str(dialogue_context.get('text_hint', '')).strip()
+    if text_hint:
+        return text_hint
+    reason = str(dialogue_context.get('reason', '')).strip()
+    if reason:
+        return reason
+
+    act = str(dialogue_context.get('act', '')).strip().lower()
+    fallback_by_act = {
+        'progress_update': 'I am working on it now.',
+        'ask_clarification': 'I need a bit more detail before I continue.',
+        'ask_for_help': 'I need help to continue this task.',
+        'explain_failure': 'I could not complete that task.',
+        'notify_completion': 'I finished that task.',
+        'notify_cancellation': 'Okay, I will stop working on that.',
+    }
+    return fallback_by_act.get(act, '')

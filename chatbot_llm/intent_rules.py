@@ -247,6 +247,10 @@ def detect_intent(text: str) -> str:
         (
             'who can you see',
             'do you see anyone',
+            'can you tell me if you see anyone',
+            'tell me if you see anyone',
+            'can you see anyone right now',
+            'is there anyone in the scene',
             'who is there',
             'who is here',
             'is anyone there',
@@ -258,6 +262,9 @@ def detect_intent(text: str) -> str:
         (
             'what objects do you see',
             'what object do you see',
+            'what do you see right now',
+            'can you tell me what objects you see',
+            'which objects can you see now',
             'which objects are visible',
             'what things do you see',
             'what items do you see',

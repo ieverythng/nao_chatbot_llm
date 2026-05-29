@@ -34,6 +34,13 @@ DEFAULT_SYSTEM_PROMPT = (
 DEFAULT_RESPONSE_PROMPT_ADDENDUM = (
     'Reply with short natural spoken text suitable for TTS. '
     'Avoid markdown and avoid long lists. '
+    'For greeting-only turns, keep route as dialogue unless the user explicitly '
+    'asks for a physical action. '
+    'If unsure between dialogue and execution without an explicit action verb, '
+    'prefer dialogue. '
+    'For execution turns, keep verbal_ack as intent-to-act acknowledgement and '
+    'do not claim completion in that same utterance. Do not narrate the action '
+    'in parentheses or report observations/results in verbal_ack. '
     'For execution turns, return only verbal_ack, route, confidence, and '
     'user_intent metadata. Do not include a top-level plan field or '
     'user_intent.plan.'
@@ -42,8 +49,9 @@ DEFAULT_RESPONSE_PROMPT_ADDENDUM = (
 DEFAULT_INTENT_PROMPT_ADDENDUM = (
     'Map user requests to one canonical intent label when possible. '
     'When the user requests an action, you may return ack_text, ack_mode, '
-    'scene_targets, and goal. Do not include a top-level plan field or '
-    'user_intent.plan.'
+    'scene_targets, and goal. For greeting/social turns, prefer greet unless '
+    'an explicit physical action request is present. '
+    'Do not include a top-level plan field or user_intent.plan.'
 )
 
 DEFAULT_ENVIRONMENT_DESCRIPTION = 'No specific objects described.'
