@@ -55,8 +55,6 @@ def make_config() -> ChatbotConfig:
         planner_request_topic='/planner/request',
         planner_request_intent='planner_request',
         planner_scene_summary_topic='/scene/summary',
-        planner_world_model_snapshot_topic='/world_model/enriched_snapshot',
-        planner_world_model_text_topic='/world_model/enriched_text',
         turn_trace_enabled=True,
         turn_trace_topic='/chatbot_llm/turn_trace',
         knowledge_enabled=False,
@@ -213,14 +211,15 @@ def test_build_grounded_context_block_summarizes_entities_and_targets():
                     {'label': 'apple_ktepg', 'entity_id': 'apple_ktepg'},
                 ]
             },
-            'world_model_snapshot': {
+            'state_t0': {
+                'observer': 'myself',
+                'backend': 'emorobcare_cv',
                 'scene_targets': ['book', 'apple'],
                 'entities': [
-                    {'label': 'book_qibia', 'kb_class': 'Book'},
-                    {'label': 'anonymous_person_gjjbd', 'kb_class': 'Human'},
+                    {'normalized_name': 'book_qibia', 'type': 'Book'},
+                    {'normalized_name': 'anonymous_person_gjjbd', 'type': 'Human'},
                 ],
             },
-            'world_model_text': 'fallback text',
         }
     )
 

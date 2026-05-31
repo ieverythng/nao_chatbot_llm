@@ -75,8 +75,6 @@ Defaults live in `config/00-defaults.yml`.
 - `planner_request_topic`
 - `planner_request_intent`
 - `planner_scene_summary_topic`
-- `planner_world_model_snapshot_topic`
-- `planner_world_model_text_topic`
 - `knowledge_enabled`
 - `knowledge_query_service_name`
 - `knowledge_default_query_groups`

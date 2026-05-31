@@ -41,14 +41,11 @@ def test_build_planner_request_payload_derives_scene_targets_and_bounds_context(
     assert payload == {
         'request_id': 'turn_1',
         'goal_id': 'goal_turn_1',
-        'goal_token': 'goal_turn_1:turn_1',
         'parent_goal_id': '',
         'supersedes_goal_id': '',
         'request_kind': 'new_goal',
         'goal_text': 'bring me the cup',
         'normalized_intents': ['bring_object'],
-        'ack_text': 'I will bring the cup.',
-        'ack_mode': 'say',
         'scene_targets': ['cup'],
         'dialogue_context': [
             'assistant:Hello.',
@@ -60,10 +57,9 @@ def test_build_planner_request_payload_derives_scene_targets_and_bounds_context(
         ],
         'requested_plan': [],
         'grounded_context': {
-            'knowledge_snapshot': {'summary_text': 'cup isOn table'},
+            'knowledge_snapshot': {},
             'scene_summary': {},
-            'world_model_snapshot': {},
-            'world_model_text': '',
+            'state_t0': {},
         },
         'planner_mode': 'default',
         'interaction_mode': 'speech',
@@ -80,7 +76,7 @@ def test_build_planner_request_intent_encodes_expected_message_shape():
             verbal_ack='I will look left.',
             intent='head_look_left',
             intent_confidence=0.6,
-            user_intent={'type': 'head_look_left', 'ack_mode': 'auto'},
+            user_intent={'type': 'head_look_left'},
         ),
         knowledge_context='',
         planner_request_intent='planner_request',
@@ -92,9 +88,7 @@ def test_build_planner_request_intent_encodes_expected_message_shape():
     assert msg.priority == 128
     payload = json.loads(msg.data)
     assert payload['normalized_intents'] == ['head_look_left']
-    assert payload['ack_mode'] == 'auto'
     assert payload['goal_id'] == 'goal_turn_2'
-    assert payload['goal_token'] == 'goal_turn_2:turn_2'
     assert payload['request_kind'] == 'new_goal'
     assert 'user_text' not in payload
 
@@ -120,16 +114,30 @@ def test_build_planner_request_payload_keeps_richer_grounded_context() -> None:
         knowledge_context='cup isOn table',
         grounded_context={
             'scene_summary': {'objects': [{'label': 'cup'}]},
-            'world_model_snapshot': {'entities': ['cup_1']},
-            'world_model_text': 'cup_1 is reachable',
+            'state_t0': {'entities': [{'id': 'cup_1'}]},
         },
     )
 
     assert payload['grounded_context'] == {
-        'knowledge_snapshot': {'summary_text': 'cup isOn table'},
+        'knowledge_snapshot': {},
         'scene_summary': {'objects': [{'label': 'cup'}]},
-        'world_model_snapshot': {'entities': ['cup_1']},
-        'world_model_text': 'cup_1 is reachable',
+        'state_t0': {'entities': [{'id': 'cup_1'}]},
+    }
+
+
+def test_build_planner_request_payload_derives_structured_kb_references() -> None:
+    payload = build_planner_request_payload(
+        turn_id='turn_refs',
+        user_text='inspect the cup',
+        turn_result=_make_result(),
+        knowledge_context='- cup_1 is currently classified as Cup\n- person_1 is a Human',
+    )
+
+    assert payload['grounded_context']['knowledge_snapshot'] == {
+        'references': [
+            {'normalized_name': 'cup_1', 'id': 'cup_1', 'type': 'Cup'},
+            {'normalized_name': 'person_1', 'id': 'person_1', 'type': 'Human'},
+        ]
     }
 
 
@@ -296,7 +304,6 @@ def test_build_planner_request_payload_reuses_active_goal_for_cancel_request():
 
     assert payload['request_kind'] == 'cancel_request'
     assert payload['goal_id'] == 'goal_existing'
-    assert payload['goal_token'] == 'goal_existing:active'
 
 
 def test_build_planner_request_payload_supersedes_active_goal_for_new_goal():

@@ -105,7 +105,6 @@ def build_planner_request_payload(
     multi_step_heuristics: dict | None = None,
     max_history_entries: int = 6,
     active_goal_id: str = '',
-    active_goal_token: str = '',
 ) -> dict:
     """Build the planner ingress payload from the current turn result."""
     user_intent = _turn_user_intent(turn_result)
@@ -116,8 +115,6 @@ def build_planner_request_payload(
         user_text=user_text,
         multi_step_heuristics=multi_step_heuristics,
     )
-    ack_text = _resolved_ack_text(user_intent, getattr(turn_result, 'verbal_ack', ''))
-    ack_mode = _resolved_ack_mode(user_intent)
     dialogue_context = _bounded_dialogue_context(
         getattr(turn_result, 'updated_history', []),
         max_history_entries=max_history_entries,
@@ -129,18 +126,9 @@ def build_planner_request_payload(
         active_goal_id=active_goal_id,
         request_kind=request_kind,
     )
-    goal_token = _resolved_goal_token(
-        user_intent=user_intent,
-        turn_id=turn_id,
-        goal_id=goal_id,
-        request_kind=request_kind,
-        active_goal_token=active_goal_token,
-    )
-
     payload = {
         'request_id': str(turn_id).strip(),
         'goal_id': goal_id,
-        'goal_token': goal_token,
         'parent_goal_id': str(user_intent.get('parent_goal_id', '')).strip(),
         'supersedes_goal_id': _resolved_supersedes_goal_id(
             user_intent=user_intent,
@@ -151,8 +139,6 @@ def build_planner_request_payload(
         'request_kind': request_kind,
         'goal_text': _goal_text_from_user_intent(user_intent, user_text=user_text),
         'normalized_intents': _normalized_intents_for_turn(turn_result),
-        'ack_text': ack_text,
-        'ack_mode': ack_mode,
         'scene_targets': _scene_targets_from_user_intent(user_intent),
         'dialogue_context': dialogue_context,
         'requested_plan': [],
@@ -182,7 +168,6 @@ def build_planner_request_intent(
     multi_step_heuristics: dict | None = None,
     max_history_entries: int = 6,
     active_goal_id: str = '',
-    active_goal_token: str = '',
 ) -> Intent:
     """Create the ``Intent`` message published on ``/planner/request``."""
     payload = build_planner_request_payload(
@@ -195,7 +180,6 @@ def build_planner_request_intent(
         multi_step_heuristics=multi_step_heuristics,
         max_history_entries=max_history_entries,
         active_goal_id=active_goal_id,
-        active_goal_token=active_goal_token,
     )
     return build_planner_request_intent_from_payload(
         payload=payload,
@@ -319,14 +303,6 @@ def _turn_user_intent(turn_result) -> dict:
     return {}
 
 
-def _resolved_ack_text(user_intent: dict, verbal_ack: str) -> str:
-    return str(user_intent.get('ack_text', '')).strip() or str(verbal_ack).strip()
-
-
-def _resolved_ack_mode(user_intent: dict) -> str:
-    return str(user_intent.get('ack_mode', '')).strip() or 'say'
-
-
 def _goal_text_from_user_intent(user_intent: dict, *, user_text: str) -> str:
     for key in ('goal_text', 'goal', 'task'):
         clean_value = str(user_intent.get(key, '')).strip()
@@ -376,10 +352,13 @@ def _grounded_context_payload(
         return payload
 
     knowledge_snapshot = dict(payload.get('knowledge_snapshot', {}))
-    summary_text = str(knowledge_snapshot.get('summary_text', '')).strip()
-    if not summary_text:
-        knowledge_snapshot['summary_text'] = clean_knowledge_context
-    payload['knowledge_snapshot'] = knowledge_snapshot
+    references = knowledge_snapshot.get('references', [])
+    has_structured_refs = isinstance(references, list) and bool(references)
+    if not has_structured_refs:
+        derived_references = _knowledge_references_from_text(clean_knowledge_context)
+        if derived_references:
+            knowledge_snapshot['references'] = derived_references
+            payload['knowledge_snapshot'] = knowledge_snapshot
     return payload
 
 
@@ -417,31 +396,6 @@ def _resolved_goal_id(
         if normalized_turn_id:
             return 'goal_%s' % normalized_turn_id
     return 'goal_unknown'
-
-
-def _resolved_goal_token(
-    *,
-    user_intent: dict,
-    turn_id: str,
-    goal_id: str,
-    request_kind: str,
-    active_goal_token: str,
-) -> str:
-    explicit_goal_token = str(user_intent.get('goal_token', '')).strip()
-    if explicit_goal_token:
-        return explicit_goal_token
-    if request_kind in {'goal_update', 'clarification_answer', 'cancel_request'}:
-        clean_active_goal_token = str(active_goal_token or '').strip()
-        if clean_active_goal_token:
-            return clean_active_goal_token
-        clean_active_goal_id = str(goal_id or '').strip()
-        if clean_active_goal_id:
-            return f'{clean_active_goal_id}:active'
-    clean_goal_id = str(goal_id or '').strip()
-    clean_turn_id = str(turn_id or '').strip()
-    if clean_goal_id and clean_turn_id:
-        return f'{clean_goal_id}:{clean_turn_id}'
-    return clean_goal_id
 
 
 def _resolved_supersedes_goal_id(
@@ -509,6 +463,35 @@ def _heuristic_values(heuristics: dict | None, key: str) -> list[str]:
     if not isinstance(value, (list, tuple)):
         return []
     return [str(item).lower() for item in value if str(item)]
+
+
+def _knowledge_references_from_text(knowledge_context: str) -> list[dict]:
+    references: list[dict] = []
+    seen_ids: set[str] = set()
+    for raw_line in str(knowledge_context or '').splitlines():
+        clean_line = str(raw_line).strip().lstrip('-').strip()
+        if ' is currently classified as ' in clean_line:
+            name, _, type_text = clean_line.partition(' is currently classified as ')
+        elif ' is a ' in clean_line:
+            name, _, type_text = clean_line.partition(' is a ')
+        else:
+            continue
+        clean_name = str(name).strip()
+        clean_type = str(type_text).split(',')[0].strip()
+        if not clean_name:
+            continue
+        normalized_name = '_'.join(clean_name.lower().split())
+        if normalized_name in seen_ids:
+            continue
+        seen_ids.add(normalized_name)
+        references.append(
+            {
+                'normalized_name': normalized_name,
+                'id': normalized_name,
+                'type': clean_type,
+            }
+        )
+    return references
 
 
 def _coerce_str_list(value) -> list[str]:

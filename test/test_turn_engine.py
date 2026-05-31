@@ -66,8 +66,6 @@ def make_config(
         planner_request_topic='/planner/request',
         planner_request_intent='planner_request',
         planner_scene_summary_topic='/scene/summary',
-        planner_world_model_snapshot_topic='/world_model/enriched_snapshot',
-        planner_world_model_text_topic='/world_model/enriched_text',
         turn_trace_enabled=True,
         turn_trace_topic='/chatbot_llm/turn_trace',
         knowledge_enabled=False,
@@ -218,7 +216,7 @@ def test_turn_engine_planner_mode_uses_single_response_stage_for_execution():
             (
                 '{"verbal_ack":"I will look left and then sit down.",'
                 '"route":"execution",'
-                '"user_intent":{"type":"fallback","ack_mode":"say",'
+                '"user_intent":{"type":"fallback",'
                 '"goal":"look left and then sit down"},'
                 '"confidence":0.72}'
             ),

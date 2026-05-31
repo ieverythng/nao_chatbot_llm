@@ -70,7 +70,6 @@ class DialogueSession:
     request_count: int = 0
     last_user_id: str = 'anonymous_user'
     active_planner_goal_id: str = ''
-    active_planner_goal_token: str = ''
 
 
 # ---------------------------------------------------------------------------
@@ -611,13 +610,11 @@ class LLMChatbot(Node):
         self,
         session: DialogueSession,
         goal_id: str,
-        goal_token: str,
     ) -> None:
         """Persist planner goal metadata on the active session when it matches this dialogue."""
         with self._session_lock:
             if self._session is not None and self._session.dialogue_id == session.dialogue_id:
                 self._session.active_planner_goal_id = goal_id
-                self._session.active_planner_goal_token = goal_token
 
     def _terminate_active_dialogue(self, error_msg: str) -> None:
         """Unblock the action execution loop if a dialogue is still active."""
