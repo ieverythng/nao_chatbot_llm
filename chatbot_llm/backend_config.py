@@ -78,8 +78,6 @@ class ChatbotConfig:
     planner_request_topic: str
     planner_request_intent: str
     planner_scene_summary_topic: str
-    planner_world_model_snapshot_topic: str
-    planner_world_model_text_topic: str
     turn_trace_enabled: bool
     turn_trace_topic: str
     knowledge_enabled: bool
@@ -147,8 +145,6 @@ def declare_backend_parameters(node) -> None:
     node.declare_parameter('planner_request_topic', '/planner/request')
     node.declare_parameter('planner_request_intent', 'planner_request')
     node.declare_parameter('planner_scene_summary_topic', '/scene/summary')
-    node.declare_parameter('planner_world_model_snapshot_topic', '/world_model/enriched_snapshot')
-    node.declare_parameter('planner_world_model_text_topic', '/world_model/enriched_text')
     node.declare_parameter('turn_trace_enabled', True)
     node.declare_parameter('turn_trace_topic', '/chatbot_llm/turn_trace')
     node.declare_parameter('knowledge_enabled', False)
@@ -295,14 +291,6 @@ def load_backend_config(node) -> ChatbotConfig:
             node.get_parameter('planner_scene_summary_topic').value
         ).strip()
         or '/scene/summary',
-        planner_world_model_snapshot_topic=str(
-            node.get_parameter('planner_world_model_snapshot_topic').value
-        ).strip()
-        or '/world_model/enriched_snapshot',
-        planner_world_model_text_topic=str(
-            node.get_parameter('planner_world_model_text_topic').value
-        ).strip()
-        or '/world_model/enriched_text',
         turn_trace_enabled=as_bool(node.get_parameter('turn_trace_enabled').value),
         turn_trace_topic=str(node.get_parameter('turn_trace_topic').value).strip()
         or '/chatbot_llm/turn_trace',

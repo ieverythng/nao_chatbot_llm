@@ -66,7 +66,6 @@ class DialogueSession:
     request_count: int = 0
     last_user_id: str = 'anonymous_user'
     active_planner_goal_id: str = ''
-    active_planner_goal_token: str = ''
 
 
 # ---------------------------------------------------------------------------
@@ -551,7 +550,6 @@ class LLMChatbot(Node):
         self,
         session: DialogueSession,
         goal_id: str,
-        goal_token: str,
     ) -> None:
         """Persist planner goal metadata for this dialogue id."""
         with self._session_lock:
@@ -562,7 +560,6 @@ class LLMChatbot(Node):
             tracked.active_planner_goal_token = goal_token
             if self._session is not None and self._session.dialogue_id == session.dialogue_id:
                 self._session.active_planner_goal_id = goal_id
-                self._session.active_planner_goal_token = goal_token
 
     def _remember_scene_memory(
         self,
