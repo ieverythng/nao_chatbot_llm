@@ -154,13 +154,27 @@ def declare_backend_parameters(node) -> None:
         'knowledge_default_query_groups',
         [
             'myself sees ?entity && ?entity rdf:type ?type',
+            (
+                'myself sees ?entity && ?entity hasVisualCenterX ?center_x '
+                '&& ?entity hasVisualCenterY ?center_y'
+            ),
+            'myself sees ?entity && ?entity hasDetectionScore ?score',
         ],
     )
     node.declare_parameter(
         'knowledge_default_patterns',
-        ['myself sees ?entity', '?entity rdf:type ?type'],
+        [
+            'myself sees ?entity',
+            '?entity rdf:type ?type',
+            '?entity hasVisualCenterX ?center_x',
+            '?entity hasVisualCenterY ?center_y',
+            '?entity hasDetectionScore ?score',
+        ],
     )
-    node.declare_parameter('knowledge_default_vars', ['?entity', '?type'])
+    node.declare_parameter(
+        'knowledge_default_vars',
+        ['?entity', '?type', '?center_x', '?center_y', '?score'],
+    )
     node.declare_parameter('knowledge_default_models', '')
     node.declare_parameter('knowledge_max_results', 40)
     node.declare_parameter('knowledge_max_chars', 3000)
@@ -307,15 +321,26 @@ def load_backend_config(node) -> ChatbotConfig:
             node.get_parameter('knowledge_default_query_groups').value,
             fallback=[
                 'myself sees ?entity && ?entity rdf:type ?type',
+                (
+                    'myself sees ?entity && ?entity hasVisualCenterX ?center_x '
+                    '&& ?entity hasVisualCenterY ?center_y'
+                ),
+                'myself sees ?entity && ?entity hasDetectionScore ?score',
             ],
         ),
         knowledge_default_patterns=coerce_str_list(
             node.get_parameter('knowledge_default_patterns').value,
-            fallback=['myself sees ?entity', '?entity rdf:type ?type'],
+            fallback=[
+                'myself sees ?entity',
+                '?entity rdf:type ?type',
+                '?entity hasVisualCenterX ?center_x',
+                '?entity hasVisualCenterY ?center_y',
+                '?entity hasDetectionScore ?score',
+            ],
         ),
         knowledge_default_vars=coerce_str_list(
             node.get_parameter('knowledge_default_vars').value,
-            fallback=['?entity', '?type'],
+            fallback=['?entity', '?type', '?center_x', '?center_y', '?score'],
         ),
         knowledge_default_models=coerce_str_list(
             node.get_parameter('knowledge_default_models').value,

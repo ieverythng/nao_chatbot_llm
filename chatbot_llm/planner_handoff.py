@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import threading
+import time
 from typing import Any, Callable
 
 from hri_actions_msgs.msg import Intent
+from planner_common import parse_json_object
 from planner_common import SceneSummary
 from std_msgs.msg import String
 
@@ -16,6 +18,12 @@ from chatbot_llm.planner_request_adapter import should_route_intents_through_pla
 
 TraceFn = Callable[..., None]
 GoalIdCallback = Callable[[Any, str], None]
+_TRACKED_PEOPLE_TOPIC = '/humans/persons/tracked'
+
+try:  # pragma: no cover - runtime dependency
+    from hri_msgs.msg import IdsList
+except ImportError:  # pragma: no cover - runtime dependency
+    IdsList = None
 
 
 class PlannerHandoff:
@@ -35,6 +43,8 @@ class PlannerHandoff:
         self._on_planner_goal_id = on_planner_goal_id
         self._lock = threading.Lock()
         self._scene_summary_payload: dict = {}
+        self._tracked_people_ids: tuple[str, ...] = ()
+        self._tracked_people_ts = 0.0
 
         self._publisher = node.create_publisher(
             Intent,
@@ -47,12 +57,20 @@ class PlannerHandoff:
             self._on_scene_summary,
             10,
         )
+        self._tracked_people_sub = None
+        if IdsList is not None:
+            self._tracked_people_sub = node.create_subscription(
+                IdsList,
+                _TRACKED_PEOPLE_TOPIC,
+                self._on_tracked_people,
+                10,
+            )
 
     def destroy(self) -> None:
         if getattr(self, '_publisher', None) is not None:
             self._node.destroy_publisher(self._publisher)
             self._publisher = None  # type: ignore[assignment]
-        for attr in ('_scene_summary_sub',):
+        for attr in ('_scene_summary_sub', '_tracked_people_sub'):
             sub = getattr(self, attr, None)
             if sub is not None:
                 self._node.destroy_subscription(sub)
@@ -61,6 +79,14 @@ class PlannerHandoff:
     def grounded_context(self, knowledge_context: str) -> dict:
         with self._lock:
             scene = dict(self._scene_summary_payload)
+            tracked_people_ids = tuple(self._tracked_people_ids)
+            tracked_people_ts = float(self._tracked_people_ts)
+        if tracked_people_ids:
+            scene = _merge_tracked_people(
+                scene,
+                tracked_people_ids=tracked_people_ids,
+                tracked_people_ts=tracked_people_ts,
+            )
         return {
             'knowledge_snapshot': _knowledge_snapshot_payload(
                 knowledge_context=knowledge_context,
@@ -139,7 +165,19 @@ class PlannerHandoff:
         with self._lock:
             self._scene_summary_payload = payload
 
+    def _on_tracked_people(self, msg: IdsList) -> None:
+        people_ids = tuple(
+            str(person_id).strip()
+            for person_id in msg.ids
+            if str(person_id).strip()
+        )
+        with self._lock:
+            self._tracked_people_ids = people_ids
+            self._tracked_people_ts = time.time()
+
+
 def _scene_summary_payload(raw_payload) -> dict:
+    raw_data = parse_json_object(raw_payload)
     summary = SceneSummary.from_payload(raw_payload)
     return {
         'observer': summary.observer,
@@ -158,6 +196,7 @@ def _scene_summary_payload(raw_payload) -> dict:
             }
             for obj in summary.objects
         ],
+        'people': _scene_people_payload(raw_data.get('people', [])),
     }
 
 
@@ -172,7 +211,7 @@ def _state_t0_payload(scene_summary: dict) -> dict:
     observer = str(scene_summary.get('observer', '')).strip()
     backend = str(scene_summary.get('backend', '')).strip()
 
-    entities = []
+    object_entities = []
     scene_objects = scene_summary.get('objects', [])
     if isinstance(scene_objects, list):
         for item in scene_objects:
@@ -181,17 +220,47 @@ def _state_t0_payload(scene_summary: dict) -> dict:
             object_id = str(item.get('entity_id', item.get('id', ''))).strip()
             if not object_id:
                 continue
-            entities.append(
+            object_entities.append(
                 {
                     'normalized_name': _normalized_entity_name(
                         str(item.get('label', object_id)).strip()
                     ),
                     'id': object_id,
                     'type': str(item.get('kb_class', '')).strip(),
+                    'kind': 'object',
                     'source': str(item.get('source', '')).strip(),
                     'last_seen_sec': _coerce_float(item.get('last_seen_sec', 0.0)),
                 }
             )
+
+    person_entities = []
+    scene_people = scene_summary.get('people', [])
+    if isinstance(scene_people, list):
+        for item in scene_people:
+            if not isinstance(item, dict):
+                continue
+            person_id = str(item.get('id', item.get('entity_id', ''))).strip()
+            if not person_id:
+                continue
+            person_type = (
+                str(item.get('type', item.get('kb_class', 'Person'))).strip()
+                or 'Person'
+            )
+            person_entities.append(
+                {
+                    'normalized_name': _normalized_entity_name(
+                        str(item.get('label', person_id)).strip()
+                    ),
+                    'id': person_id,
+                    'type': person_type,
+                    'kind': 'person',
+                    'source': str(item.get('source', 'hri_tracked_persons')).strip()
+                    or 'hri_tracked_persons',
+                    'last_seen_sec': _coerce_float(item.get('last_seen_sec', 0.0)),
+                }
+            )
+
+    entities = object_entities + person_entities
 
     captured_at_sec = 0.0
     if entities:
@@ -205,7 +274,8 @@ def _state_t0_payload(scene_summary: dict) -> dict:
         'backend': backend,
         'captured_at_sec': captured_at_sec,
         'entities': entities,
-        'objects': [dict(item) for item in entities],
+        'objects': [dict(item) for item in object_entities],
+        'people': [dict(item) for item in person_entities],
     }
 
 
@@ -228,6 +298,26 @@ def _kb_references_from_scene(scene_summary: dict) -> list[dict]:
                 'type': str(item.get('kb_class', '')).strip(),
             }
         )
+    people = scene_summary.get('people', [])
+    if isinstance(people, list):
+        for item in people:
+            if not isinstance(item, dict):
+                continue
+            person_id = str(item.get('id', item.get('entity_id', ''))).strip()
+            if not person_id:
+                continue
+            label = str(item.get('label', person_id)).strip() or person_id
+            person_type = (
+                str(item.get('type', item.get('kb_class', 'Person'))).strip()
+                or 'Person'
+            )
+            references.append(
+                {
+                    'normalized_name': _normalized_entity_name(label),
+                    'id': person_id,
+                    'type': person_type,
+                }
+            )
     return references
 
 
@@ -269,6 +359,79 @@ def _coerce_float(value) -> float:
         return float(value)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _scene_people_payload(raw_people) -> list[dict]:
+    if not isinstance(raw_people, list):
+        return []
+    people: list[dict] = []
+    for item in raw_people:
+        if not isinstance(item, dict):
+            continue
+        person_id = str(item.get('id', item.get('entity_id', ''))).strip()
+        if not person_id:
+            continue
+        people.append(
+            {
+                'id': person_id,
+                'label': str(item.get('label', person_id)).strip() or person_id,
+                'type': (
+                    str(item.get('type', item.get('kb_class', 'Person'))).strip()
+                    or 'Person'
+                ),
+                'source': str(item.get('source', 'scene_summary')).strip() or 'scene_summary',
+                'score': _coerce_float(item.get('score', 0.0)),
+                'center_x': _coerce_float(item.get('center_x', 0.0)),
+                'center_y': _coerce_float(item.get('center_y', 0.0)),
+                'last_seen_sec': _coerce_float(item.get('last_seen_sec', 0.0)),
+            }
+        )
+    return people
+
+
+def _merge_tracked_people(
+    scene_summary: dict,
+    *,
+    tracked_people_ids: tuple[str, ...],
+    tracked_people_ts: float,
+) -> dict:
+    merged = dict(scene_summary or {})
+    current_people = merged.get('people', [])
+    people = (
+        [dict(item) for item in current_people if isinstance(item, dict)]
+        if isinstance(current_people, list)
+        else []
+    )
+    existing_ids = {
+        str(item.get('id', item.get('entity_id', ''))).strip()
+        for item in people
+        if isinstance(item, dict)
+    }
+    now_sec = time.time()
+    age_sec = (
+        max(0.0, now_sec - tracked_people_ts)
+        if tracked_people_ts > 0.0
+        else 0.0
+    )
+    last_seen_sec = max(0.0, now_sec - age_sec)
+    for person_id in tracked_people_ids:
+        clean_person_id = str(person_id).strip()
+        if not clean_person_id or clean_person_id in existing_ids:
+            continue
+        people.append(
+            {
+                'id': clean_person_id,
+                'label': clean_person_id,
+                'type': 'Person',
+                'source': 'hri_tracked_persons',
+                'last_seen_sec': last_seen_sec,
+                'last_seen_age_sec': round(age_sec, 3),
+            }
+        )
+        existing_ids.add(clean_person_id)
+    if people:
+        merged['people'] = people
+    return merged
 
 
 def _planner_confidence(result) -> float:

@@ -176,6 +176,29 @@ def test_format_knowledge_snapshot_summarizes_entities_seen_by_robot():
     assert '- anonymous person dhgef is currently classified as Human, Person' in snapshot
 
 
+def test_format_knowledge_snapshot_formats_spatial_rows() -> None:
+    settings = KnowledgeSnapshotSettings(
+        enabled=True,
+        query_groups=[],
+        patterns=[
+            'myself sees ?entity',
+            '?entity hasVisualCenterX ?center_x',
+            '?entity hasVisualCenterY ?center_y',
+        ],
+        query_vars=['?entity', '?center_x', '?center_y'],
+        models=[],
+        max_results=10,
+        max_chars=500,
+    )
+
+    snapshot = format_knowledge_snapshot(
+        '[{"entity":"detected_cup_320_240","center_x":320.5,"center_y":240.25}]',
+        settings,
+    )
+
+    assert 'detected cup 320 240 appears near image center (320.5, 240.25)' in snapshot
+
+
 def test_extract_scene_memory_entry_prefers_summary_line():
     snapshot = (
         'Entities currently seen by the robot: book bkjwb (Book)\n'
@@ -216,8 +239,8 @@ def test_build_grounded_context_block_summarizes_entities_and_targets():
                 'backend': 'emorobcare_cv',
                 'scene_targets': ['book', 'apple'],
                 'entities': [
-                    {'normalized_name': 'book_qibia', 'type': 'Book'},
-                    {'normalized_name': 'anonymous_person_gjjbd', 'type': 'Human'},
+                    {'normalized_name': 'book_qibia', 'id': 'book_qibia', 'type': 'Book'},
+                    {'normalized_name': 'anonymous_person_gjjbd', 'id': 'anonymous_person_gjjbd', 'type': 'Human'},
                 ],
             },
         }
@@ -225,5 +248,9 @@ def test_build_grounded_context_block_summarizes_entities_and_targets():
 
     assert block.startswith('Grounded context snapshot:')
     assert 'Grounded entities now:' in block
+    assert 'book_qibia [id:book_qibia] (Book)' in block
+    assert 'anonymous_person_gjjbd [id:anonymous_person_gjjbd] (Human)' in block
     assert 'Detector objects now:' in block
+    assert 'book_qibia [id:book_qibia]' in block
+    assert 'apple_ktepg [id:apple_ktepg]' in block
     assert 'Active scene targets:' in block

@@ -177,14 +177,7 @@ def build_grounded_context_block(grounded_context: dict) -> str:
         for item in entities[:8]:
             if not isinstance(item, dict):
                 continue
-            label = _first_non_empty_value(
-                item,
-                'normalized_name',
-                'label',
-                'id',
-                'entity_id',
-                fallback='entity',
-            )
+            label = _entity_label_with_raw_id(item, fallback='entity')
             kb_class = str(item.get('type', item.get('kb_class', ''))).strip()
             if kb_class:
                 entity_labels.append('%s (%s)' % (label, kb_class))
@@ -201,16 +194,7 @@ def build_grounded_context_block(grounded_context: dict) -> str:
         for item in objects[:8]:
             if not isinstance(item, dict):
                 continue
-            object_labels.append(
-                _first_non_empty_value(
-                    item,
-                    'normalized_name',
-                    'label',
-                    'id',
-                    'entity_id',
-                    fallback='object',
-                )
-            )
+            object_labels.append(_entity_label_with_raw_id(item, fallback='object'))
         object_labels = [label for label in object_labels if label]
         if object_labels:
             lines.append('Detector objects now: %s' % ', '.join(object_labels))
@@ -255,6 +239,21 @@ def _first_non_empty_value(payload: dict, *keys: str, fallback: str = '') -> str
     return str(fallback or '').strip()
 
 
+def _entity_label_with_raw_id(payload: dict, *, fallback: str) -> str:
+    label = _first_non_empty_value(
+        payload,
+        'normalized_name',
+        'label',
+        'id',
+        'entity_id',
+        fallback=fallback,
+    )
+    entity_id = _first_non_empty_value(payload, 'id', 'entity_id', fallback='')
+    if not entity_id:
+        return label
+    return f'{label} [id:{entity_id}]'
+
+
 # ---------------------------------------------------------------------------
 # Query row formatting helpers
 # ---------------------------------------------------------------------------
@@ -281,6 +280,13 @@ def _format_query_row(row: dict, ordered_vars: list[str]) -> str:
         predicate = _humanize_predicate(row.get('p', ''))
         obj = _humanize_value(row.get('o', ''))
         return ' '.join(part for part in (subject, predicate, obj) if part).strip()
+
+    if {'entity', 'center_x', 'center_y'}.issubset(row.keys()):
+        entity = _humanize_value(row.get('entity', ''))
+        center_x = _humanize_value(row.get('center_x', ''))
+        center_y = _humanize_value(row.get('center_y', ''))
+        if entity and center_x and center_y:
+            return f'{entity} appears near image center ({center_x}, {center_y})'
 
     if {'entity', 'type'}.issubset(row.keys()):
         entity = _humanize_value(row.get('entity', ''))

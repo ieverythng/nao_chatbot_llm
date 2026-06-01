@@ -62,12 +62,20 @@
     knowledge_query_timeout_sec: 0.5
     knowledge_default_query_groups:
       - 'myself sees ?entity && ?entity rdf:type ?type'
+      - 'myself sees ?entity && ?entity hasVisualCenterX ?center_x && ?entity hasVisualCenterY ?center_y'
+      - 'myself sees ?entity && ?entity hasDetectionScore ?score'
     knowledge_default_patterns:
       - 'myself sees ?entity'
       - '?entity rdf:type ?type'
+      - '?entity hasVisualCenterX ?center_x'
+      - '?entity hasVisualCenterY ?center_y'
+      - '?entity hasDetectionScore ?score'
     knowledge_default_vars:
       - '?entity'
       - '?type'
+      - '?center_x'
+      - '?center_y'
+      - '?score'
     knowledge_default_models: ''
     knowledge_max_results: 40
     knowledge_max_chars: 3000

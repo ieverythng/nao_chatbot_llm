@@ -308,6 +308,8 @@ class LLMChatbot(Node):
                 'planner_handoff_allowed': planner_handoff_allowed,
                 'planner_handoff_published': planner_handoff_published,
                 'direct_intent_count': len(direct_intents),
+                'knowledge_snapshot': knowledge_context,
+                'grounded_context': grounded_context,
             }
         )
         response.error_msg = ''
@@ -557,7 +559,6 @@ class LLMChatbot(Node):
             if tracked is None:
                 return
             tracked.active_planner_goal_id = goal_id
-            tracked.active_planner_goal_token = goal_token
             if self._session is not None and self._session.dialogue_id == session.dialogue_id:
                 self._session.active_planner_goal_id = goal_id
 
