@@ -141,14 +141,11 @@ def build_planner_request_payload(
         'normalized_intents': _normalized_intents_for_turn(turn_result),
         'scene_targets': _scene_targets_from_user_intent(user_intent),
         'dialogue_context': dialogue_context,
-        'requested_plan': [],
         'grounded_context': _grounded_context_payload(
             knowledge_context,
             grounded_context=grounded_context,
         ),
         'planner_mode': resolved_planner_mode,
-        'interaction_mode': str(user_intent.get('interaction_mode', 'speech')).strip()
-        or 'speech',
         'dialogue_turn_id': str(user_intent.get('dialogue_turn_id', turn_id)).strip()
         or str(turn_id).strip(),
     }
@@ -274,16 +271,25 @@ def _normalized_intents(intent_name: str) -> list[str]:
 
 def _normalized_intents_for_turn(turn_result) -> list[str]:
     user_intent = _turn_user_intent(turn_result)
-    candidates = [
-        user_intent.get('type', ''),
-        getattr(turn_result, 'intent', ''),
-    ]
     normalized = []
-    for candidate in candidates:
+    for candidate in _intent_candidates_for_turn(user_intent, getattr(turn_result, 'intent', '')):
         clean_candidate = _normalize_token(candidate)
         if clean_candidate and clean_candidate not in normalized:
             normalized.append(clean_candidate)
     return normalized
+
+
+def _intent_candidates_for_turn(user_intent: dict, resolved_intent: str) -> list[str]:
+    candidates: list[str] = []
+    for key in ('intent_sequence', 'normalized_intents', 'intents'):
+        candidates.extend(_coerce_str_list(user_intent.get(key)))
+    candidates.extend(
+        [
+            user_intent.get('type', ''),
+            resolved_intent,
+        ]
+    )
+    return candidates
 
 
 def _scene_targets_from_user_intent(user_intent: dict) -> list[str]:
@@ -347,18 +353,26 @@ def _grounded_context_payload(
     grounded_context: dict | None = None,
 ) -> dict:
     payload = normalize_grounded_context(grounded_context or {})
+    if 'entities' in payload:
+        return payload
     clean_knowledge_context = str(knowledge_context or '').strip()
     if not clean_knowledge_context:
         return payload
 
     knowledge_snapshot = dict(payload.get('knowledge_snapshot', {}))
+    fact_lines = _knowledge_facts_from_text(clean_knowledge_context)
+    if fact_lines:
+        knowledge_snapshot['facts'] = fact_lines
     references = knowledge_snapshot.get('references', [])
     has_structured_refs = isinstance(references, list) and bool(references)
     if not has_structured_refs:
         derived_references = _knowledge_references_from_text(clean_knowledge_context)
         if derived_references:
             knowledge_snapshot['references'] = derived_references
-            payload['knowledge_snapshot'] = knowledge_snapshot
+    if knowledge_snapshot:
+        knowledge_snapshot = _normalize_knowledge_snapshot(knowledge_snapshot)
+    if knowledge_snapshot:
+        payload['knowledge_snapshot'] = knowledge_snapshot
     return payload
 
 
@@ -492,6 +506,78 @@ def _knowledge_references_from_text(knowledge_context: str) -> list[dict]:
             }
         )
     return references
+
+
+def _normalize_knowledge_snapshot(snapshot: dict) -> dict:
+    references = snapshot.get('references', [])
+    if not isinstance(references, list):
+        references = []
+    normalized = {
+        'schema_version': str(
+            snapshot.get('schema_version', 'knowledge_snapshot_v2')
+        ).strip() or 'knowledge_snapshot_v2',
+        'captured_at_sec': _coerce_float(snapshot.get('captured_at_sec', 0.0)),
+        'references': [dict(item) for item in references if isinstance(item, dict)],
+        'counts': _reference_counts(references),
+    }
+    facts = snapshot.get('facts', [])
+    if isinstance(facts, list) and facts:
+        normalized['facts'] = [str(item).strip() for item in facts if str(item).strip()]
+    return normalized
+
+
+def _reference_counts(references: list) -> dict:
+    clean_refs = [item for item in references if isinstance(item, dict)]
+    people = 0
+    objects = 0
+    for item in clean_refs:
+        item_type = str(item.get('type', '')).strip().lower()
+        if item_type in {'person', 'human'} or 'person' in item_type or 'human' in item_type:
+            people += 1
+        else:
+            objects += 1
+    return {
+        'entities': len(clean_refs),
+        'people': people,
+        'objects': objects,
+    }
+
+
+def _coerce_float(value) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _knowledge_facts_from_text(knowledge_context: str, *, max_items: int = 24) -> list[str]:
+    facts: list[str] = []
+    seen: set[str] = set()
+    in_scene_facts = False
+    for raw_line in str(knowledge_context or '').splitlines():
+        clean_line = str(raw_line).strip()
+        if not clean_line:
+            continue
+        if clean_line.lower() == 'scene facts:':
+            in_scene_facts = True
+            continue
+        if not in_scene_facts:
+            continue
+        if clean_line.startswith('- '):
+            fact = clean_line[2:].strip()
+            if not fact:
+                continue
+            key = fact.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            facts.append(fact)
+            if len(facts) >= max_items:
+                break
+            continue
+        # Stop once we leave the "Scene facts" bullet block.
+        break
+    return facts
 
 
 def _coerce_str_list(value) -> list[str]:

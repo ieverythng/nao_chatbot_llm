@@ -54,6 +54,7 @@ def _install_ros_message_stubs() -> None:
 _install_ros_message_stubs()
 
 from chatbot_llm.planner_handoff import _kb_references_from_scene
+from chatbot_llm.planner_handoff import _hydrate_scene_summary_from_knowledge_context
 from chatbot_llm.planner_handoff import _merge_tracked_people
 from chatbot_llm.planner_handoff import _scene_summary_payload
 from chatbot_llm.planner_handoff import _state_t0_payload
@@ -65,6 +66,7 @@ def test_scene_summary_payload_keeps_people_entries() -> None:
         {
           "observer": "myself",
           "backend": "emorobcare_cv",
+          "captured_at_sec": 1777040000.0,
           "objects": [],
           "people": [
             {"id": "anonymous_person_1", "type": "Human", "source": "person_manager"}
@@ -73,6 +75,8 @@ def test_scene_summary_payload_keeps_people_entries() -> None:
         """
     )
 
+    assert payload['schema_version'] == 'scene_summary_v2'
+    assert payload['captured_at_sec'] == 1777040000.0
     assert payload['people'] == [
         {
             'id': 'anonymous_person_1',
@@ -98,6 +102,8 @@ def test_state_t0_and_references_include_people_ids() -> None:
     state_t0 = _state_t0_payload(scene_summary)
     refs = _kb_references_from_scene(scene_summary)
 
+    assert state_t0['schema_version'] == 'state_t0_v2'
+    assert state_t0['entity_counts'] == {'entities': 2, 'people': 1, 'objects': 1}
     assert any(
         item.get('id') == 'anonymous_person_1' and item.get('kind') == 'person'
         for item in state_t0['entities']
@@ -114,3 +120,69 @@ def test_merge_tracked_people_adds_missing_ids() -> None:
 
     merged_ids = {item['id'] for item in merged['people']}
     assert merged_ids == {'anonymous_person_1', 'anonymous_person_2'}
+
+
+def test_hydrate_scene_summary_from_knowledge_context_backfills_objects_people() -> None:
+    hydrated = _hydrate_scene_summary_from_knowledge_context(
+        {'observer': 'myself', 'backend': 'emorobcare_cv', 'objects': [], 'people': []},
+        knowledge_context=(
+            'Current grounded scene:\n'
+            '- cup_cxhwp is currently classified as Tableware\n'
+            '- anonymous_person_1 is currently classified as Human'
+        ),
+    )
+
+    objects = hydrated.get('objects', [])
+    people = hydrated.get('people', [])
+
+    assert any(str(item.get('entity_id', '')).strip() == 'cup_cxhwp' for item in objects)
+    assert any(str(item.get('id', '')).strip() == 'anonymous_person_1' for item in people)
+
+
+def test_grounded_context_projection_prefers_structured_rows_over_text_fallback() -> None:
+    raw_scene = _scene_summary_payload(
+        """
+        {
+          "observer": "myself",
+          "backend": "emorobcare_cv",
+          "objects": [
+            {
+              "entity_id": "apple_armzq",
+              "label": "apple_armzq",
+              "kb_class": "Apple",
+              "source": "emorobcare_cv",
+              "center_x": 20.0,
+              "center_y": 30.0,
+              "last_seen_sec": 1777040000.0
+            }
+          ]
+        }
+        """
+    )
+
+    from planner_common import project_llm_grounded_context
+
+    projected = project_llm_grounded_context(
+        {
+            'knowledge_snapshot': {},
+            'scene_summary': raw_scene,
+            'state_t0': _state_t0_payload(raw_scene),
+        },
+        knowledge_rows=[
+            {'entity': 'apple_armzq', 'predicate': 'rdf:type', 'object': 'dbr:Apple'}
+        ],
+    )
+
+    assert projected['entities'] == [
+        {
+            'id': 'apple_armzq',
+            'label': 'apple',
+            'kind': 'object',
+            'class': 'Apple',
+            'visible': True,
+            'relations': [
+                {'predicate': 'rdf:type', 'object': 'Apple'},
+            ],
+        }
+    ]
+    assert 'state_t0' not in projected

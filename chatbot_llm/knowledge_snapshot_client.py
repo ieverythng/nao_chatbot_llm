@@ -3,10 +3,41 @@
 from __future__ import annotations
 
 import json
+import re
 
 from chatbot_llm.knowledge_snapshot import KnowledgeSnapshotSettings
 from chatbot_llm.knowledge_snapshot import format_knowledge_snapshot
 from kb_skills.query_client import KnowledgeCoreQueryClient
+
+_VARIABLE_TOKEN_RE = re.compile(r'\?[A-Za-z_][A-Za-z0-9_]*')
+
+
+def _query_vars_for_group(group_patterns: list[str], configured_vars: list[str]) -> list[str]:
+    """Keep query vars bounded to variables present in one pattern group.
+
+    Passing unbound vars to `/kb/query` can trigger large combinatorial scans in
+    KnowledgeCore. Each grouped query should request only the vars it actually binds.
+    """
+    clean_patterns = [str(item).strip() for item in group_patterns if str(item).strip()]
+    if not clean_patterns:
+        return []
+
+    discovered_vars: list[str] = []
+    for pattern in clean_patterns:
+        for token in _VARIABLE_TOKEN_RE.findall(pattern):
+            if token not in discovered_vars:
+                discovered_vars.append(token)
+    if not discovered_vars:
+        return []
+
+    clean_configured_vars = [str(item).strip() for item in configured_vars if str(item).strip()]
+    if not clean_configured_vars:
+        return discovered_vars
+
+    filtered = [item for item in clean_configured_vars if item in discovered_vars]
+    if filtered:
+        return filtered
+    return discovered_vars
 
 
 # ---------------------------------------------------------------------------
@@ -24,6 +55,7 @@ class KnowledgeSnapshotClient:
             service_name=service_name,
             timeout_sec=timeout_sec,
         )
+        self.last_rows: tuple[dict, ...] = ()
 
     def fetch_snapshot(
         self,
@@ -34,15 +66,20 @@ class KnowledgeSnapshotClient:
     ) -> str:
         """Return one formatted snapshot for the current turn or an empty string."""
         if not settings.enabled:
+            self.last_rows = ()
             return ''
 
         all_rows: list[dict] = []
         groups = settings.query_groups or [list(settings.patterns)]
         for group in groups:
+            clean_group = [str(item).strip() for item in group if str(item).strip()]
+            if not clean_group:
+                continue
+            group_query_vars = _query_vars_for_group(clean_group, list(settings.query_vars))
             all_rows.extend(
                 self._query_client.query_rows(
-                    patterns=group,
-                    query_vars=list(settings.query_vars),
+                    patterns=clean_group,
+                    query_vars=group_query_vars,
                     models=list(settings.models),
                     turn_id=turn_id,
                     trace=trace,
@@ -50,8 +87,10 @@ class KnowledgeSnapshotClient:
                 )
             )
 
+        deduped_rows = KnowledgeCoreQueryClient.dedupe_rows(all_rows)
+        self.last_rows = tuple(dict(item) for item in deduped_rows)
         snapshot = format_knowledge_snapshot(
-            json.dumps(KnowledgeCoreQueryClient.dedupe_rows(all_rows)),
+            json.dumps(deduped_rows),
             settings,
         )
         if snapshot:

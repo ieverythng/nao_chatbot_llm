@@ -8,6 +8,7 @@ from typing import Any, Callable
 
 from hri_actions_msgs.msg import Intent
 from planner_common import parse_json_object
+from planner_common import project_llm_grounded_context
 from planner_common import SceneSummary
 from std_msgs.msg import String
 
@@ -76,18 +77,28 @@ class PlannerHandoff:
                 self._node.destroy_subscription(sub)
                 setattr(self, attr, None)
 
-    def grounded_context(self, knowledge_context: str) -> dict:
+    def grounded_context(
+        self,
+        knowledge_context: str,
+        *,
+        knowledge_rows: list[dict] | tuple[dict, ...] | None = None,
+    ) -> dict:
         with self._lock:
             scene = dict(self._scene_summary_payload)
             tracked_people_ids = tuple(self._tracked_people_ids)
             tracked_people_ts = float(self._tracked_people_ts)
+        if not _has_scene_entities(scene) and not knowledge_rows:
+            scene = _hydrate_scene_summary_from_knowledge_context(
+                scene,
+                knowledge_context=knowledge_context,
+            )
         if tracked_people_ids:
             scene = _merge_tracked_people(
                 scene,
                 tracked_people_ids=tracked_people_ids,
                 tracked_people_ts=tracked_people_ts,
             )
-        return {
+        raw_context = {
             'knowledge_snapshot': _knowledge_snapshot_payload(
                 knowledge_context=knowledge_context,
                 scene_summary=scene,
@@ -95,6 +106,11 @@ class PlannerHandoff:
             'scene_summary': scene,
             'state_t0': _state_t0_payload(scene),
         }
+        return project_llm_grounded_context(
+            raw_context,
+            knowledge_rows=[dict(item) for item in (knowledge_rows or []) if isinstance(item, dict)],
+            include_state_t0=self._config.grounded_context_include_state_t0,
+        )
 
     def publish_execution_turn_if_needed(
         self,
@@ -179,9 +195,12 @@ class PlannerHandoff:
 def _scene_summary_payload(raw_payload) -> dict:
     raw_data = parse_json_object(raw_payload)
     summary = SceneSummary.from_payload(raw_payload)
+    captured_at_sec = _captured_at_sec_from_scene(raw_data)
     return {
+        'schema_version': 'scene_summary_v2',
         'observer': summary.observer,
         'backend': summary.backend,
+        'captured_at_sec': captured_at_sec,
         'objects': [
             {
                 'label': obj.label,
@@ -200,11 +219,86 @@ def _scene_summary_payload(raw_payload) -> dict:
     }
 
 
+def _has_scene_entities(scene_summary: dict) -> bool:
+    if not isinstance(scene_summary, dict):
+        return False
+    for key in ('objects', 'people'):
+        items = scene_summary.get(key, [])
+        if isinstance(items, list) and any(isinstance(item, dict) for item in items):
+            return True
+    return False
+
+
+def _hydrate_scene_summary_from_knowledge_context(
+    scene_summary: dict,
+    *,
+    knowledge_context: str,
+) -> dict:
+    """Backfill scene-summary entities from the current KB snapshot text."""
+    merged = dict(scene_summary or {})
+    objects = merged.get('objects', [])
+    people = merged.get('people', [])
+    if isinstance(objects, list) and objects:
+        return merged
+    if isinstance(people, list) and people:
+        return merged
+
+    references = _kb_references_from_text(knowledge_context)
+    if not references:
+        return merged
+
+    hydrated_objects: list[dict] = []
+    hydrated_people: list[dict] = []
+    for item in references:
+        if not isinstance(item, dict):
+            continue
+        entity_id = str(item.get('id', '')).strip()
+        if not entity_id:
+            continue
+        entity_type = str(item.get('type', '')).strip()
+        normalized_name = str(item.get('normalized_name', entity_id)).strip() or entity_id
+        if _is_person_type(entity_type):
+            hydrated_people.append(
+                {
+                    'id': entity_id,
+                    'label': normalized_name,
+                    'type': entity_type or 'Person',
+                    'source': 'knowledge_snapshot',
+                    'last_seen_sec': 0.0,
+                }
+            )
+            continue
+        hydrated_objects.append(
+            {
+                'entity_id': entity_id,
+                'label': normalized_name,
+                'kb_class': entity_type,
+                'source': 'knowledge_snapshot',
+                'score': 0.0,
+                'center_x': 0.0,
+                'center_y': 0.0,
+                'last_seen_sec': 0.0,
+            }
+        )
+
+    if hydrated_objects:
+        merged['objects'] = hydrated_objects
+    if hydrated_people:
+        merged['people'] = hydrated_people
+    return merged
+
+
 def _knowledge_snapshot_payload(*, knowledge_context: str, scene_summary: dict) -> dict:
     references = _kb_references_from_scene(scene_summary)
     if not references:
         references = _kb_references_from_text(knowledge_context)
-    return {'references': references} if references else {}
+    counts = _reference_counts(references)
+    return {
+        'schema_version': 'knowledge_snapshot_v2',
+        'captured_at_sec': _coerce_float(scene_summary.get('captured_at_sec', 0.0)),
+        'references': references,
+        'counts': counts,
+    }
 
 
 def _state_t0_payload(scene_summary: dict) -> dict:
@@ -270,9 +364,11 @@ def _state_t0_payload(scene_summary: dict) -> dict:
         )
 
     return {
+        'schema_version': 'state_t0_v2',
         'observer': observer,
         'backend': backend,
         'captured_at_sec': captured_at_sec,
+        'entity_counts': _entity_counts(entities),
         'entities': entities,
         'objects': [dict(item) for item in object_entities],
         'people': [dict(item) for item in person_entities],
@@ -352,6 +448,54 @@ def _kb_references_from_text(knowledge_context: str) -> list[dict]:
 
 def _normalized_entity_name(value: str) -> str:
     return '_'.join(str(value or '').strip().lower().split())
+
+
+def _is_person_type(value: str) -> bool:
+    clean = str(value or '').strip().lower()
+    if not clean:
+        return False
+    return any(token in clean for token in ('person', 'human', 'face', 'speaker'))
+
+
+def _captured_at_sec_from_scene(raw_data: dict) -> float:
+    explicit_ts = _coerce_float(raw_data.get('captured_at_sec', 0.0))
+    if explicit_ts > 0.0:
+        return explicit_ts
+    timestamps: list[float] = []
+    for key in ('objects', 'people'):
+        items = raw_data.get(key, [])
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if isinstance(item, dict):
+                timestamps.append(_coerce_float(item.get('last_seen_sec', 0.0)))
+    return max(timestamps, default=0.0)
+
+
+def _reference_counts(references: list[dict]) -> dict:
+    people = 0
+    objects = 0
+    for item in references:
+        item_type = str(item.get('type', '')).strip().lower()
+        if item_type in {'person', 'human'} or 'person' in item_type or 'human' in item_type:
+            people += 1
+        else:
+            objects += 1
+    return {
+        'entities': len(references),
+        'people': people,
+        'objects': objects,
+    }
+
+
+def _entity_counts(entities: list[dict]) -> dict:
+    people = sum(1 for item in entities if str(item.get('kind', '')).strip() == 'person')
+    objects = sum(1 for item in entities if str(item.get('kind', '')).strip() == 'object')
+    return {
+        'entities': len(entities),
+        'people': people,
+        'objects': objects,
+    }
 
 
 def _coerce_float(value) -> float:

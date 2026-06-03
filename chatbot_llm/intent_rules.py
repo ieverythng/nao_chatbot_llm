@@ -142,10 +142,14 @@ def normalize_intent(intent: str, default: str = 'fallback', hint_text: str = ''
         (
             'who can you see',
             'do you see anyone',
+            'do you see any people',
+            'do you see people',
             'who is there',
             'who is here',
             'is anyone there',
             'can you see a person',
+            'can you see any people',
+            'can you see people',
         ),
     ):
         return KB_QUERY_VISIBLE_PEOPLE
@@ -247,9 +251,13 @@ def detect_intent(text: str) -> str:
         (
             'who can you see',
             'do you see anyone',
+            'do you see any people',
+            'do you see people',
             'can you tell me if you see anyone',
             'tell me if you see anyone',
             'can you see anyone right now',
+            'can you see any people',
+            'can you see people',
             'is there anyone in the scene',
             'who is there',
             'who is here',

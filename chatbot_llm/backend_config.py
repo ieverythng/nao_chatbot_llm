@@ -21,6 +21,8 @@ DEFAULT_RESPONSE_PROMPT_ADDENDUM = (
     'what was said in the last several turns. '
     "When live knowledge snapshot data is available, use it as the robot's grounded "
     'scene state for perception questions and avoid guessing beyond it. '
+    'When grounded_context JSON is available, treat grounded_context.entities as '
+    'the current visible world and use each entity relations list as known KB facts. '
     'Distinguish between what is visible in the current scene and what only appears '
     'in recent scene memory from earlier turns. '
     'If a face/person entity is present without a name, say you detect someone '
@@ -78,6 +80,7 @@ class ChatbotConfig:
     planner_request_topic: str
     planner_request_intent: str
     planner_scene_summary_topic: str
+    grounded_context_include_state_t0: bool
     turn_trace_enabled: bool
     turn_trace_topic: str
     knowledge_enabled: bool
@@ -145,6 +148,7 @@ def declare_backend_parameters(node) -> None:
     node.declare_parameter('planner_request_topic', '/planner/request')
     node.declare_parameter('planner_request_intent', 'planner_request')
     node.declare_parameter('planner_scene_summary_topic', '/scene/summary')
+    node.declare_parameter('grounded_context_include_state_t0', False)
     node.declare_parameter('turn_trace_enabled', True)
     node.declare_parameter('turn_trace_topic', '/chatbot_llm/turn_trace')
     node.declare_parameter('knowledge_enabled', False)
@@ -159,6 +163,13 @@ def declare_backend_parameters(node) -> None:
                 '&& ?entity hasVisualCenterY ?center_y'
             ),
             'myself sees ?entity && ?entity hasDetectionScore ?score',
+            'myself sees ?entity && ?entity dbp:color ?object',
+            'myself sees ?entity && ?entity dbp:name ?object',
+            'myself sees ?entity && ?entity oro:isAt ?object',
+            'myself sees ?entity && ?entity oro:isOn ?object',
+            'myself sees ?entity && ?entity oro:contains ?object',
+            'myself sees ?entity && ?entity foaf:knows ?object',
+            'myself sees ?entity && ?entity ?predicate ?object',
         ],
     )
     node.declare_parameter(
@@ -169,11 +180,18 @@ def declare_backend_parameters(node) -> None:
             '?entity hasVisualCenterX ?center_x',
             '?entity hasVisualCenterY ?center_y',
             '?entity hasDetectionScore ?score',
+            '?entity dbp:color ?object',
+            '?entity dbp:name ?object',
+            '?entity oro:isAt ?object',
+            '?entity oro:isOn ?object',
+            '?entity oro:contains ?object',
+            '?entity foaf:knows ?object',
+            '?entity ?predicate ?object',
         ],
     )
     node.declare_parameter(
         'knowledge_default_vars',
-        ['?entity', '?type', '?center_x', '?center_y', '?score'],
+        ['?entity', '?type', '?center_x', '?center_y', '?score', '?predicate', '?object'],
     )
     node.declare_parameter('knowledge_default_models', '')
     node.declare_parameter('knowledge_max_results', 40)
@@ -305,6 +323,9 @@ def load_backend_config(node) -> ChatbotConfig:
             node.get_parameter('planner_scene_summary_topic').value
         ).strip()
         or '/scene/summary',
+        grounded_context_include_state_t0=as_bool(
+            node.get_parameter('grounded_context_include_state_t0').value
+        ),
         turn_trace_enabled=as_bool(node.get_parameter('turn_trace_enabled').value),
         turn_trace_topic=str(node.get_parameter('turn_trace_topic').value).strip()
         or '/chatbot_llm/turn_trace',
@@ -326,6 +347,7 @@ def load_backend_config(node) -> ChatbotConfig:
                     '&& ?entity hasVisualCenterY ?center_y'
                 ),
                 'myself sees ?entity && ?entity hasDetectionScore ?score',
+                'myself sees ?entity && ?entity ?predicate ?object',
             ],
         ),
         knowledge_default_patterns=coerce_str_list(
@@ -336,11 +358,20 @@ def load_backend_config(node) -> ChatbotConfig:
                 '?entity hasVisualCenterX ?center_x',
                 '?entity hasVisualCenterY ?center_y',
                 '?entity hasDetectionScore ?score',
+                '?entity ?predicate ?object',
             ],
         ),
         knowledge_default_vars=coerce_str_list(
             node.get_parameter('knowledge_default_vars').value,
-            fallback=['?entity', '?type', '?center_x', '?center_y', '?score'],
+            fallback=[
+                '?entity',
+                '?type',
+                '?center_x',
+                '?center_y',
+                '?score',
+                '?predicate',
+                '?object',
+            ],
         ),
         knowledge_default_models=coerce_str_list(
             node.get_parameter('knowledge_default_models').value,

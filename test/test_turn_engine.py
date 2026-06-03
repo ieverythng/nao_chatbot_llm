@@ -66,6 +66,7 @@ def make_config(
         planner_request_topic='/planner/request',
         planner_request_intent='planner_request',
         planner_scene_summary_topic='/scene/summary',
+        grounded_context_include_state_t0=False,
         turn_trace_enabled=True,
         turn_trace_topic='/chatbot_llm/turn_trace',
         knowledge_enabled=False,
@@ -600,6 +601,38 @@ def test_turn_engine_ignores_plan_fields_from_response_payloads():
     assert result.updated_history == ['user:stand up', 'assistant:Standing up now.']
 
 
+def test_turn_engine_preserves_intent_sequence_metadata():
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"Sure, I will move my head right and report what I see.",'
+                '"route":"execution",'
+                '"user_intent":{"type":"head_look_right",'
+                '"intent_sequence":["head_look_right","inspect_scene","report_result"],'
+                '"goal":"move head right and report visible objects"}}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='move your head right and tell me what you see',
+        history=[],
+        user_id='user1',
+    )
+
+    assert result.user_intent == {
+        'type': 'head_look_right',
+        'goal': 'move head right and report visible objects',
+        'intent_sequence': ['head_look_right', 'inspect_scene', 'report_result'],
+    }
+
+
 def test_turn_engine_falls_back_when_json_has_no_safe_ack():
     transport = FakeTransport(
         [
@@ -754,6 +787,33 @@ def test_turn_engine_planner_mode_forces_kb_query_route_for_visibility_question(
     assert 'fresh scan' not in result.verbal_ack.lower()
 
 
+def test_turn_engine_planner_mode_forces_kb_query_route_for_people_wording() -> None:
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"Sure, I will check that now.",'
+                '"route":"execution","user_intent":{"type":"inspect_scene"}}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='Do you see any people?',
+        history=[],
+        user_id='user1',
+    )
+
+    assert result.route == 'knowledge_query'
+    assert result.intent == 'kb_query_visible_people'
+    assert result.user_intent.get('type', '') == 'kb_query_visible_people'
+
+
 def test_turn_engine_planner_mode_sanitizes_execution_ack_result_leak() -> None:
     transport = FakeTransport(
         [
@@ -781,6 +841,60 @@ def test_turn_engine_planner_mode_sanitizes_execution_ack_result_leak() -> None:
     assert result.verbal_ack == 'Sure, I will look around and report what I can see.'
     assert '(performs' not in result.updated_history[-1]
     assert 'currently see' not in result.updated_history[-1]
+
+
+def test_turn_engine_planner_mode_sanitizes_past_tense_scan_ack() -> None:
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"I have scanned the scene and found one person.",'
+                '"route":"execution","user_intent":{"type":"inspect_scene"}}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='scan the room',
+        history=[],
+        user_id='user1',
+    )
+
+    assert result.route == 'execution'
+    assert result.verbal_ack == 'Okay, I will do that.'
+    assert result.updated_history[-1] == 'assistant:Okay, I will do that.'
+
+
+def test_turn_engine_planner_mode_sanitizes_failure_style_execution_ack() -> None:
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"I cannot navigate to the phone because I do not have a clear path.",'
+                '"route":"execution","user_intent":{"type":"navigate_to"}}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='navigate to the phone',
+        history=[],
+        user_id='user1',
+    )
+
+    assert result.route == 'execution'
+    assert result.verbal_ack == 'Okay, I will try that now.'
+    assert result.updated_history[-1] == 'assistant:Okay, I will try that now.'
 
 
 def test_turn_engine_planner_mode_keeps_execution_route_when_scan_is_explicit() -> None:

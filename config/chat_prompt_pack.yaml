@@ -27,7 +27,9 @@ response_prompt_addendum: |
   Ask at most one clarification question when missing detail blocks safe execution.
   Do not chain multiple follow-up questions in one turn.
   For execution turns, return only verbal_ack, route, confidence, and user_intent
-  metadata. Do not include a top-level plan field or user_intent.plan.
+  metadata. Use user_intent.intent_sequence for compound semantics such as
+  motion followed by perception/reporting. This is a list of intent labels, not
+  executable steps. Do not include a top-level plan field or user_intent.plan.
 
 intent_prompt_addendum: |
   Infer one canonical intent label when possible:
@@ -39,6 +41,7 @@ intent_prompt_addendum: |
   When the user requests an action, you may also return:
   - ack_text: a short acknowledgement for the action
   - ack_mode: usually "say"
+  - intent_sequence: ordered semantic intent labels for compound requests
   - scene_targets: a list of relevant object labels if the action refers to scene entities
   - goal: a concise description of the whole requested task
   When the user asks for multiple actions, or combines motion with perception
@@ -51,6 +54,8 @@ intent_prompt_addendum: |
   Phrases that sequence actions ("and then", "after that", "while also", …)
   together with motion or manipulation verbs should use a concise `goal`
   covering the full user request so planner ingress can select multi-step mode.
+  For motion plus reporting/perception, include `report_result` in
+  intent_sequence, for example ["head_look_right", "inspect_scene", "report_result"].
   Do not include a top-level plan field or user_intent.plan. planner_llm owns
   executable steps.
 
@@ -116,6 +121,10 @@ response_schema:
           type: string
         ack_mode:
           type: string
+        intent_sequence:
+          type: array
+          items:
+            type: string
         scene_targets:
           type: array
           items:
@@ -145,6 +154,10 @@ intent_schema:
           type: string
         ack_mode:
           type: string
+        intent_sequence:
+          type: array
+          items:
+            type: string
         scene_targets:
           type: array
           items:

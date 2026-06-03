@@ -109,6 +109,10 @@ DEFAULT_RESPONSE_SCHEMA: dict[str, Any] = {
                 'goal': {'type': 'string'},
                 'ack_text': {'type': 'string'},
                 'ack_mode': {'type': 'string'},
+                'intent_sequence': {
+                    'type': 'array',
+                    'items': {'type': 'string'},
+                },
                 'scene_targets': {
                     'type': 'array',
                     'items': {'type': 'string'},
@@ -133,6 +137,10 @@ DEFAULT_INTENT_SCHEMA: dict[str, Any] = {
                 'goal': {'type': 'string'},
                 'ack_text': {'type': 'string'},
                 'ack_mode': {'type': 'string'},
+                'intent_sequence': {
+                    'type': 'array',
+                    'items': {'type': 'string'},
+                },
                 'scene_targets': {
                     'type': 'array',
                     'items': {'type': 'string'},

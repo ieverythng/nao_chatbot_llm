@@ -216,9 +216,15 @@ class LLMChatbot(Node):
             turn_id=turn_id,
             trace=self._trace,
         )
+        current_snapshot_rows = tuple(
+            getattr(self._knowledge_snapshot_client, 'last_rows', ())
+        )
         grounded_context = {}
         if self._planner_handoff is not None:
-            grounded_context = self._planner_handoff.grounded_context(current_snapshot)
+            grounded_context = self._planner_handoff.grounded_context(
+                current_snapshot,
+                knowledge_rows=current_snapshot_rows,
+            )
         knowledge_context = build_scene_context(
             current_snapshot,
             recent_scene_memory=session.recent_scene_memory,
@@ -308,7 +314,6 @@ class LLMChatbot(Node):
                 'planner_handoff_allowed': planner_handoff_allowed,
                 'planner_handoff_published': planner_handoff_published,
                 'direct_intent_count': len(direct_intents),
-                'knowledge_snapshot': knowledge_context,
                 'grounded_context': grounded_context,
             }
         )

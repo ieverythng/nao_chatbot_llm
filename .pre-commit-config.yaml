@@ -5,7 +5,11 @@ repos:
     hooks:
       - id: flake8
         name: flake8
-        entry: python3 -m flake8 --config ament_flake8.ini --jobs=1 chatbot_llm test
+        entry: >-
+          bash -lc '
+          python3 -c "import importlib.util; raise SystemExit(0 if importlib.util.find_spec(\"flake8\") is not None else 1)" >/dev/null 2>&1
+          || { echo "Skipping chatbot_llm flake8: flake8 is unavailable"; exit 0; };
+          python3 -m flake8 --config ament_flake8.ini --jobs=1 chatbot_llm test'
         language: system
         pass_filenames: false
 
@@ -14,9 +18,9 @@ repos:
         entry: >-
           bash -lc '
           export PYTEST_DISABLE_PLUGIN_AUTOLOAD=1;
-          export PYTHONPATH="$PWD:$PWD/../kb_skills${PYTHONPATH:+:$PYTHONPATH}";
+          export PYTHONPATH="$PWD:$PWD/../kb_skills:$PWD/../planner_common${PYTHONPATH:+:$PYTHONPATH}";
           if [[ -f /opt/ros/jazzy/setup.bash ]]; then source /opt/ros/jazzy/setup.bash; fi;
-          python3 -c "import importlib.util; required = [\"ament_flake8\", \"ament_pep257\", \"ament_copyright\", \"hri_actions_msgs\", \"chatbot_msgs\"]; raise SystemExit(0 if all(importlib.util.find_spec(name) is not None for name in required) else 1)" >/dev/null 2>&1
+          python3 -c "import importlib.util; required = [\"ament_flake8\", \"ament_pep257\", \"ament_copyright\", \"flake8\", \"pydocstyle\", \"requests\", \"hri_actions_msgs\", \"chatbot_msgs\", \"planner_common\"]; raise SystemExit(0 if all(importlib.util.find_spec(name) is not None for name in required) else 1)" >/dev/null 2>&1
           || { echo "Skipping chatbot_llm pytest: ROS test dependencies are unavailable"; exit 0; };
           python3 -m pytest -q'
         language: system

@@ -37,12 +37,19 @@ Planner-mode routing requirements:
 - For visibility checks ("who do you see", "do you see anyone", "what objects are visible"),
   prefer route="knowledge_query" unless the user explicitly asks you to perform a new
   scan/action first.
+- For knowledge_query visibility answers, ground counts and entities only in the
+  current turn's grounded snapshot. Do not reuse old visibility claims from
+  prior dialogue turns.
+- If the current grounded snapshot shows no visible people, do not say you see
+  a person.
 - Use route="dialogue" for greetings, identity, wellbeing, help, or general conversation.
 - For greeting-only turns (hi/hello/hey + social opener), keep route="dialogue"
   unless the user explicitly asks for a physical action (for example "wave at me").
 - When possible include user_intent with key "type".
-- For execution turns, include only routing metadata in user_intent: type, goal,
-  object, ack_text, ack_mode, and scene_targets.
+- For execution turns, include only routing metadata in user_intent: type,
+  intent_sequence, goal, object, ack_text, ack_mode, and scene_targets.
+- Use user_intent.intent_sequence for compound semantics such as motion followed by
+  perception/reporting. It is a list of intent labels, not executable plan steps.
 - For execution turns, verbal_ack is only a brief future-tense acknowledgement.
   Do not narrate the action in parentheses and do not report observations/results there.
 - Do not include a top-level plan field or user_intent.plan. planner_llm owns all
@@ -57,12 +64,19 @@ Planner-mode routing requirements:
   Sequence: {"verbal_ack":"Sure, I will move my head right and then sit down.",
     "route":"execution","confidence":0.82,
     "user_intent":{"type":"head_look_right","goal":"move your head right, then sit down"}}
+  Head motion with report: {"verbal_ack":"Sure, I will move my head right and report what I see.",
+    "route":"execution","confidence":0.82,
+    "user_intent":{"type":"head_look_right",
+    "intent_sequence":["head_look_right","inspect_scene","report_result"],
+    "goal":"move your head right and report what is visible"}}
   Scan: {"verbal_ack":"Sure, I will look around and report what I can see.",
     "route":"execution","confidence":0.78,
-    "user_intent":{"type":"inspect_scene","goal":"look around and report what is visible"}}
-  KB visibility: {"verbal_ack":"I can currently see one person in the scene.",
+    "user_intent":{"type":"inspect_scene",
+    "intent_sequence":["inspect_scene","report_result"],
+    "goal":"look around and report what is visible"}}
+  KB visibility: {"verbal_ack":"I can currently see two objects: a cup and a phone.",
     "route":"knowledge_query","confidence":0.82,
-    "user_intent":{"type":"kb_query_visible_people"}}
+    "user_intent":{"type":"kb_query_visible_objects"}}
 """.strip()
 
 INTENT_STAGE_TEMPLATE = Template(
@@ -102,9 +116,12 @@ Output requirements:
   what objects are visible now, or whether the scene changed compared with
   earlier turns.
 - When the user requests an action, you may also include ack_text, ack_mode,
-  scene_targets, and goal.
+  intent_sequence, scene_targets, and goal.
 - When the user combines multiple requested actions, or an action plus a
   follow-up perception or dialogue task, summarize the whole task in goal.
+- Use intent_sequence to list the semantic labels in order for compound requests,
+  for example ["head_look_right","inspect_scene","report_result"]. Do not put
+  executable step dictionaries in user_intent.
 - If no single canonical label covers the whole request, keep `user_intent.type`
   on the closest executable label or use `fallback`.
 - Do not include a top-level plan field or user_intent.plan. planner_llm owns all
@@ -224,6 +241,8 @@ def _knowledge_snapshot_block(snapshot: str) -> str:
         'currently detect someone without inventing an identity.\n'
         '- If the current entity ID changed since earlier turns, do not claim it is '
         'definitely the same person unless the evidence supports that.\n'
+        '- If a Grounded context JSON block is present, treat its entities array as '
+        'the current visible world and its relations arrays as known KB facts.\n'
         '- If an entity was only present in recent scene memory, say it was seen '
         'earlier but cannot be confirmed as currently visible.\n'
         '- If the snapshot does not support a perception claim, say you cannot confirm it.\n'

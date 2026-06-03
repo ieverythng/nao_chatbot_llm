@@ -1099,7 +1099,6 @@ def _coerce_user_intent(user_intent) -> dict:
             'goal_id',
             'parent_goal_id',
             'supersedes_goal_id',
-            'interaction_mode',
             'dialogue_turn_id',
         ):
             value = str(user_intent.get(key, '')).strip()
@@ -1114,6 +1113,20 @@ def _coerce_user_intent(user_intent) -> dict:
             parsed_targets = [str(item).strip() for item in scene_targets if str(item).strip()]
             if parsed_targets:
                 cleaned['scene_targets'] = parsed_targets
+
+        intent_sequence = user_intent.get('intent_sequence')
+        if isinstance(intent_sequence, str):
+            parsed_intents = [
+                item.strip() for item in intent_sequence.split(',') if item.strip()
+            ]
+            if parsed_intents:
+                cleaned['intent_sequence'] = parsed_intents
+        elif isinstance(intent_sequence, (list, tuple)):
+            parsed_intents = [
+                str(item).strip() for item in intent_sequence if str(item).strip()
+            ]
+            if parsed_intents:
+                cleaned['intent_sequence'] = parsed_intents
 
         return cleaned
     if isinstance(user_intent, str) and user_intent.strip():
@@ -1208,28 +1221,47 @@ def _sanitize_execution_ack(verbal_ack: str) -> str:
         flags=re.IGNORECASE,
     ).strip()
 
-    result_markers = (
-        ' I can currently ',
-        ' I currently ',
-        ' I can see ',
-        ' I see ',
-        ' I found ',
-        ' I detected ',
-        ' I observed ',
-        ' I performed ',
-        ' I have moved ',
-        ' I have completed ',
-        ' I completed ',
-        ' I scanned ',
-        ' The scan ',
-    )
     lowered = clean_ack.lower()
+    if re.search(
+        r"\b(i cannot|i can't|i could not|i couldn't|i do not have|i don't have|unable to)\b",
+        lowered,
+    ):
+        return 'Okay, I will try that now.'
+
+    result_markers = (
+        'i can currently',
+        'i currently',
+        'i can see',
+        'i see',
+        'i have scanned',
+        'i found',
+        'i have found',
+        'i detected',
+        'i have detected',
+        'i observed',
+        'i have observed',
+        'i performed',
+        'i have moved',
+        'i have completed',
+        'i completed',
+        'i scanned',
+        'the scan',
+    )
     split_at = len(clean_ack)
     for marker in result_markers:
-        index = lowered.find(marker.lower())
-        if index > 0:
-            split_at = min(split_at, index)
+        match = re.search(
+            r'(^|[.!?]\s+)%s\b' % re.escape(marker.lower()),
+            lowered,
+        )
+        if match:
+            split_at = min(split_at, match.start(1))
     clean_ack = clean_ack[:split_at].strip()
+    clean_ack = re.sub(
+        r'(?:\s*(?:,|;|:)?\s*\b(?:and|but|so)\b)+$',
+        '',
+        clean_ack,
+        flags=re.IGNORECASE,
+    ).strip()
 
     if not clean_ack:
         return 'Okay, I will do that.'

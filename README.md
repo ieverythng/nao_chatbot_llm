@@ -35,12 +35,11 @@ Preferred planner request inputs:
 - `goal_text`: concise task goal for the planner.
 - `normalized_intents`: strict intent labels.
 - `scene_targets`: grounded labels/entities.
-- `grounded_context`: KB/scene/world context.
-- `requested_plan`: optional hint/fallback.
+- `grounded_context`: compact KB/scene graph context.
 
 The current implementation publishes `goal_text`, `normalized_intents`,
-`requested_plan`, and `grounded_context`. It deliberately omits raw
-`user_text` from normal planner requests.
+`scene_targets`, and `grounded_context`. It deliberately omits raw `user_text`
+from normal planner requests.
 
 ## Knowledge Snapshot Role
 
