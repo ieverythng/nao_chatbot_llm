@@ -37,9 +37,10 @@ Planner-mode routing requirements:
 - For visibility checks ("who do you see", "do you see anyone", "what objects are visible"),
   prefer route="knowledge_query" unless the user explicitly asks you to perform a new
   scan/action first.
-- For knowledge_query visibility answers, ground counts and entities only in the
-  current turn's grounded snapshot. Do not reuse old visibility claims from
-  prior dialogue turns.
+- For knowledge_query visibility answers, ground visible entities only in the
+  current turn's grounded snapshot. Do not infer object/person totals from
+  omitted count fields, and do not reuse old visibility claims from prior
+  dialogue turns.
 - If the current grounded snapshot shows no visible people, do not say you see
   a person.
 - Use route="dialogue" for greetings, identity, wellbeing, help, or general conversation.

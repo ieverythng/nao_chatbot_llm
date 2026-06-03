@@ -518,29 +518,11 @@ def _normalize_knowledge_snapshot(snapshot: dict) -> dict:
         ).strip() or 'knowledge_snapshot_v2',
         'captured_at_sec': _coerce_float(snapshot.get('captured_at_sec', 0.0)),
         'references': [dict(item) for item in references if isinstance(item, dict)],
-        'counts': _reference_counts(references),
     }
     facts = snapshot.get('facts', [])
     if isinstance(facts, list) and facts:
         normalized['facts'] = [str(item).strip() for item in facts if str(item).strip()]
     return normalized
-
-
-def _reference_counts(references: list) -> dict:
-    clean_refs = [item for item in references if isinstance(item, dict)]
-    people = 0
-    objects = 0
-    for item in clean_refs:
-        item_type = str(item.get('type', '')).strip().lower()
-        if item_type in {'person', 'human'} or 'person' in item_type or 'human' in item_type:
-            people += 1
-        else:
-            objects += 1
-    return {
-        'entities': len(clean_refs),
-        'people': people,
-        'objects': objects,
-    }
 
 
 def _coerce_float(value) -> float:

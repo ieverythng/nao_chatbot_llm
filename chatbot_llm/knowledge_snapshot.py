@@ -176,7 +176,6 @@ def build_grounded_context_block(grounded_context: dict) -> str:
                 for item in compact_entities[:8]
                 if isinstance(item, dict)
             ],
-            'counts': payload.get('counts', {}),
         }
         compact_payload['entities'] = [
             item for item in compact_payload['entities'] if item

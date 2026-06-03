@@ -292,12 +292,10 @@ def _knowledge_snapshot_payload(*, knowledge_context: str, scene_summary: dict) 
     references = _kb_references_from_scene(scene_summary)
     if not references:
         references = _kb_references_from_text(knowledge_context)
-    counts = _reference_counts(references)
     return {
         'schema_version': 'knowledge_snapshot_v2',
         'captured_at_sec': _coerce_float(scene_summary.get('captured_at_sec', 0.0)),
         'references': references,
-        'counts': counts,
     }
 
 
@@ -368,7 +366,6 @@ def _state_t0_payload(scene_summary: dict) -> dict:
         'observer': observer,
         'backend': backend,
         'captured_at_sec': captured_at_sec,
-        'entity_counts': _entity_counts(entities),
         'entities': entities,
         'objects': [dict(item) for item in object_entities],
         'people': [dict(item) for item in person_entities],
@@ -470,32 +467,6 @@ def _captured_at_sec_from_scene(raw_data: dict) -> float:
             if isinstance(item, dict):
                 timestamps.append(_coerce_float(item.get('last_seen_sec', 0.0)))
     return max(timestamps, default=0.0)
-
-
-def _reference_counts(references: list[dict]) -> dict:
-    people = 0
-    objects = 0
-    for item in references:
-        item_type = str(item.get('type', '')).strip().lower()
-        if item_type in {'person', 'human'} or 'person' in item_type or 'human' in item_type:
-            people += 1
-        else:
-            objects += 1
-    return {
-        'entities': len(references),
-        'people': people,
-        'objects': objects,
-    }
-
-
-def _entity_counts(entities: list[dict]) -> dict:
-    people = sum(1 for item in entities if str(item.get('kind', '')).strip() == 'person')
-    objects = sum(1 for item in entities if str(item.get('kind', '')).strip() == 'object')
-    return {
-        'entities': len(entities),
-        'people': people,
-        'objects': objects,
-    }
 
 
 def _coerce_float(value) -> float:

@@ -103,7 +103,7 @@ def test_state_t0_and_references_include_people_ids() -> None:
     refs = _kb_references_from_scene(scene_summary)
 
     assert state_t0['schema_version'] == 'state_t0_v2'
-    assert state_t0['entity_counts'] == {'entities': 2, 'people': 1, 'objects': 1}
+    assert 'entity_counts' not in state_t0
     assert any(
         item.get('id') == 'anonymous_person_1' and item.get('kind') == 'person'
         for item in state_t0['entities']
@@ -180,9 +180,6 @@ def test_grounded_context_projection_prefers_structured_rows_over_text_fallback(
             'kind': 'object',
             'class': 'Apple',
             'visible': True,
-            'relations': [
-                {'predicate': 'rdf:type', 'object': 'Apple'},
-            ],
         }
     ]
     assert 'state_t0' not in projected

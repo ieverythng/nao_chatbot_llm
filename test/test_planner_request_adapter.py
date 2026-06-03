@@ -132,10 +132,21 @@ def test_build_planner_request_payload_keeps_compact_grounded_context() -> None:
                 'kind': 'object',
                 'class': 'Cup',
                 'visible': True,
-                'relations': [{'predicate': 'rdf:type', 'object': 'Cup'}],
+                'relations': [{'predicate': 'dbp:color', 'object': 'blue'}],
             }
         ],
-        'counts': {'entities': 1, 'objects': 1, 'people': 0},
+    }
+    expected_context = {
+        'entities': [
+            {
+                'id': 'cup_1',
+                'label': 'cup',
+                'kind': 'object',
+                'class': 'Cup',
+                'visible': True,
+                'relations': [{'predicate': 'dbp:color', 'object': 'blue'}],
+            }
+        ],
     }
     payload = build_planner_request_payload(
         turn_id='turn_compact',
@@ -145,7 +156,7 @@ def test_build_planner_request_payload_keeps_compact_grounded_context() -> None:
         grounded_context=compact_context,
     )
 
-    assert payload['grounded_context'] == compact_context
+    assert payload['grounded_context'] == expected_context
     assert 'knowledge_snapshot' not in payload['grounded_context']
 
 
@@ -164,7 +175,6 @@ def test_build_planner_request_payload_derives_structured_kb_references() -> Non
             {'normalized_name': 'cup_1', 'id': 'cup_1', 'type': 'Cup'},
             {'normalized_name': 'person_1', 'id': 'person_1', 'type': 'Human'},
         ],
-        'counts': {'entities': 2, 'people': 1, 'objects': 1},
     }
 
 
