@@ -13,6 +13,7 @@ from planner_common import extract_json_object
 from planner_common import IntentLabels
 from planner_common import is_perform_motion_object_label
 from planner_common import normalize_grounded_context
+from planner_common import project_llm_grounded_context
 
 try:  # pragma: no cover - ROS runtime dependency
     from hri_actions_msgs.msg import Intent
@@ -141,14 +142,11 @@ def build_planner_request_payload(
         'normalized_intents': _normalized_intents_for_turn(turn_result),
         'scene_targets': _scene_targets_from_user_intent(user_intent),
         'dialogue_context': dialogue_context,
-        'requested_plan': [],
         'grounded_context': _grounded_context_payload(
             knowledge_context,
             grounded_context=grounded_context,
         ),
         'planner_mode': resolved_planner_mode,
-        'interaction_mode': str(user_intent.get('interaction_mode', 'speech')).strip()
-        or 'speech',
         'dialogue_turn_id': str(user_intent.get('dialogue_turn_id', turn_id)).strip()
         or str(turn_id).strip(),
     }
@@ -347,9 +345,12 @@ def _grounded_context_payload(
     grounded_context: dict | None = None,
 ) -> dict:
     payload = normalize_grounded_context(grounded_context or {})
+    if 'entities' in payload:
+        return payload
+
     clean_knowledge_context = str(knowledge_context or '').strip()
     if not clean_knowledge_context:
-        return payload
+        return project_llm_grounded_context(payload)
 
     knowledge_snapshot = dict(payload.get('knowledge_snapshot', {}))
     references = knowledge_snapshot.get('references', [])
@@ -359,7 +360,7 @@ def _grounded_context_payload(
         if derived_references:
             knowledge_snapshot['references'] = derived_references
             payload['knowledge_snapshot'] = knowledge_snapshot
-    return payload
+    return project_llm_grounded_context(payload)
 
 
 def _resolved_request_kind(user_intent: dict, resolved_intent: str) -> str:

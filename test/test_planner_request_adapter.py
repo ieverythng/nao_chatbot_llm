@@ -55,14 +55,8 @@ def test_build_planner_request_payload_derives_scene_targets_and_bounds_context(
             'assistant:You are welcome.',
             'user:bring me the cup now',
         ],
-        'requested_plan': [],
-        'grounded_context': {
-            'knowledge_snapshot': {},
-            'scene_summary': {},
-            'state_t0': {},
-        },
+        'grounded_context': {'entities': []},
         'planner_mode': 'default',
-        'interaction_mode': 'speech',
         'dialogue_turn_id': 'turn_1',
     }
 
@@ -119,9 +113,14 @@ def test_build_planner_request_payload_keeps_richer_grounded_context() -> None:
     )
 
     assert payload['grounded_context'] == {
-        'knowledge_snapshot': {},
-        'scene_summary': {'objects': [{'label': 'cup'}]},
-        'state_t0': {'entities': [{'id': 'cup_1'}]},
+        'entities': [
+            {
+                'id': 'cup_1',
+                'label': 'cup_1',
+                'kind': 'object',
+                'visible': True,
+            }
+        ]
     }
 
 
@@ -133,10 +132,22 @@ def test_build_planner_request_payload_derives_structured_kb_references() -> Non
         knowledge_context='- cup_1 is currently classified as Cup\n- person_1 is a Human',
     )
 
-    assert payload['grounded_context']['knowledge_snapshot'] == {
-        'references': [
-            {'normalized_name': 'cup_1', 'id': 'cup_1', 'type': 'Cup'},
-            {'normalized_name': 'person_1', 'id': 'person_1', 'type': 'Human'},
+    assert payload['grounded_context'] == {
+        'entities': [
+            {
+                'id': 'cup_1',
+                'label': 'cup_1',
+                'kind': 'object',
+                'class': 'Cup',
+                'visible': True,
+            },
+            {
+                'id': 'person_1',
+                'label': 'person_1',
+                'kind': 'person',
+                'class': 'Human',
+                'visible': True,
+            },
         ]
     }
 
@@ -266,7 +277,8 @@ def test_build_planner_request_payload_ignores_plan_hints_from_chatbot_result():
     )
 
     assert payload['normalized_intents'] == ['fallback']
-    assert payload['requested_plan'] == []
+    assert 'requested_plan' not in payload
+    assert 'interaction_mode' not in payload
 
 
 def test_should_route_intents_through_planner_only_for_execution_intents():

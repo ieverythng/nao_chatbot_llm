@@ -205,25 +205,26 @@ def test_build_scene_context_includes_current_scene_and_recent_memory():
 def test_build_grounded_context_block_summarizes_entities_and_targets():
     block = build_grounded_context_block(
         {
-            'scene_summary': {
-                'objects': [
-                    {'label': 'book_qibia', 'entity_id': 'book_qibia'},
-                    {'label': 'apple_ktepg', 'entity_id': 'apple_ktepg'},
-                ]
-            },
-            'state_t0': {
-                'observer': 'myself',
-                'backend': 'emorobcare_cv',
-                'scene_targets': ['book', 'apple'],
-                'entities': [
-                    {'normalized_name': 'book_qibia', 'type': 'Book'},
-                    {'normalized_name': 'anonymous_person_gjjbd', 'type': 'Human'},
-                ],
-            },
+            'entities': [
+                {
+                    'id': 'book_qibia',
+                    'label': 'book',
+                    'kind': 'object',
+                    'class': 'Book',
+                    'visible': True,
+                },
+                {
+                    'id': 'anonymous_person_gjjbd',
+                    'label': None,
+                    'kind': 'person',
+                    'class': 'Human',
+                    'visible': True,
+                },
+            ],
         }
     )
 
     assert block.startswith('Grounded context snapshot:')
     assert 'Grounded entities now:' in block
-    assert 'Detector objects now:' in block
-    assert 'Active scene targets:' in block
+    assert 'Grounded objects now:' in block
+    assert 'Grounded people now:' in block

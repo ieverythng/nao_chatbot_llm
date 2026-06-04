@@ -35,16 +35,21 @@ Preferred planner request inputs:
 - `goal_text`: concise task goal for the planner.
 - `normalized_intents`: strict intent labels.
 - `scene_targets`: grounded labels/entities.
-- `grounded_context`: KB/scene/world context.
-- `requested_plan`: optional hint/fallback.
+- `grounded_context`: canonical compact LLM context with `entities[]`.
 
 The current implementation publishes `goal_text`, `normalized_intents`,
-`requested_plan`, and `grounded_context`. It deliberately omits raw
-`user_text` from normal planner requests.
+and `grounded_context`. It deliberately omits raw `user_text`, `requested_plan`,
+and transport-only interaction mode fields from normal planner requests.
 
 ## Knowledge Snapshot Role
 
 `knowledge_snapshot` is local prompt context, not a native KnowledgeCore object.
+Planner source grounding keeps it JSON-first with compact references so the
+projection step can build deterministic LLM context without large free-text blobs.
+Grounded scene payloads should keep humans under `people` and reserve
+`objects` for non-person detections to avoid contract ambiguity.
+Those raw KB and scene inputs are projected into the single compact
+`grounded_context.entities[]` object before entering chatbot/planner LLM prompts.
 
 Current path:
 

@@ -166,12 +166,9 @@ def build_scene_context(
 def build_grounded_context_block(grounded_context: dict) -> str:
     """Build a compact structured block from planner grounded context."""
     payload = dict(grounded_context or {})
-    scene_summary = payload.get('scene_summary', {})
-    state_t0 = payload.get('state_t0', {})
-
     lines: list[str] = []
 
-    entities = state_t0.get('entities', []) if isinstance(state_t0, dict) else []
+    entities = payload.get('entities', [])
     if isinstance(entities, list) and entities:
         entity_labels: list[str] = []
         for item in entities[:8]:
@@ -179,13 +176,12 @@ def build_grounded_context_block(grounded_context: dict) -> str:
                 continue
             label = _first_non_empty_value(
                 item,
-                'normalized_name',
                 'label',
                 'id',
                 'entity_id',
                 fallback='entity',
             )
-            kb_class = str(item.get('type', item.get('kb_class', ''))).strip()
+            kb_class = str(item.get('class', item.get('type', item.get('kb_class', '')))).strip()
             if kb_class:
                 entity_labels.append('%s (%s)' % (label, kb_class))
             else:
@@ -193,42 +189,20 @@ def build_grounded_context_block(grounded_context: dict) -> str:
         if entity_labels:
             lines.append('Grounded entities now: %s' % ', '.join(entity_labels))
 
-    objects = scene_summary.get('objects', []) if isinstance(scene_summary, dict) else []
-    if not objects and isinstance(state_t0, dict):
-        objects = state_t0.get('objects', [])
-    if isinstance(objects, list) and objects:
-        object_labels: list[str] = []
-        for item in objects[:8]:
-            if not isinstance(item, dict):
-                continue
-            object_labels.append(
-                _first_non_empty_value(
-                    item,
-                    'normalized_name',
-                    'label',
-                    'id',
-                    'entity_id',
-                    fallback='object',
-                )
-            )
-        object_labels = [label for label in object_labels if label]
-        if object_labels:
-            lines.append('Detector objects now: %s' % ', '.join(object_labels))
-
-    scene_targets = state_t0.get('scene_targets', []) if isinstance(state_t0, dict) else []
-    if isinstance(scene_targets, list) and scene_targets:
-        targets = [str(item).strip() for item in scene_targets if str(item).strip()]
-        if targets:
-            lines.append('Active scene targets: %s' % ', '.join(targets[:6]))
-
-    if isinstance(state_t0, dict):
-        observer = str(state_t0.get('observer', '')).strip()
-        backend = str(state_t0.get('backend', '')).strip()
-        if observer or backend:
-            lines.append(
-                'Grounding source: %s'
-                % ' / '.join(item for item in (observer, backend) if item)
-            )
+        objects = [
+            _first_non_empty_value(item, 'label', 'id', fallback='object')
+            for item in entities
+            if isinstance(item, dict) and str(item.get('kind', '')).strip() == 'object'
+        ]
+        people = [
+            _first_non_empty_value(item, 'label', 'id', fallback='person')
+            for item in entities
+            if isinstance(item, dict) and str(item.get('kind', '')).strip() == 'person'
+        ]
+        if objects:
+            lines.append('Grounded objects now: %s' % ', '.join(objects[:8]))
+        if people:
+            lines.append('Grounded people now: %s' % ', '.join(people[:8]))
 
     if not lines:
         return ''
