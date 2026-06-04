@@ -13,6 +13,7 @@ from planner_common import extract_json_object
 from planner_common import IntentLabels
 from planner_common import is_perform_motion_object_label
 from planner_common import normalize_grounded_context
+from planner_common import project_llm_grounded_context
 
 try:  # pragma: no cover - ROS runtime dependency
     from hri_actions_msgs.msg import Intent
@@ -271,25 +272,16 @@ def _normalized_intents(intent_name: str) -> list[str]:
 
 def _normalized_intents_for_turn(turn_result) -> list[str]:
     user_intent = _turn_user_intent(turn_result)
+    candidates = [
+        user_intent.get('type', ''),
+        getattr(turn_result, 'intent', ''),
+    ]
     normalized = []
-    for candidate in _intent_candidates_for_turn(user_intent, getattr(turn_result, 'intent', '')):
+    for candidate in candidates:
         clean_candidate = _normalize_token(candidate)
         if clean_candidate and clean_candidate not in normalized:
             normalized.append(clean_candidate)
     return normalized
-
-
-def _intent_candidates_for_turn(user_intent: dict, resolved_intent: str) -> list[str]:
-    candidates: list[str] = []
-    for key in ('intent_sequence', 'normalized_intents', 'intents'):
-        candidates.extend(_coerce_str_list(user_intent.get(key)))
-    candidates.extend(
-        [
-            user_intent.get('type', ''),
-            resolved_intent,
-        ]
-    )
-    return candidates
 
 
 def _scene_targets_from_user_intent(user_intent: dict) -> list[str]:
@@ -355,25 +347,20 @@ def _grounded_context_payload(
     payload = normalize_grounded_context(grounded_context or {})
     if 'entities' in payload:
         return payload
+
     clean_knowledge_context = str(knowledge_context or '').strip()
     if not clean_knowledge_context:
-        return payload
+        return project_llm_grounded_context(payload)
 
     knowledge_snapshot = dict(payload.get('knowledge_snapshot', {}))
-    fact_lines = _knowledge_facts_from_text(clean_knowledge_context)
-    if fact_lines:
-        knowledge_snapshot['facts'] = fact_lines
     references = knowledge_snapshot.get('references', [])
     has_structured_refs = isinstance(references, list) and bool(references)
     if not has_structured_refs:
         derived_references = _knowledge_references_from_text(clean_knowledge_context)
         if derived_references:
             knowledge_snapshot['references'] = derived_references
-    if knowledge_snapshot:
-        knowledge_snapshot = _normalize_knowledge_snapshot(knowledge_snapshot)
-    if knowledge_snapshot:
-        payload['knowledge_snapshot'] = knowledge_snapshot
-    return payload
+            payload['knowledge_snapshot'] = knowledge_snapshot
+    return project_llm_grounded_context(payload)
 
 
 def _resolved_request_kind(user_intent: dict, resolved_intent: str) -> str:
@@ -506,60 +493,6 @@ def _knowledge_references_from_text(knowledge_context: str) -> list[dict]:
             }
         )
     return references
-
-
-def _normalize_knowledge_snapshot(snapshot: dict) -> dict:
-    references = snapshot.get('references', [])
-    if not isinstance(references, list):
-        references = []
-    normalized = {
-        'schema_version': str(
-            snapshot.get('schema_version', 'knowledge_snapshot_v2')
-        ).strip() or 'knowledge_snapshot_v2',
-        'captured_at_sec': _coerce_float(snapshot.get('captured_at_sec', 0.0)),
-        'references': [dict(item) for item in references if isinstance(item, dict)],
-    }
-    facts = snapshot.get('facts', [])
-    if isinstance(facts, list) and facts:
-        normalized['facts'] = [str(item).strip() for item in facts if str(item).strip()]
-    return normalized
-
-
-def _coerce_float(value) -> float:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return 0.0
-
-
-def _knowledge_facts_from_text(knowledge_context: str, *, max_items: int = 24) -> list[str]:
-    facts: list[str] = []
-    seen: set[str] = set()
-    in_scene_facts = False
-    for raw_line in str(knowledge_context or '').splitlines():
-        clean_line = str(raw_line).strip()
-        if not clean_line:
-            continue
-        if clean_line.lower() == 'scene facts:':
-            in_scene_facts = True
-            continue
-        if not in_scene_facts:
-            continue
-        if clean_line.startswith('- '):
-            fact = clean_line[2:].strip()
-            if not fact:
-                continue
-            key = fact.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            facts.append(fact)
-            if len(facts) >= max_items:
-                break
-            continue
-        # Stop once we leave the "Scene facts" bullet block.
-        break
-    return facts
 
 
 def _coerce_str_list(value) -> list[str]:

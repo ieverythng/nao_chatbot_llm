@@ -55,11 +55,7 @@ def test_build_planner_request_payload_derives_scene_targets_and_bounds_context(
             'assistant:You are welcome.',
             'user:bring me the cup now',
         ],
-        'grounded_context': {
-            'knowledge_snapshot': {},
-            'scene_summary': {},
-            'state_t0': {},
-        },
+        'grounded_context': {'entities': []},
         'planner_mode': 'default',
         'dialogue_turn_id': 'turn_1',
     }
@@ -117,47 +113,15 @@ def test_build_planner_request_payload_keeps_richer_grounded_context() -> None:
     )
 
     assert payload['grounded_context'] == {
-        'knowledge_snapshot': {},
-        'scene_summary': {'objects': [{'label': 'cup'}]},
-        'state_t0': {'entities': [{'id': 'cup_1'}]},
-    }
-
-
-def test_build_planner_request_payload_keeps_compact_grounded_context() -> None:
-    compact_context = {
         'entities': [
             {
                 'id': 'cup_1',
-                'label': 'cup',
+                'label': 'cup_1',
                 'kind': 'object',
-                'class': 'Cup',
                 'visible': True,
-                'relations': [{'predicate': 'dbp:color', 'object': 'blue'}],
             }
-        ],
+        ]
     }
-    expected_context = {
-        'entities': [
-            {
-                'id': 'cup_1',
-                'label': 'cup',
-                'kind': 'object',
-                'class': 'Cup',
-                'visible': True,
-                'relations': [{'predicate': 'dbp:color', 'object': 'blue'}],
-            }
-        ],
-    }
-    payload = build_planner_request_payload(
-        turn_id='turn_compact',
-        user_text='look at the cup',
-        turn_result=_make_result(),
-        knowledge_context='- stale text should not create another snapshot',
-        grounded_context=compact_context,
-    )
-
-    assert payload['grounded_context'] == expected_context
-    assert 'knowledge_snapshot' not in payload['grounded_context']
 
 
 def test_build_planner_request_payload_derives_structured_kb_references() -> None:
@@ -168,40 +132,24 @@ def test_build_planner_request_payload_derives_structured_kb_references() -> Non
         knowledge_context='- cup_1 is currently classified as Cup\n- person_1 is a Human',
     )
 
-    assert payload['grounded_context']['knowledge_snapshot'] == {
-        'schema_version': 'knowledge_snapshot_v2',
-        'captured_at_sec': 0.0,
-        'references': [
-            {'normalized_name': 'cup_1', 'id': 'cup_1', 'type': 'Cup'},
-            {'normalized_name': 'person_1', 'id': 'person_1', 'type': 'Human'},
-        ],
+    assert payload['grounded_context'] == {
+        'entities': [
+            {
+                'id': 'cup_1',
+                'label': 'cup_1',
+                'kind': 'object',
+                'class': 'Cup',
+                'visible': True,
+            },
+            {
+                'id': 'person_1',
+                'label': 'person_1',
+                'kind': 'person',
+                'class': 'Human',
+                'visible': True,
+            },
+        ]
     }
-
-
-def test_build_planner_request_payload_includes_scene_fact_lines_for_planner() -> None:
-    payload = build_planner_request_payload(
-        turn_id='turn_facts',
-        user_text='inspect the phone',
-        turn_result=_make_result(
-            user_intent={'type': 'inspect_scene', 'object': 'phone'},
-            intent='inspect_scene',
-        ),
-        knowledge_context=(
-            'Current grounded scene:\n'
-            'Entities currently seen by the robot: phone urszq (Smartphone)\n'
-            'Scene facts:\n'
-            '- phone urszq is a Smartphone\n'
-            '- phone urszq is named reception phone\n'
-            '\n'
-            'Grounded context snapshot:\n'
-            '- Grounding source: myself / emorobcare_cv'
-        ),
-    )
-
-    assert payload['grounded_context']['knowledge_snapshot']['facts'] == [
-        'phone urszq is a Smartphone',
-        'phone urszq is named reception phone',
-    ]
 
 
 def test_build_planner_request_payload_sanitizes_assistant_json_history() -> None:
@@ -277,29 +225,6 @@ def test_build_planner_request_payload_marks_multi_step_turns_for_planner_mode()
 
     assert payload['normalized_intents'] == ['head_look_up']
     assert payload['planner_mode'] == 'multi_step'
-
-
-def test_build_planner_request_payload_uses_intent_sequence_for_compound_semantics():
-    payload = build_planner_request_payload(
-        turn_id='turn_motion_report',
-        user_text='move your head right and tell me what you see',
-        turn_result=_make_result(
-            intent='head_look_right',
-            user_intent={
-                'type': 'head_look_right',
-                'intent_sequence': ['head_look_right', 'inspect_scene', 'report_result'],
-                'goal': 'move your head right and report what is visible',
-            },
-        ),
-        knowledge_context='',
-    )
-
-    assert payload['normalized_intents'] == [
-        'head_look_right',
-        'inspect_scene',
-        'report_result',
-    ]
-    assert payload['goal_text'] == 'move your head right and report what is visible'
 
 
 def test_build_planner_request_payload_prefers_explicit_goal_text() -> None:

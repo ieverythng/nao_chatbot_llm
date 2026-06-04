@@ -154,9 +154,7 @@ def build_scene_context(
             'No entities are confirmed in the live KnowledgeCore snapshot for this turn.'
         )
 
-    # Keep older memory out of the prompt when we already have a live snapshot.
-    # This avoids stacking stale scene context on top of fresh KB facts.
-    if memory_entries and not clean_snapshot:
+    if memory_entries:
         sections.append(
             'Recent scene memory from previous turns:\n%s'
             % '\n'.join('- %s' % entry for entry in memory_entries)
@@ -168,108 +166,47 @@ def build_scene_context(
 def build_grounded_context_block(grounded_context: dict) -> str:
     """Build a compact structured block from planner grounded context."""
     payload = dict(grounded_context or {})
-    compact_entities = payload.get('entities', [])
-    if isinstance(compact_entities, list) and compact_entities:
-        compact_payload = {
-            'entities': [
-                _compact_prompt_entity(item)
-                for item in compact_entities[:8]
-                if isinstance(item, dict)
-            ],
-        }
-        compact_payload['entities'] = [
-            item for item in compact_payload['entities'] if item
-        ]
-        if compact_payload['entities']:
-            return (
-                'Grounded context JSON:\n%s'
-                % json.dumps(compact_payload, sort_keys=True, separators=(',', ':'))
-            )
-
-    scene_summary = payload.get('scene_summary', {})
-    state_t0 = payload.get('state_t0', {})
-
     lines: list[str] = []
-    has_grounded_entities = False
 
-    entities = state_t0.get('entities', []) if isinstance(state_t0, dict) else []
+    entities = payload.get('entities', [])
     if isinstance(entities, list) and entities:
         entity_labels: list[str] = []
         for item in entities[:8]:
             if not isinstance(item, dict):
                 continue
-            label = _entity_label_with_raw_id(item, fallback='entity')
-            kb_class = str(item.get('type', item.get('kb_class', ''))).strip()
+            label = _first_non_empty_value(
+                item,
+                'label',
+                'id',
+                'entity_id',
+                fallback='entity',
+            )
+            kb_class = str(item.get('class', item.get('type', item.get('kb_class', '')))).strip()
             if kb_class:
                 entity_labels.append('%s (%s)' % (label, kb_class))
             else:
                 entity_labels.append(label)
         if entity_labels:
-            has_grounded_entities = True
             lines.append('Grounded entities now: %s' % ', '.join(entity_labels))
 
-    objects = scene_summary.get('objects', []) if isinstance(scene_summary, dict) else []
-    if not objects and isinstance(state_t0, dict):
-        objects = state_t0.get('objects', [])
-    if isinstance(objects, list) and objects:
-        object_labels: list[str] = []
-        for item in objects[:8]:
-            if not isinstance(item, dict):
-                continue
-            object_labels.append(_entity_label_with_raw_id(item, fallback='object'))
-        object_labels = [label for label in object_labels if label]
-        if object_labels:
-            has_grounded_entities = True
-            lines.append('Detector objects now: %s' % ', '.join(object_labels))
+        objects = [
+            _first_non_empty_value(item, 'label', 'id', fallback='object')
+            for item in entities
+            if isinstance(item, dict) and str(item.get('kind', '')).strip() == 'object'
+        ]
+        people = [
+            _first_non_empty_value(item, 'label', 'id', fallback='person')
+            for item in entities
+            if isinstance(item, dict) and str(item.get('kind', '')).strip() == 'person'
+        ]
+        if objects:
+            lines.append('Grounded objects now: %s' % ', '.join(objects[:8]))
+        if people:
+            lines.append('Grounded people now: %s' % ', '.join(people[:8]))
 
-    scene_targets = state_t0.get('scene_targets', []) if isinstance(state_t0, dict) else []
-    if isinstance(scene_targets, list) and scene_targets:
-        targets = [str(item).strip() for item in scene_targets if str(item).strip()]
-        if targets:
-            lines.append('Active scene targets: %s' % ', '.join(targets[:6]))
-
-    if isinstance(state_t0, dict):
-        observer = str(state_t0.get('observer', '')).strip()
-        backend = str(state_t0.get('backend', '')).strip()
-        if observer or backend:
-            lines.append(
-                'Grounding source: %s'
-                % ' / '.join(item for item in (observer, backend) if item)
-            )
-
-    if not lines or not has_grounded_entities:
+    if not lines:
         return ''
     return 'Grounded context snapshot:\n%s' % '\n'.join('- %s' % line for line in lines)
-
-
-def _compact_prompt_entity(item: dict) -> dict:
-    entity_id = str(item.get('id', item.get('entity_id', ''))).strip()
-    if not entity_id:
-        return {}
-    result = {
-        'id': entity_id,
-        'label': item.get('label', None),
-        'kind': str(item.get('kind', '')).strip(),
-        'class': str(item.get('class', item.get('type', ''))).strip(),
-        'visible': bool(item.get('visible', True)),
-    }
-    relations = item.get('relations', [])
-    if isinstance(relations, list) and relations:
-        clean_relations = []
-        for relation in relations[:12]:
-            if not isinstance(relation, dict):
-                continue
-            predicate = str(relation.get('predicate', '')).strip()
-            obj = str(relation.get('object', '')).strip()
-            if predicate and obj:
-                clean_relations.append({'predicate': predicate, 'object': obj})
-        if clean_relations:
-            result['relations'] = clean_relations
-    return {
-        key: value
-        for key, value in result.items()
-        if value not in ('', [], {})
-    }
 
 
 def extract_scene_memory_entry(snapshot: str) -> str:
@@ -290,21 +227,6 @@ def _first_non_empty_value(payload: dict, *keys: str, fallback: str = '') -> str
         if value:
             return value
     return str(fallback or '').strip()
-
-
-def _entity_label_with_raw_id(payload: dict, *, fallback: str) -> str:
-    label = _first_non_empty_value(
-        payload,
-        'normalized_name',
-        'label',
-        'id',
-        'entity_id',
-        fallback=fallback,
-    )
-    entity_id = _first_non_empty_value(payload, 'id', 'entity_id', fallback='')
-    if not entity_id:
-        return label
-    return f'{label} [id:{entity_id}]'
 
 
 # ---------------------------------------------------------------------------
@@ -334,42 +256,12 @@ def _format_query_row(row: dict, ordered_vars: list[str]) -> str:
         obj = _humanize_value(row.get('o', ''))
         return ' '.join(part for part in (subject, predicate, obj) if part).strip()
 
-    if {'entity', 'predicate', 'object'}.issubset(row.keys()):
-        entity = _humanize_value(row.get('entity', ''))
-        predicate = _humanize_predicate(row.get('predicate', ''))
-        obj = _humanize_value(row.get('object', ''))
-        return ' '.join(part for part in (entity, predicate, obj) if part).strip()
-
-    if {'entity', 'center_x', 'center_y'}.issubset(row.keys()):
-        entity = _humanize_value(row.get('entity', ''))
-        center_x = _humanize_value(row.get('center_x', ''))
-        center_y = _humanize_value(row.get('center_y', ''))
-        if entity and center_x and center_y:
-            return f'{entity} appears near image center ({center_x}, {center_y})'
-
     if {'entity', 'type'}.issubset(row.keys()):
         entity = _humanize_value(row.get('entity', ''))
         entity_type = _display_type(row.get('type', ''))
         if entity and entity_type:
             return f'{entity} is a {entity_type}'
         return entity or entity_type
-
-    if {'entity', 'attribute', 'value'}.issubset(row.keys()):
-        entity = _humanize_value(row.get('entity', ''))
-        raw_attribute = row.get('attribute', '')
-        attribute = _humanize_predicate(raw_attribute)
-        value = _humanize_value(row.get('value', ''))
-        if not entity or not attribute or not value:
-            return ''
-        if not _is_informative_attribute(raw_attribute):
-            return ''
-
-        normalized_attribute = _normalized_identifier(raw_attribute)
-        if normalized_attribute in {'label', 'name', 'has name', 'rdfs label'}:
-            return f'{entity} is named {value}'
-        if normalized_attribute in {'same as', 'alias', 'has alias'}:
-            return f'{entity} is also known as {value}'
-        return f'{entity} {attribute} {value}'
 
     if ordered_vars:
         values = []
@@ -577,24 +469,6 @@ def _is_informative_type(value) -> bool:
         'enduring thing localized',
         'agent',
         'artifact',
-    }
-
-
-def _is_informative_attribute(value) -> bool:
-    token = _normalized_identifier(value)
-    if not token:
-        return False
-    return token not in {
-        'type',
-        'rdf type',
-        'has visual center x',
-        'has visual center y',
-        'has detection score',
-        'last seen sec',
-        'observed by',
-        'in field of view of',
-        'detection source',
-        'sees',
     }
 
 

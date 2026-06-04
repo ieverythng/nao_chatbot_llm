@@ -9,8 +9,8 @@ the upstream backend contract.
 
 ## Owns
 
-- optional `chatbot_msgs/srv/PrepareDialogue` warm-up service.
-- `chatbot_msgs/srv/DialogueInteraction` stateless turn service.
+- `chatbot_msgs/action/Dialogue` backend action.
+- `chatbot_msgs/srv/DialogueInteraction` backend service.
 - prompt construction, history, and Ollama-compatible transport.
 - KnowledgeCore snapshot injection through `kb_skills`.
 - direct intent extraction and planner request publication.
@@ -21,7 +21,7 @@ It does not own robot execution, final skill dispatch, or planner supervision.
 
 | Interface | Type | Purpose |
 | --- | --- | --- |
-| `<prefix>/prepare_dialogue` | `chatbot_msgs/srv/PrepareDialogue` | Optional role-scoped warm-up |
+| `<prefix>/start_dialogue` | `chatbot_msgs/action/Dialogue` | Open backend dialogue |
 | `<prefix>/dialogue_interaction` | `chatbot_msgs/srv/DialogueInteraction` | Process one user turn |
 | `/planner/request` | `hri_actions_msgs/msg/Intent` | Planner ingress when planner mode is enabled |
 
@@ -35,15 +35,21 @@ Preferred planner request inputs:
 - `goal_text`: concise task goal for the planner.
 - `normalized_intents`: strict intent labels.
 - `scene_targets`: grounded labels/entities.
-- `grounded_context`: compact KB/scene graph context.
+- `grounded_context`: canonical compact LLM context with `entities[]`.
 
 The current implementation publishes `goal_text`, `normalized_intents`,
-`scene_targets`, and `grounded_context`. It deliberately omits raw `user_text`
-from normal planner requests.
+and `grounded_context`. It deliberately omits raw `user_text`, `requested_plan`,
+and transport-only interaction mode fields from normal planner requests.
 
 ## Knowledge Snapshot Role
 
 `knowledge_snapshot` is local prompt context, not a native KnowledgeCore object.
+Planner source grounding keeps it JSON-first with compact references so the
+projection step can build deterministic LLM context without large free-text blobs.
+Grounded scene payloads should keep humans under `people` and reserve
+`objects` for non-person detections to avoid contract ambiguity.
+Those raw KB and scene inputs are projected into the single compact
+`grounded_context.entities[]` object before entering chatbot/planner LLM prompts.
 
 Current path:
 

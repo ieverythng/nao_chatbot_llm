@@ -5,7 +5,6 @@ from chatbot_llm.knowledge_snapshot import extract_scene_memory_entry
 from chatbot_llm.knowledge_snapshot import KnowledgeSnapshotSettings
 from chatbot_llm.knowledge_snapshot import format_knowledge_snapshot
 from chatbot_llm.knowledge_snapshot import resolve_knowledge_snapshot_settings
-from chatbot_llm.knowledge_snapshot_client import KnowledgeSnapshotClient
 
 
 def make_config() -> ChatbotConfig:
@@ -56,7 +55,6 @@ def make_config() -> ChatbotConfig:
         planner_request_topic='/planner/request',
         planner_request_intent='planner_request',
         planner_scene_summary_topic='/scene/summary',
-        grounded_context_include_state_t0=False,
         turn_trace_enabled=True,
         turn_trace_topic='/chatbot_llm/turn_trace',
         knowledge_enabled=False,
@@ -178,67 +176,6 @@ def test_format_knowledge_snapshot_summarizes_entities_seen_by_robot():
     assert '- anonymous person dhgef is currently classified as Human, Person' in snapshot
 
 
-def test_format_knowledge_snapshot_formats_spatial_rows() -> None:
-    settings = KnowledgeSnapshotSettings(
-        enabled=True,
-        query_groups=[],
-        patterns=[
-            'myself sees ?entity',
-            '?entity hasVisualCenterX ?center_x',
-            '?entity hasVisualCenterY ?center_y',
-        ],
-        query_vars=['?entity', '?center_x', '?center_y'],
-        models=[],
-        max_results=10,
-        max_chars=500,
-    )
-
-    snapshot = format_knowledge_snapshot(
-        '[{"entity":"detected_cup_320_240","center_x":320.5,"center_y":240.25}]',
-        settings,
-    )
-
-    assert 'detected cup 320 240 appears near image center (320.5, 240.25)' in snapshot
-
-
-def test_format_knowledge_snapshot_formats_entity_attribute_rows() -> None:
-    settings = KnowledgeSnapshotSettings(
-        enabled=True,
-        query_groups=[],
-        patterns=['myself sees ?entity', '?entity ?attribute ?value'],
-        query_vars=['?entity', '?attribute', '?value'],
-        models=[],
-        max_results=10,
-        max_chars=500,
-    )
-
-    snapshot = format_knowledge_snapshot(
-        '[{"entity":"phone_urszq","attribute":"hasName","value":"kitchen_phone"}]',
-        settings,
-    )
-
-    assert 'phone urszq is named kitchen phone' in snapshot
-
-
-def test_format_knowledge_snapshot_skips_non_informative_attribute_rows() -> None:
-    settings = KnowledgeSnapshotSettings(
-        enabled=True,
-        query_groups=[],
-        patterns=['myself sees ?entity', '?entity ?attribute ?value'],
-        query_vars=['?entity', '?attribute', '?value'],
-        models=[],
-        max_results=10,
-        max_chars=500,
-    )
-
-    snapshot = format_knowledge_snapshot(
-        '[{"entity":"phone_urszq","attribute":"hasVisualCenterX","value":"320.5"}]',
-        settings,
-    )
-
-    assert 'has visual center x' not in snapshot.lower()
-
-
 def test_extract_scene_memory_entry_prefers_summary_line():
     snapshot = (
         'Entities currently seen by the robot: book bkjwb (Book)\n'
@@ -252,7 +189,7 @@ def test_extract_scene_memory_entry_prefers_summary_line():
     )
 
 
-def test_build_scene_context_prefers_current_scene_over_recent_memory():
+def test_build_scene_context_includes_current_scene_and_recent_memory():
     context = build_scene_context(
         'Entities currently seen by the robot: anonymous person dhgef (Human)',
         recent_scene_memory=[
@@ -261,19 +198,6 @@ def test_build_scene_context_prefers_current_scene_over_recent_memory():
     )
 
     assert 'Current grounded scene:' in context
-    assert 'Recent scene memory from previous turns:' not in context
-
-
-def test_build_scene_context_includes_recent_memory_when_current_scene_missing():
-    context = build_scene_context(
-        '',
-        recent_scene_memory=[
-            'Entities currently seen by the robot: book bkjwb (Book)',
-        ],
-    )
-
-    assert 'Current grounded scene:' in context
-    assert 'No entities are confirmed in the live KnowledgeCore snapshot for this turn.' in context
     assert 'Recent scene memory from previous turns:' in context
     assert '- Entities currently seen by the robot: book bkjwb (Book)' in context
 
@@ -281,124 +205,26 @@ def test_build_scene_context_includes_recent_memory_when_current_scene_missing()
 def test_build_grounded_context_block_summarizes_entities_and_targets():
     block = build_grounded_context_block(
         {
-            'scene_summary': {
-                'objects': [
-                    {'label': 'book_qibia', 'entity_id': 'book_qibia'},
-                    {'label': 'apple_ktepg', 'entity_id': 'apple_ktepg'},
-                ]
-            },
-            'state_t0': {
-                'observer': 'myself',
-                'backend': 'emorobcare_cv',
-                'scene_targets': ['book', 'apple'],
-                'entities': [
-                    {'normalized_name': 'book_qibia', 'id': 'book_qibia', 'type': 'Book'},
-                    {'normalized_name': 'anonymous_person_gjjbd', 'id': 'anonymous_person_gjjbd', 'type': 'Human'},
-                ],
-            },
+            'entities': [
+                {
+                    'id': 'book_qibia',
+                    'label': 'book',
+                    'kind': 'object',
+                    'class': 'Book',
+                    'visible': True,
+                },
+                {
+                    'id': 'anonymous_person_gjjbd',
+                    'label': None,
+                    'kind': 'person',
+                    'class': 'Human',
+                    'visible': True,
+                },
+            ],
         }
     )
 
     assert block.startswith('Grounded context snapshot:')
     assert 'Grounded entities now:' in block
-    assert 'book_qibia [id:book_qibia] (Book)' in block
-    assert 'anonymous_person_gjjbd [id:anonymous_person_gjjbd] (Human)' in block
-    assert 'Detector objects now:' in block
-    assert 'book_qibia [id:book_qibia]' in block
-    assert 'apple_ktepg [id:apple_ktepg]' in block
-    assert 'Active scene targets:' in block
-
-
-def test_build_grounded_context_block_omits_source_only_payload():
-    block = build_grounded_context_block(
-        {
-            'scene_summary': {'observer': 'myself', 'backend': 'emorobcare_cv'},
-            'state_t0': {
-                'observer': 'myself',
-                'backend': 'emorobcare_cv',
-                'entities': [],
-                'objects': [],
-                'people': [],
-            },
-        }
-    )
-
-    assert block == ''
-
-
-def test_fetch_snapshot_limits_query_vars_to_group_bound_variables() -> None:
-    class StubQueryClient:
-        def __init__(self) -> None:
-            self.calls = []
-            self.service_name = '/kb/query'
-
-        def query_rows(self, **kwargs):
-            self.calls.append(dict(kwargs))
-            return []
-
-        @staticmethod
-        def dedupe_rows(rows):
-            return rows
-
-    settings = KnowledgeSnapshotSettings(
-        enabled=True,
-        query_groups=[
-            ['myself sees ?entity', '?entity rdf:type ?type'],
-            [
-                'myself sees ?entity',
-                '?entity hasVisualCenterX ?center_x',
-                '?entity hasVisualCenterY ?center_y',
-            ],
-            ['myself sees ?entity', '?entity hasDetectionScore ?score'],
-        ],
-        patterns=[],
-        query_vars=['?entity', '?type', '?center_x', '?center_y', '?score'],
-        models=[],
-        max_results=40,
-        max_chars=3000,
-    )
-    client = object.__new__(KnowledgeSnapshotClient)
-    client._query_client = StubQueryClient()
-
-    snapshot = client.fetch_snapshot(settings, turn_id='turn1', trace=None)
-
-    assert snapshot == ''
-    assert [call['query_vars'] for call in client._query_client.calls] == [
-        ['?entity', '?type'],
-        ['?entity', '?center_x', '?center_y'],
-        ['?entity', '?score'],
-    ]
-
-
-def test_fetch_snapshot_uses_discovered_vars_when_configured_vars_do_not_match() -> None:
-    class StubQueryClient:
-        def __init__(self) -> None:
-            self.calls = []
-            self.service_name = '/kb/query'
-
-        def query_rows(self, **kwargs):
-            self.calls.append(dict(kwargs))
-            return []
-
-        @staticmethod
-        def dedupe_rows(rows):
-            return rows
-
-    settings = KnowledgeSnapshotSettings(
-        enabled=True,
-        query_groups=[['myself sees ?entity', '?entity rdf:type ?type']],
-        patterns=[],
-        query_vars=['?unknown_var'],
-        models=[],
-        max_results=40,
-        max_chars=3000,
-    )
-    client = object.__new__(KnowledgeSnapshotClient)
-    client._query_client = StubQueryClient()
-
-    snapshot = client.fetch_snapshot(settings, turn_id='turn2', trace=None)
-
-    assert snapshot == ''
-    assert [call['query_vars'] for call in client._query_client.calls] == [
-        ['?entity', '?type'],
-    ]
+    assert 'Grounded objects now:' in block
+    assert 'Grounded people now:' in block
