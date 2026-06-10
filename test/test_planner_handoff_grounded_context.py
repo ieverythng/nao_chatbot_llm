@@ -85,11 +85,7 @@ def test_knowledge_snapshot_payload_exposes_structured_entities() -> None:
         {'normalized_name': 'cup', 'id': 'cup_1', 'type': 'Cup'},
         {'normalized_name': 'person', 'id': 'person_1', 'type': 'Person'},
     ]
-    assert payload['counts'] == {
-        'entities': 2,
-        'people': 1,
-        'objects': 1,
-    }
+    assert 'counts' not in payload
 
 
 def test_state_t0_payload_tracks_entity_kind_without_duplicate_candidate_lists() -> None:
@@ -99,7 +95,7 @@ def test_state_t0_payload_tracks_entity_kind_without_duplicate_candidate_lists()
 
     assert state_t0['schema_version'] == 'state_t0_v2'
     assert state_t0['captured_at_sec'] == 1777040000.2
-    assert state_t0['entity_counts'] == {'entities': 2, 'people': 1, 'objects': 1}
+    assert 'entity_counts' not in state_t0
     assert {item['id'] for item in state_t0['entities']} == {'cup_1', 'person_1'}
     entity_kinds = {item['id']: item['kind'] for item in state_t0['entities']}
     assert entity_kinds['person_1'] == 'person'
@@ -135,4 +131,42 @@ def test_handoff_source_payload_projects_to_compact_llm_grounded_context() -> No
             'class': 'Person',
             'visible': True,
         },
+    ]
+
+
+def test_handoff_grounded_context_forwards_knowledge_rows() -> None:
+    from types import SimpleNamespace
+
+    class Node:
+        def create_publisher(self, *args, **kwargs):
+            return object()
+
+        def create_subscription(self, *args, **kwargs):
+            return object()
+
+    from chatbot_llm.planner_handoff import PlannerHandoff
+
+    config = SimpleNamespace(
+        planner_request_topic='/planner/request',
+        planner_scene_summary_topic='/scene/summary',
+    )
+    handoff = PlannerHandoff(Node(), config, trace=lambda *args, **kwargs: None)
+
+    compact = handoff.grounded_context(
+        '',
+        knowledge_rows=[
+            {'entity': 'cup_1', 'predicate': 'rdf:type', 'object': 'dbr:Cup'},
+            {'entity': 'cup_1', 'predicate': 'oro:isOn', 'object': 'table_1'},
+        ],
+    )
+
+    assert compact['entities'] == [
+        {
+            'id': 'cup_1',
+            'label': 'cup_1',
+            'kind': 'object',
+            'class': 'Cup',
+            'visible': True,
+            'relations': [{'predicate': 'oro:isOn', 'object': 'table_1'}],
+        }
     ]

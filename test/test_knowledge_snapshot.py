@@ -55,6 +55,7 @@ def make_config() -> ChatbotConfig:
         planner_request_topic='/planner/request',
         planner_request_intent='planner_request',
         planner_scene_summary_topic='/scene/summary',
+        grounded_context_include_state_t0=False,
         turn_trace_enabled=True,
         turn_trace_topic='/chatbot_llm/turn_trace',
         knowledge_enabled=False,

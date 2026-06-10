@@ -79,7 +79,12 @@ class PlannerHandoff:
                 self._node.destroy_subscription(sub)
                 setattr(self, attr, None)
 
-    def grounded_context(self, knowledge_context: str) -> dict:
+    def grounded_context(
+        self,
+        knowledge_context: str,
+        *,
+        knowledge_rows: tuple[dict, ...] | list[dict] | None = None,
+    ) -> dict:
         with self._lock:
             scene = dict(self._scene_summary_payload)
         source_context = {
@@ -90,7 +95,10 @@ class PlannerHandoff:
             'scene_summary': scene,
             'state_t0': _state_t0_payload(scene),
         }
-        return project_llm_grounded_context(source_context)
+        return project_llm_grounded_context(
+            source_context,
+            knowledge_rows=list(knowledge_rows or ()),
+        )
 
     def publish_execution_turn_if_needed(
         self,
@@ -204,7 +212,6 @@ def _knowledge_snapshot_payload(*, knowledge_context: str, scene_summary: dict) 
     payload = {
         'schema_version': 'knowledge_snapshot_v2',
         'references': references,
-        'counts': _reference_counts(references),
     }
     captured_at_sec = _coerce_float(scene_summary.get('captured_at_sec', 0.0))
     if captured_at_sec > 0.0:
@@ -222,18 +229,12 @@ def _state_t0_payload(scene_summary: dict) -> dict:
     object_entities = _state_entities_from_scene_objects(scene_objects)
     people_entities = _state_people_entries(normalized_people)
     entities = _merged_state_entities([*object_entities, *people_entities])
-    people_count = sum(1 for item in entities if str(item.get('kind', '')).strip() == 'person')
 
     return {
         'schema_version': 'state_t0_v2',
         'observer': observer,
         'backend': backend,
         'captured_at_sec': _captured_at_sec(objects=scene_objects, people=normalized_people),
-        'entity_counts': {
-            'entities': len(entities),
-            'people': people_count,
-            'objects': max(0, len(entities) - people_count),
-        },
         'entities': entities,
     }
 
@@ -465,23 +466,6 @@ def _captured_at_sec(*, objects, people) -> float:
             if isinstance(item, dict)
         )
     return max(timestamps, default=0.0)
-
-
-def _reference_counts(references: list[dict]) -> dict:
-    people_count = 0
-    for item in references:
-        if not isinstance(item, dict):
-            continue
-        entity_type = str(item.get('type', '')).strip()
-        entity_name = str(item.get('normalized_name', item.get('id', ''))).strip()
-        if _is_person_like_label(entity_name, entity_type):
-            people_count += 1
-    total = len([item for item in references if isinstance(item, dict)])
-    return {
-        'entities': total,
-        'people': people_count,
-        'objects': max(0, total - people_count),
-    }
 
 
 def _entity_kind(*, label: str, entity_type: str) -> str:
