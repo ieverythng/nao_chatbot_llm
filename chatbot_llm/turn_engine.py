@@ -425,9 +425,12 @@ class DialogueTurnEngine:
             inferred_route = _DIALOGUE_ROUTE
         if _is_social_turn(user_text) and not _looks_like_execution_text(user_text):
             inferred_route = _DIALOGUE_ROUTE
+        if _is_capability_query(user_text):
+            inferred_route = _DIALOGUE_ROUTE
         if (
             inferred_route == _DIALOGUE_ROUTE
             and not _is_social_turn(user_text)
+            and not _is_capability_query(user_text)
             and _ack_implies_execution(verbal_ack)
         ):
             inferred_route = _EXECUTION_ROUTE
@@ -1159,6 +1162,22 @@ def _is_social_turn(user_text: str) -> bool:
     return False
 
 
+def _is_capability_query(user_text: str) -> bool:
+    """Return whether the user is asking what the robot can do, not requesting it."""
+    clean = ' '.join(str(user_text or '').strip().lower().split())
+    if not clean:
+        return False
+    normalized = ''.join(ch for ch in clean if ch.isalnum() or ch.isspace()).strip()
+    capability_markers = (
+        'what can you do',
+        'what are you able to do',
+        'what capabilities do you have',
+        'what are your capabilities',
+        'tell me what you can do',
+    )
+    return any(marker in normalized for marker in capability_markers)
+
+
 def _ack_implies_execution(verbal_ack: str) -> bool:
     clean_ack = ' %s ' % ' '.join(str(verbal_ack or '').strip().lower().split())
     if not clean_ack.strip():
@@ -1353,6 +1372,15 @@ def _fallback_planner_dialogue_ack(dialogue_context: dict) -> str:
         if completion_text:
             return completion_text
 
+    act = str(dialogue_context.get('act', '')).strip().lower()
+    safe_fallback_by_act = {
+        'ask_clarification': 'I need a bit more detail before I continue.',
+        'ask_for_help': 'I need help to continue this task.',
+        'explain_failure': 'I could not complete that task.',
+    }
+    if act in safe_fallback_by_act:
+        return safe_fallback_by_act[act]
+
     text_hint = str(dialogue_context.get('text_hint', '')).strip()
     if text_hint:
         return text_hint
@@ -1360,12 +1388,8 @@ def _fallback_planner_dialogue_ack(dialogue_context: dict) -> str:
     if reason:
         return reason
 
-    act = str(dialogue_context.get('act', '')).strip().lower()
     fallback_by_act = {
         'progress_update': 'I am working on it now.',
-        'ask_clarification': 'I need a bit more detail before I continue.',
-        'ask_for_help': 'I need help to continue this task.',
-        'explain_failure': 'I could not complete that task.',
         'notify_completion': 'I finished that task.',
         'notify_cancellation': 'Okay, I will stop working on that.',
     }

@@ -279,6 +279,31 @@ def test_turn_engine_planner_mode_infers_execution_route_without_second_call():
     assert result.intent_source == 'llm_response_inferred_route'
 
 
+def test_turn_engine_planner_mode_keeps_capability_question_dialogue_only():
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"I can move, look around, find objects, and navigate.",'
+                '"user_intent":{"type":"navigate_to"},"confidence":0.0}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm_with_rules_fallback', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='I am tired. What can you do?',
+        history=[],
+        user_id='user1',
+    )
+
+    assert result.route == 'dialogue'
+
+
 def test_turn_engine_planner_mode_promotes_dialogue_wave_ack_to_execution():
     transport = FakeTransport(
         [
@@ -449,7 +474,7 @@ def test_turn_engine_planner_dialogue_fallback_without_llm_response():
 
     assert result.success is True
     assert result.intent_source == 'planner_dialogue'
-    assert result.verbal_ack == 'please hold the object steady'
+    assert result.verbal_ack == 'I need help to continue this task.'
     assert result.route == 'dialogue'
 
 
