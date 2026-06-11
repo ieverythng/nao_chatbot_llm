@@ -164,49 +164,39 @@ def build_scene_context(
 
 
 def build_grounded_context_block(grounded_context: dict) -> str:
-    """Build a compact structured block from planner grounded context."""
+    """Serialize compact grounded context exactly as the chatbot/planner contract."""
     payload = dict(grounded_context or {})
-    lines: list[str] = []
-
-    entities = payload.get('entities', [])
-    if isinstance(entities, list) and entities:
-        entity_labels: list[str] = []
-        for item in entities[:8]:
-            if not isinstance(item, dict):
-                continue
-            label = _first_non_empty_value(
-                item,
-                'label',
-                'id',
-                'entity_id',
-                fallback='entity',
-            )
-            kb_class = str(item.get('class', item.get('type', item.get('kb_class', '')))).strip()
-            if kb_class:
-                entity_labels.append('%s (%s)' % (label, kb_class))
-            else:
-                entity_labels.append(label)
-        if entity_labels:
-            lines.append('Grounded entities now: %s' % ', '.join(entity_labels))
-
-        objects = [
-            _first_non_empty_value(item, 'label', 'id', fallback='object')
-            for item in entities
-            if isinstance(item, dict) and str(item.get('kind', '')).strip() == 'object'
-        ]
-        people = [
-            _first_non_empty_value(item, 'label', 'id', fallback='person')
-            for item in entities
-            if isinstance(item, dict) and str(item.get('kind', '')).strip() == 'person'
-        ]
-        if objects:
-            lines.append('Grounded objects now: %s' % ', '.join(objects[:8]))
-        if people:
-            lines.append('Grounded people now: %s' % ', '.join(people[:8]))
-
-    if not lines:
+    if not payload:
         return ''
-    return 'Grounded context snapshot:\n%s' % '\n'.join('- %s' % line for line in lines)
+    return 'Grounded context JSON:\n```json\n%s\n```' % json.dumps(
+        payload,
+        ensure_ascii=True,
+        indent=2,
+        sort_keys=True,
+    )
+
+
+def grounded_context_fact_lines(grounded_context: dict) -> list[str]:
+    """Render bounded entity relations exactly as supplied by grounded context."""
+    facts: list[str] = []
+    entities = dict(grounded_context or {}).get('entities', [])
+    if not isinstance(entities, list):
+        return facts
+    for entity in entities[:8]:
+        if not isinstance(entity, dict):
+            continue
+        entity_id = _first_non_empty_value(entity, 'id', 'entity_id', 'label', fallback='entity')
+        relations = entity.get('relations', [])
+        if not isinstance(relations, list):
+            continue
+        for relation in relations[:6]:
+            if not isinstance(relation, dict):
+                continue
+            predicate = str(relation.get('predicate', '')).strip()
+            obj = str(relation.get('object', '')).strip()
+            if predicate and obj:
+                facts.append('%s: %s=%s' % (entity_id, predicate, obj))
+    return facts
 
 
 def extract_scene_memory_entry(snapshot: str) -> str:

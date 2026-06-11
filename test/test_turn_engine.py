@@ -1,5 +1,6 @@
 from chatbot_llm.backend_config import ChatbotConfig
 from chatbot_llm.turn_engine import DialogueTurnEngine
+import pytest
 
 
 class FakeTransport:
@@ -146,7 +147,7 @@ def test_turn_engine_llm_mode_uses_two_stage_json_outputs():
     ]
 
 
-def test_turn_engine_includes_knowledge_snapshot_in_both_llm_stages():
+def test_turn_engine_includes_grounded_context_in_both_llm_stages():
     transport = FakeTransport(
         [
             '{"verbal_ack":"The mug is on the table."}',
@@ -164,15 +165,92 @@ def test_turn_engine_includes_knowledge_snapshot_in_both_llm_stages():
         user_text='where is the mug',
         history=[],
         user_id='user1',
-        knowledge_snapshot='mug isOn table',
+        knowledge_snapshot='Grounded context JSON:\n```json\n{"entities":[]}\n```',
     )
 
     assert result.success is True
     assert len(transport.calls) == 2
-    assert 'Live symbolic scene state from KnowledgeCore for this turn:' in transport.calls[0]['messages'][0]['content']
-    assert 'Knowledge snapshot:\nmug isOn table' in transport.calls[0]['messages'][0]['content']
-    assert 'Live symbolic scene state from KnowledgeCore for this turn:' in transport.calls[1]['messages'][0]['content']
-    assert 'Knowledge snapshot:\nmug isOn table' in transport.calls[1]['messages'][0]['content']
+    assert 'Grounded context for this turn:' in transport.calls[0]['messages'][0]['content']
+    assert 'Grounded context:\nGrounded context JSON:' in transport.calls[0]['messages'][0]['content']
+    assert 'Grounded context for this turn:' in transport.calls[1]['messages'][0]['content']
+    assert 'Grounded context:\nGrounded context JSON:' in transport.calls[1]['messages'][0]['content']
+
+
+def test_turn_engine_prompt_exposes_updated_grounded_relation_for_followups():
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"Its name is TITAS.","route":"knowledge_query",'
+                '"user_intent":{"type":"kb_query_visible_objects"}}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='What is its name?',
+        history=['user:What can you see?', 'assistant:I can see a book.'],
+        user_id='user1',
+        knowledge_snapshot=(
+            'Grounded context JSON:\n'
+            '```json\n'
+            '{"entities":[{"id":"book_znpbs","label":"book","kind":"object",'
+            '"class":"Book","visible":true,"relations":[{"predicate":"dbp:name",'
+            '"object":"TITAS"}]}]}\n'
+            '```'
+        ),
+    )
+
+    prompt = transport.calls[0]['messages'][0]['content']
+    assert result.verbal_ack == 'Its name is TITAS.'
+    assert '"id":"book_znpbs"' in prompt
+    assert '"predicate":"dbp:name"' in prompt
+    assert '"object":"TITAS"' in prompt
+    assert 'Resolve pronouns such as "it"' in prompt
+    assert 'salient stable' in prompt
+    assert 'names, colors, and locations' in prompt
+
+
+@pytest.mark.parametrize('user_text', ['What about now?', 'What can you see?'])
+def test_turn_engine_prompt_keeps_current_grounded_facts_for_scene_followups(user_text):
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"I can see a book named TITAS.",'
+                '"route":"knowledge_query",'
+                '"user_intent":{"type":"kb_query_visible_objects"}}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text=user_text,
+        history=['user:What can you see?', 'assistant:I can see a book.'],
+        user_id='user1',
+        knowledge_snapshot=(
+            'Grounded context JSON:\n'
+            '```json\n'
+            '{"entities":[{"id":"book_znpbs","label":"book","kind":"object",'
+            '"class":"Book","visible":true,"relations":[{"predicate":"dbp:name",'
+            '"object":"TITAS"}]}]}\n'
+            '```'
+        ),
+    )
+
+    assert result.verbal_ack == 'I can see a book named TITAS.'
+    assert '"predicate":"dbp:name"' in transport.calls[0]['messages'][0]['content']
+    assert '"object":"TITAS"' in transport.calls[0]['messages'][0]['content']
 
 
 def test_turn_engine_prompt_explicitly_mentions_recent_history():
@@ -251,7 +329,7 @@ def test_turn_engine_planner_mode_uses_single_response_stage_for_execution():
         in transport.calls[0]['messages'][0]['content']
     )
     assert 'planner_llm owns all' in transport.calls[0]['messages'][0]['content']
-    assert 'Knowledge snapshot:\nperson_1 rdf:type Person' in transport.calls[0]['messages'][0]['content']
+    assert 'Grounded context:\nperson_1 rdf:type Person' in transport.calls[0]['messages'][0]['content']
 
 
 def test_turn_engine_planner_mode_infers_execution_route_without_second_call():
@@ -476,6 +554,28 @@ def test_turn_engine_planner_dialogue_fallback_without_llm_response():
     assert result.intent_source == 'planner_dialogue'
     assert result.verbal_ack == 'I need help to continue this task.'
     assert result.route == 'dialogue'
+
+
+def test_turn_engine_planner_dialogue_fallback_never_exposes_raw_planner_text():
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='rules'),
+        transport=FakeTransport(['']),
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text=(
+            '{"planner_dialogue":{"act":"progress_update",'
+            '"reason":"INTERNAL PLANNER DETAIL","text_hint":"RAW MODEL OUTPUT"}}'
+        ),
+        history=[],
+        user_id='__system__',
+    )
+
+    assert result.verbal_ack == 'I am working on it now.'
+    assert 'INTERNAL PLANNER DETAIL' not in result.verbal_ack
+    assert 'RAW MODEL OUTPUT' not in result.verbal_ack
 
 
 def test_turn_engine_forwards_think_flag_to_transport():

@@ -1322,7 +1322,6 @@ def _extract_planner_dialogue_context(payload: str) -> dict:
     normalized = {
         'act': str(context.get('act', '')).strip().lower(),
         'goal_id': str(context.get('goal_id', '')).strip(),
-        'goal_token': str(context.get('goal_token', '')).strip(),
         'plan_id': str(context.get('plan_id', '')).strip(),
         'plan_version': int(coerce_float(context.get('plan_version', 0))),
         'reason': str(context.get('reason', '')).strip(),
@@ -1366,6 +1365,7 @@ def _fallback_planner_completion_ack(completion_context: dict) -> str:
 
 
 def _fallback_planner_dialogue_ack(dialogue_context: dict) -> str:
+    """Return bounded fallback wording without exposing planner/model prose."""
     completion_context = dialogue_context.get('completion_context', {})
     if isinstance(completion_context, dict):
         completion_text = _fallback_planner_completion_ack(completion_context)
@@ -1373,24 +1373,11 @@ def _fallback_planner_dialogue_ack(dialogue_context: dict) -> str:
             return completion_text
 
     act = str(dialogue_context.get('act', '')).strip().lower()
-    safe_fallback_by_act = {
+    return {
+        'progress_update': 'I am working on it now.',
         'ask_clarification': 'I need a bit more detail before I continue.',
         'ask_for_help': 'I need help to continue this task.',
         'explain_failure': 'I could not complete that task.',
-    }
-    if act in safe_fallback_by_act:
-        return safe_fallback_by_act[act]
-
-    text_hint = str(dialogue_context.get('text_hint', '')).strip()
-    if text_hint:
-        return text_hint
-    reason = str(dialogue_context.get('reason', '')).strip()
-    if reason:
-        return reason
-
-    fallback_by_act = {
-        'progress_update': 'I am working on it now.',
         'notify_completion': 'I finished that task.',
         'notify_cancellation': 'Okay, I will stop working on that.',
-    }
-    return fallback_by_act.get(act, '')
+    }.get(act, '')

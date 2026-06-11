@@ -225,7 +225,32 @@ def test_build_grounded_context_block_summarizes_entities_and_targets():
         }
     )
 
-    assert block.startswith('Grounded context snapshot:')
-    assert 'Grounded entities now:' in block
-    assert 'Grounded objects now:' in block
-    assert 'Grounded people now:' in block
+    assert block.startswith('Grounded context JSON:')
+    assert '"id": "book_qibia"' in block
+    assert '"id": "anonymous_person_gjjbd"' in block
+    assert '"label": null' in block
+
+
+def test_build_grounded_context_block_renders_authoritative_relations():
+    block = build_grounded_context_block(
+        {
+            'entities': [
+                {
+                    'id': 'book_znpbs',
+                    'label': 'book',
+                    'kind': 'object',
+                    'class': 'Book',
+                    'visible': True,
+                    'relations': [
+                        {'predicate': 'dbp:name', 'object': 'TITAS'},
+                        {'predicate': 'dbp:color', 'object': 'blue'},
+                    ],
+                },
+            ],
+        }
+    )
+
+    assert '"relations": [' in block
+    assert '"predicate": "dbp:name"' in block
+    assert '"object": "TITAS"' in block
+    assert '"predicate": "dbp:color"' in block

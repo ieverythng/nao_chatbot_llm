@@ -19,10 +19,10 @@ DEFAULT_RESPONSE_PROMPT_ADDENDUM = (
     'Use concise speech suitable for text-to-speech. '
     'Use the recent conversation history included with the request to keep track of '
     'what was said in the last several turns. '
-    "When live knowledge snapshot data is available, use it as the robot's grounded "
-    'scene state for perception questions and avoid guessing beyond it. '
-    'When grounded_context JSON is available, treat grounded_context.entities as '
-    'the current visible world and use each entity relations list as known KB facts. '
+    "When grounded context is available, use it as the robot's grounded scene "
+    'state for perception questions and avoid guessing beyond it. '
+    'Treat grounded_context.entities as the current visible world and use each '
+    'entity relations list as known grounded facts. '
     'Distinguish between what is visible in the current scene and what only appears '
     'in recent scene memory from earlier turns. '
     'If a face/person entity is present without a name, say you detect someone '

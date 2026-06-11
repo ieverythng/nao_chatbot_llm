@@ -21,7 +21,6 @@ from chatbot_llm.backend_config import load_backend_config
 from chatbot_llm.intent_adapter import build_response_intents
 from chatbot_llm.knowledge_snapshot import KnowledgeSnapshotSettings
 from chatbot_llm.knowledge_snapshot import build_grounded_context_block
-from chatbot_llm.knowledge_snapshot import build_scene_context
 from chatbot_llm.knowledge_snapshot import extract_scene_memory_entry
 from chatbot_llm.knowledge_snapshot import resolve_knowledge_snapshot_settings
 from chatbot_llm.knowledge_snapshot_client import KnowledgeSnapshotClient
@@ -225,21 +224,19 @@ class LLMChatbot(Node):
                 current_snapshot,
                 knowledge_rows=current_snapshot_rows,
             )
-        knowledge_context = build_scene_context(
-            current_snapshot,
-            recent_scene_memory=session.recent_scene_memory,
-        )
-        grounded_context_block = build_grounded_context_block(grounded_context)
-        if grounded_context_block:
-            knowledge_context = '\n\n'.join(
-                section for section in (knowledge_context, grounded_context_block) if section
-            ).strip()
+        grounded_context_text = build_grounded_context_block(grounded_context)
+        if grounded_context_text:
+            self._trace(
+                turn_id,
+                'GROUNDED_CONTEXT',
+                grounded_context_text,
+            )
 
         result = self._turn_engine.execute_turn(
             user_text=text,
             history=list(session.history),
             user_id=user_id,
-            knowledge_snapshot=knowledge_context,
+            knowledge_snapshot=grounded_context_text,
             progress_callback=lambda status, progress: self._trace(
                 turn_id,
                 'PROGRESS',
@@ -286,7 +283,7 @@ class LLMChatbot(Node):
                 user_id=user_id,
                 turn_id=turn_id,
                 user_text=text,
-                knowledge_context=knowledge_context,
+                knowledge_context=grounded_context_text,
                 result=result,
                 direct_intents=direct_intents,
                 grounded_context=grounded_context,

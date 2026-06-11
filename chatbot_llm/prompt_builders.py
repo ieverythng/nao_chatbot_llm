@@ -33,7 +33,7 @@ Planner-mode routing requirements:
 - Also include route with one of: dialogue, knowledge_query, execution.
 - Use route="execution" for physical actions, skill requests, or multi-step requests.
 - Use route="knowledge_query" for grounded scene/perception questions answered from the
-  live knowledge snapshot.
+  current grounded context.
 - For visibility checks ("who do you see", "do you see anyone", "what objects are visible"),
   prefer route="knowledge_query" unless the user explicitly asks you to perform a new
   scan/action first.
@@ -41,6 +41,14 @@ Planner-mode routing requirements:
   current turn's grounded snapshot. Do not infer object/person totals from
   omitted count fields, and do not reuse old visibility claims from prior
   dialogue turns.
+- Treat current grounded relations as authoritative facts. When the user asks
+  for a predicate such as an object's name, color, or location, answer using
+  that exact relation when present.
+- Resolve pronouns such as "it" and follow-ups such as "what about now?" from
+  recent dialogue focus and the current grounded entities.
+- When describing visible objects, concisely include salient stable grounded
+  facts such as names, colors, and locations when available, even if the user
+  did not name the predicate explicitly.
 - If the current grounded snapshot shows no visible people, do not say you see
   a person.
 - Use route="dialogue" for greetings, identity, wellbeing, help, or general conversation.
@@ -228,10 +236,8 @@ def _knowledge_snapshot_block(snapshot: str) -> str:
     if not clean_snapshot:
         return ''
     return (
-        'Live symbolic scene state from KnowledgeCore for this turn:\n'
+        'Grounded context for this turn:\n'
         "- Treat it as the robot's best grounded view of the current scene.\n"
-        '- Use the "Current grounded scene" section for what is visible right now.\n'
-        '- Use any "Recent scene memory" section only as bounded cross-turn context.\n'
         '- Distinguish carefully between what is visible now and what was only seen '
         'earlier.\n'
         '- Use it when answering who is present, whether a face/person is detected, '
@@ -242,12 +248,18 @@ def _knowledge_snapshot_block(snapshot: str) -> str:
         'currently detect someone without inventing an identity.\n'
         '- If the current entity ID changed since earlier turns, do not claim it is '
         'definitely the same person unless the evidence supports that.\n'
-        '- If a Grounded context JSON block is present, treat its entities array as '
-        'the current visible world and its relations arrays as known KB facts.\n'
+        '- Treat grounded_context.entities as the current visible world and each '
+        'relations array as current grounded facts for this turn. Use exact name, '
+        'color, and location predicates when answering follow-ups.\n'
+        '- Resolve pronouns from recent dialogue focus and current grounded entities; '
+        'do not discard a current relation merely because it was added after an earlier turn.\n'
+        '- When describing visible objects, mention salient stable names, colors, and '
+        'locations concisely when those relations are available.\n'
         '- If an entity was only present in recent scene memory, say it was seen '
         'earlier but cannot be confirmed as currently visible.\n'
-        '- If the snapshot does not support a perception claim, say you cannot confirm it.\n'
-        'Knowledge snapshot:\n%s' % clean_snapshot
+        '- If the grounded context does not support a perception claim, say you cannot '
+        'confirm it.\n'
+        'Grounded context:\n%s' % clean_snapshot
     )
 
 
