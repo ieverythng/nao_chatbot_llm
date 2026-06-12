@@ -176,29 +176,6 @@ def build_grounded_context_block(grounded_context: dict) -> str:
     )
 
 
-def grounded_context_fact_lines(grounded_context: dict) -> list[str]:
-    """Render bounded entity relations exactly as supplied by grounded context."""
-    facts: list[str] = []
-    entities = dict(grounded_context or {}).get('entities', [])
-    if not isinstance(entities, list):
-        return facts
-    for entity in entities[:8]:
-        if not isinstance(entity, dict):
-            continue
-        entity_id = _first_non_empty_value(entity, 'id', 'entity_id', 'label', fallback='entity')
-        relations = entity.get('relations', [])
-        if not isinstance(relations, list):
-            continue
-        for relation in relations[:6]:
-            if not isinstance(relation, dict):
-                continue
-            predicate = str(relation.get('predicate', '')).strip()
-            obj = str(relation.get('object', '')).strip()
-            if predicate and obj:
-                facts.append('%s: %s=%s' % (entity_id, predicate, obj))
-    return facts
-
-
 def extract_scene_memory_entry(snapshot: str) -> str:
     """Extract one compact scene summary line to retain across turns."""
     for raw_line in str(snapshot or '').splitlines():

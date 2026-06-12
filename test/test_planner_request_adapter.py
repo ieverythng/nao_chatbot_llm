@@ -369,6 +369,24 @@ def test_should_route_intents_through_planner_for_explicit_execution_route() -> 
     assert should_route_intents_through_planner([], turn_result=result) is True
 
 
+def test_should_not_route_fake_skill_question_through_planner() -> None:
+    result = _make_result(
+        verbal_ack='Yes, I have fake skills such as navigating and finding objects.',
+        intent='',
+        user_intent={},
+        route='execution',
+    )
+
+    assert (
+        should_route_intents_through_planner(
+            [],
+            turn_result=result,
+            user_text='Perfect, do you have any fake skills?',
+        )
+        is False
+    )
+
+
 def test_build_planner_request_payload_uses_yaml_style_multi_step_heuristics():
     payload = build_planner_request_payload(
         turn_id='turn_custom_multi',

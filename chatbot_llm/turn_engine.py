@@ -87,6 +87,39 @@ _PLANNER_DIALOGUE_KEYS = (
     'context',
     'completion_context',
 )
+_EXECUTION_REPORT_KEYS = (
+    'goal_text',
+    'requested_intents',
+    'steps',
+    'latest_result_summary',
+    'latest_result_payload',
+)
+_PLANNER_COMPLETION_RESPONSE_ADDENDUM = """
+Planner completion wording task:
+- You are wording one spoken completion sentence after robot task execution.
+- Use only facts from the planner_completion JSON payload.
+- If facts are missing, briefly say no confirmed result was available.
+- Return only the normal response JSON with verbal_ack as the TTS-ready sentence.
+- Do not mention JSON, planner internals, routes, or policies.
+""".strip()
+_PLANNER_DIALOGUE_RESPONSE_ADDENDUM = """
+Planner dialogue wording task:
+- You are wording one spoken robot sentence for a planner dialogue act.
+- Use only facts from the planner_dialogue JSON payload.
+- Keep it concise and first-person as the robot.
+- Return only the normal response JSON with verbal_ack as the TTS-ready sentence.
+- Do not mention JSON, planner internals, routes, or policies.
+""".strip()
+_EXECUTION_REPORT_RESPONSE_ADDENDUM = """
+Execution report wording task:
+- You are wording the final spoken report for a completed robot execution step.
+- Use only facts from the execution_report JSON payload.
+- Summarize the whole executed step chain, not only the last step.
+- If a step status is succeeded, do not imply it failed.
+- Mention relevant observations from scan/perception results.
+- Return only the normal response JSON with verbal_ack as the TTS-ready report.
+- Do not mention JSON, planner internals, report_result, routes, or policies.
+""".strip()
 
 
 # ---------------------------------------------------------------------------
@@ -152,6 +185,15 @@ class DialogueTurnEngine:
             return self._cancelled_result(history)
 
         if user_id == '__system__':
+            execution_report = _extract_execution_report_context(user_text)
+            if execution_report:
+                result = self._execute_execution_report_turn(
+                    history=history,
+                    report_context=execution_report,
+                )
+                self._publish_progress(progress_callback, 'complete', 1.0)
+                self._trace(trace, turn_id, 'TURN_DONE', 'execution report wording complete')
+                return result
             planner_dialogue = _extract_planner_dialogue_context(user_text)
             if planner_dialogue:
                 result = self._execute_planner_dialogue_turn(
@@ -610,6 +652,30 @@ class DialogueTurnEngine:
             route=_DIALOGUE_ROUTE,
         )
 
+    def _execute_execution_report_turn(
+        self,
+        *,
+        history: list[str],
+        report_context: dict,
+    ) -> TurnExecutionResult:
+        verbal_ack = self._query_execution_report_ack(report_context)
+        if not verbal_ack:
+            verbal_ack = _fallback_execution_report_ack(report_context)
+        if not verbal_ack:
+            verbal_ack = self._config.fallback_response
+        updated_history = self._history_with_assistant_text(history, verbal_ack)
+        self._handled_requests += 1
+        return self._build_result(
+            success=True,
+            verbal_ack=verbal_ack,
+            updated_history=updated_history,
+            intent='',
+            intent_source='execution_report',
+            intent_confidence=1.0,
+            user_intent={},
+            route=_DIALOGUE_ROUTE,
+        )
+
     def _execute_planner_dialogue_turn(
         self,
         *,
@@ -820,13 +886,45 @@ class DialogueTurnEngine:
         if not self._config.enabled:
             return ''
 
-        prompt = (
-            'You are writing one spoken completion sentence for a user after robot task execution. '
-            'Use only facts from the JSON payload. Do not mention planner internals or JSON. '
-            'If facts are missing, briefly say no confirmed result was available.'
+        prompt = self._system_response_prompt(
+            task_addendum=_PLANNER_COMPLETION_RESPONSE_ADDENDUM,
         )
         payload = json.dumps(
             {'planner_completion': completion_context},
+            sort_keys=True,
+            separators=(',', ':'),
+        )
+        raw_response = self._transport.query(
+            messages=[
+                {'role': 'system', 'content': prompt},
+                {'role': 'user', 'content': payload},
+            ],
+            timeout_sec=self._config.request_timeout_sec,
+            model=self._config.model,
+            temperature=self._config.temperature,
+            top_p=self._config.top_p,
+            think=self._config.think,
+            max_tokens=self._config.response_max_tokens,
+            response_format=self._config.response_schema,
+        )
+        if not raw_response:
+            return ''
+        parsed = _extract_json_object(raw_response)
+        if parsed:
+            candidate = _ack_from_parsed_response(parsed)
+            if candidate:
+                return candidate
+        return _extract_ack_text(raw_response) or str(raw_response).strip()
+
+    def _query_execution_report_ack(self, report_context: dict) -> str:
+        if not self._config.enabled:
+            return ''
+
+        prompt = self._system_response_prompt(
+            task_addendum=_EXECUTION_REPORT_RESPONSE_ADDENDUM,
+        )
+        payload = json.dumps(
+            {'execution_report': report_context},
             sort_keys=True,
             separators=(',', ':'),
         )
@@ -856,10 +954,8 @@ class DialogueTurnEngine:
         if not self._config.enabled:
             return ''
 
-        prompt = (
-            'You are writing one spoken robot sentence for a planner dialogue act. '
-            'Use only facts from the JSON payload. Keep it concise and first-person as the robot. '
-            'Do not mention JSON, planner internals, or policies.'
+        prompt = self._system_response_prompt(
+            task_addendum=_PLANNER_DIALOGUE_RESPONSE_ADDENDUM,
         )
         payload = json.dumps(
             {'planner_dialogue': dialogue_context},
@@ -891,6 +987,22 @@ class DialogueTurnEngine:
     # -----------------------------------------------------------------------
     # Prompt-history helper methods
     # -----------------------------------------------------------------------
+
+    def _system_response_prompt(self, *, task_addendum: str) -> str:
+        return build_response_prompt(
+            robot_name=self._config.robot_name,
+            user_id='__system__',
+            system_prompt=self._config.system_prompt,
+            environment_description=self._config.environment_description,
+            knowledge_snapshot='',
+            response_prompt_addendum=_join_prompt_addenda(
+                self._config.response_prompt_addendum,
+                task_addendum,
+            ),
+            skill_catalog_text=self._skill_catalog_text,
+            persona_prompt=self._persona_prompt,
+            planner_mode_enabled=False,
+        )
 
     def _inject_identity_reminder(self, history_messages: list[dict]) -> list[dict]:
         if self._config.identity_reminder_every_n_turns <= 0:
@@ -982,6 +1094,10 @@ class DialogueTurnEngine:
 # ---------------------------------------------------------------------------
 # Module-local JSON coercion helpers
 # ---------------------------------------------------------------------------
+
+def _join_prompt_addenda(*parts: str) -> str:
+    return '\n\n'.join(str(part).strip() for part in parts if str(part).strip())
+
 
 def _parse_json_dict(payload: str) -> dict:
     if not payload:
@@ -1174,6 +1290,12 @@ def _is_capability_query(user_text: str) -> bool:
         'what capabilities do you have',
         'what are your capabilities',
         'tell me what you can do',
+        'what skills do you have',
+        'which skills do you have',
+        'what fake skills do you have',
+        'do you have fake skills',
+        'do you have any fake skills',
+        'tell me about your skills',
     )
     return any(marker in normalized for marker in capability_markers)
 
@@ -1314,6 +1436,50 @@ def _extract_planner_completion_context(payload: str) -> dict:
     return normalized
 
 
+def _extract_execution_report_context(payload: str) -> dict:
+    parsed = _extract_json_object(str(payload or '').strip())
+    context = parsed.get('execution_report', {}) if isinstance(parsed, dict) else {}
+    if not isinstance(context, dict):
+        return {}
+    steps = context.get('steps', [])
+    normalized_steps = []
+    if isinstance(steps, list):
+        for step in steps:
+            if not isinstance(step, dict):
+                continue
+            normalized_steps.append(
+                {
+                    'id': str(step.get('id', '')).strip(),
+                    'name': str(step.get('name', '')).strip(),
+                    'type': str(step.get('type', '')).strip(),
+                    'status': str(step.get('status', '')).strip(),
+                    'reason': str(step.get('reason', '')).strip(),
+                    'result_summary': str(step.get('result_summary', '')).strip(),
+                    'result_payload': step.get('result_payload', {})
+                    if isinstance(step.get('result_payload', {}), dict)
+                    else {},
+                }
+            )
+    normalized = {
+        'goal_text': str(context.get('goal_text', '')).strip(),
+        'requested_intents': [
+            str(item).strip()
+            for item in context.get('requested_intents', [])
+            if str(item).strip()
+        ]
+        if isinstance(context.get('requested_intents', []), list)
+        else [],
+        'steps': normalized_steps,
+        'latest_result_summary': str(context.get('latest_result_summary', '')).strip(),
+        'latest_result_payload': context.get('latest_result_payload', {})
+        if isinstance(context.get('latest_result_payload', {}), dict)
+        else {},
+    }
+    if not any(normalized.get(key) for key in _EXECUTION_REPORT_KEYS):
+        return {}
+    return normalized
+
+
 def _extract_planner_dialogue_context(payload: str) -> dict:
     parsed = _extract_json_object(str(payload or '').strip())
     context = parsed.get('planner_dialogue', {}) if isinstance(parsed, dict) else {}
@@ -1359,6 +1525,34 @@ def _fallback_planner_completion_ack(completion_context: dict) -> str:
         if summary_text:
             return summary_text
     goal_text = str(completion_context.get('goal_text', '')).strip()
+    if goal_text:
+        return 'I finished: %s.' % goal_text.rstrip('.')
+    return ''
+
+
+def _fallback_execution_report_ack(report_context: dict) -> str:
+    successful_steps = [
+        step for step in report_context.get('steps', [])
+        if isinstance(step, dict) and str(step.get('status', '')).strip().lower() == 'succeeded'
+    ]
+    if successful_steps:
+        summaries = [
+            str(step.get('result_summary', '')).strip()
+            for step in successful_steps
+            if str(step.get('result_summary', '')).strip()
+        ]
+        if summaries:
+            return ' '.join(summaries[-2:])
+
+    latest_summary = str(report_context.get('latest_result_summary', '')).strip()
+    if latest_summary:
+        return latest_summary
+    latest_payload = report_context.get('latest_result_payload', {})
+    if isinstance(latest_payload, dict):
+        summary_text = str(latest_payload.get('summary_text', '')).strip()
+        if summary_text:
+            return summary_text
+    goal_text = str(report_context.get('goal_text', '')).strip()
     if goal_text:
         return 'I finished: %s.' % goal_text.rstrip('.')
     return ''

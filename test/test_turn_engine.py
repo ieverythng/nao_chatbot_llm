@@ -382,6 +382,31 @@ def test_turn_engine_planner_mode_keeps_capability_question_dialogue_only():
     assert result.route == 'dialogue'
 
 
+def test_turn_engine_planner_mode_keeps_fake_skill_question_dialogue_only():
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"Yes, I have fake skills such as navigating, finding objects, '
+                'and scanning my environment.","confidence":0.0}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm_with_rules_fallback', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='Perfect, do you have any fake skills?',
+        history=[],
+        user_id='user1',
+    )
+
+    assert result.route == 'dialogue'
+
+
 def test_turn_engine_planner_mode_promotes_dialogue_wave_ack_to_execution():
     transport = FakeTransport(
         [
@@ -485,6 +510,77 @@ def test_turn_engine_renders_planner_completion_for_system_payload_with_llm():
     assert result.verbal_ack == 'I scanned the room and found one person.'
     assert result.updated_history[-1] == 'assistant:I scanned the room and found one person.'
     assert len(transport.calls) == 1
+    assert 'You are NAO.' in transport.calls[0]['messages'][0]['content']
+    assert 'Respond briefly.' in transport.calls[0]['messages'][0]['content']
+    assert 'Planner completion wording task:' in transport.calls[0]['messages'][0]['content']
+    assert 'planner_completion' in transport.calls[0]['messages'][1]['content']
+
+
+def test_turn_engine_renders_execution_report_for_system_payload_with_llm():
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"I navigated to the cup and found two blueberries '
+                'nearby."}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='rules'),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text=(
+            '{"execution_report":{"goal_text":"navigate to the cup and report other objects",'
+            '"requested_intents":["navigate_to","inspect_scene","report_result"],'
+            '"steps":[{"id":"step_1","name":"navigate_to","type":"skill",'
+            '"status":"succeeded","result_summary":"I navigated to the cup.",'
+            '"result_payload":{"skill":"navigate_to","status":"succeeded","target":"cup"}},'
+            '{"id":"step_2","name":"scan","type":"skill","status":"succeeded",'
+            '"result_summary":"I found two blueberries.",'
+            '"result_payload":{"skill":"scan","objects":[{"label":"blueberry"},'
+            '{"label":"blueberry"}]}}]}}'
+        ),
+        history=[],
+        user_id='__system__',
+    )
+
+    assert result.success is True
+    assert result.route == 'dialogue'
+    assert result.intent_source == 'execution_report'
+    assert result.verbal_ack == 'I navigated to the cup and found two blueberries nearby.'
+    assert len(transport.calls) == 1
+    assert 'You are NAO.' in transport.calls[0]['messages'][0]['content']
+    assert 'Respond briefly.' in transport.calls[0]['messages'][0]['content']
+    assert 'Execution report wording task:' in transport.calls[0]['messages'][0]['content']
+    assert 'execution_report' in transport.calls[0]['messages'][1]['content']
+
+
+def test_turn_engine_execution_report_fallback_uses_step_summaries():
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='rules'),
+        transport=FakeTransport(['']),
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text=(
+            '{"execution_report":{"steps":['
+            '{"name":"navigate_to","status":"succeeded",'
+            '"result_summary":"I navigated to the cup."},'
+            '{"name":"scan","status":"succeeded",'
+            '"result_summary":"I found two blueberries."}]}}'
+        ),
+        history=[],
+        user_id='__system__',
+    )
+
+    assert result.intent_source == 'execution_report'
+    assert result.verbal_ack == 'I navigated to the cup. I found two blueberries.'
 
 
 def test_turn_engine_planner_completion_fallback_without_llm_response():
@@ -534,6 +630,10 @@ def test_turn_engine_renders_planner_dialogue_for_system_payload_with_llm():
     assert result.intent_source == 'planner_dialogue'
     assert result.verbal_ack == 'Could you specify which cup you mean?'
     assert len(transport.calls) == 1
+    assert 'You are NAO.' in transport.calls[0]['messages'][0]['content']
+    assert 'Respond briefly.' in transport.calls[0]['messages'][0]['content']
+    assert 'Planner dialogue wording task:' in transport.calls[0]['messages'][0]['content']
+    assert 'planner_dialogue' in transport.calls[0]['messages'][1]['content']
 
 
 def test_turn_engine_planner_dialogue_fallback_without_llm_response():

@@ -80,16 +80,24 @@ def should_route_intents_through_planner(
     multi_step_heuristics: dict | None = None,
 ) -> bool:
     """Return true when the turn contains execution-oriented intents."""
+    user_intent = _turn_user_intent(turn_result)
+    resolved_intent = getattr(turn_result, 'intent', '')
+    if _is_dialogue_only_request(
+        user_text=user_text,
+        user_intent=user_intent,
+        resolved_intent=resolved_intent,
+    ):
+        return False
+
     if _normalize_token(getattr(turn_result, 'route', '')) == 'execution':
         return True
 
     if _contains_execution_intent(intents):
         return True
 
-    user_intent = _turn_user_intent(turn_result)
     return _is_multi_step_turn(
         user_intent=user_intent,
-        resolved_intent=getattr(turn_result, 'intent', ''),
+        resolved_intent=resolved_intent,
         user_text=user_text,
         heuristics=multi_step_heuristics,
     )
@@ -428,6 +436,42 @@ def _contains_execution_intent(intents: list[Intent]) -> bool:
     return any(
         _normalize_token(getattr(intent, 'intent', '')) not in _NON_PLANNER_INTENT_NAMES
         for intent in intents
+    )
+
+
+def _is_dialogue_only_request(
+    *,
+    user_text: str,
+    user_intent: dict,
+    resolved_intent: str,
+) -> bool:
+    if not _is_dialogue_only_capability_question(user_text):
+        return False
+    clean_intent = _normalize_token(user_intent.get('type', '') or resolved_intent)
+    return clean_intent in _NON_PLANNER_INTENT_NAMES or clean_intent in ('', 'fallback')
+
+
+def _is_dialogue_only_capability_question(text: str) -> bool:
+    normalized = ''.join(
+        char
+        for char in ' '.join(str(text or '').strip().lower().split())
+        if char.isalnum() or char.isspace()
+    ).strip()
+    return any(
+        marker in normalized
+        for marker in (
+            'what can you do',
+            'what are you able to do',
+            'what capabilities do you have',
+            'what are your capabilities',
+            'tell me what you can do',
+            'what skills do you have',
+            'which skills do you have',
+            'what fake skills do you have',
+            'do you have fake skills',
+            'do you have any fake skills',
+            'tell me about your skills',
+        )
     )
 
 
