@@ -20,19 +20,15 @@ from launch_ros.parameter_descriptions import ParameterValue
 
 STRING_PARAMETER_NAMES = {
     'api_key',
-    'environment_description',
     'fallback_response',
     'intent_detection_mode',
     'intent_model',
-    'intent_prompt_addendum',
     'model',
     'persona_prompt_path',
     'prompt_pack_path',
-    'response_prompt_addendum',
     'robot_name',
     'server_url',
     'skill_catalog_packages',
-    'system_prompt',
 }
 
 

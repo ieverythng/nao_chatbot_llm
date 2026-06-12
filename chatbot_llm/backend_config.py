@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from chatbot_llm.prompt_pack import default_prompt_pack
 from chatbot_llm.prompt_pack import load_prompt_pack
 from chatbot_llm.skill_catalog import parse_package_list
 
@@ -14,24 +13,6 @@ from chatbot_llm.skill_catalog import parse_package_list
 # ---------------------------------------------------------------------------
 
 INTENT_DETECTION_MODES = {'rules', 'llm', 'llm_with_rules_fallback'}
-
-DEFAULT_RESPONSE_PROMPT_ADDENDUM = (
-    'Use concise speech suitable for text-to-speech. '
-    'Use the recent conversation history included with the request to keep track of '
-    'what was said in the last several turns. '
-    "When grounded context is available, use it as the robot's grounded scene "
-    'state for perception questions and avoid guessing beyond it. '
-    'Treat grounded_context.entities as the current visible world and use each '
-    'entity relations list as known grounded facts. '
-    'Distinguish between what is visible in the current scene and what only appears '
-    'in recent scene memory from earlier turns. '
-    'If a face/person entity is present without a name, say you detect someone '
-    'without inventing an identity. '
-    'Posture requests should map to stand, sit, or kneel motions when relevant. '
-    'For execution turns, return only verbal_ack, route, confidence, and user_intent '
-    'metadata. Do not include a top-level plan field or user_intent.plan.'
-)
-
 
 @dataclass(frozen=True)
 class ChatbotConfig:
@@ -103,7 +84,6 @@ def declare_backend_parameters(node) -> None:
     node.declare_parameter('server_url', 'http://localhost:11434/api/chat')
     node.declare_parameter('model', 'gemma4:31b-cloud')
     node.declare_parameter('api_key', '')
-    node.declare_parameter('system_prompt', '')
 
     node.declare_parameter('enabled', True)
     node.declare_parameter('intent_model', '')
@@ -130,9 +110,6 @@ def declare_backend_parameters(node) -> None:
     node.declare_parameter('scene_memory_turns', 4)
     node.declare_parameter('robot_name', 'NAO')
     node.declare_parameter('persona_prompt_path', '')
-    node.declare_parameter('response_prompt_addendum', DEFAULT_RESPONSE_PROMPT_ADDENDUM)
-    node.declare_parameter('intent_prompt_addendum', '')
-    node.declare_parameter('environment_description', 'No specific objects described.')
     node.declare_parameter('identity_reminder_every_n_turns', 6)
     node.declare_parameter('intent_detection_mode', 'llm_with_rules_fallback')
 
@@ -199,32 +176,9 @@ def declare_backend_parameters(node) -> None:
 
 
 def load_backend_config(node) -> ChatbotConfig:
-    """Load effective configuration using defaults < prompt pack < explicit params."""
+    """Load effective configuration with prompt text sourced only from the pack."""
     prompt_pack_path = str(node.get_parameter('prompt_pack_path').value).strip()
     loaded_pack = load_prompt_pack(prompt_pack_path, logger=node.get_logger())
-    defaults = default_prompt_pack()
-
-    raw_system_prompt = str(node.get_parameter('system_prompt').value).strip()
-    raw_response_addendum = str(node.get_parameter('response_prompt_addendum').value).strip()
-    raw_intent_addendum = str(node.get_parameter('intent_prompt_addendum').value).strip()
-    raw_environment = str(node.get_parameter('environment_description').value).strip()
-
-    system_prompt = _pick_prompt_value(raw_system_prompt, '', loaded_pack.system_prompt)
-    response_prompt_addendum = _pick_prompt_value(
-        raw_response_addendum,
-        DEFAULT_RESPONSE_PROMPT_ADDENDUM,
-        loaded_pack.response_prompt_addendum,
-    )
-    intent_prompt_addendum = _pick_prompt_value(
-        raw_intent_addendum,
-        '',
-        loaded_pack.intent_prompt_addendum,
-    )
-    environment_description = _pick_prompt_value(
-        raw_environment,
-        defaults.environment_description,
-        loaded_pack.environment_description,
-    )
 
     intent_detection_mode = str(node.get_parameter('intent_detection_mode').value).strip().lower()
     if intent_detection_mode not in INTENT_DETECTION_MODES:
@@ -241,7 +195,7 @@ def load_backend_config(node) -> ChatbotConfig:
         server_url=str(node.get_parameter('server_url').value).strip(),
         model=model,
         api_key=str(node.get_parameter('api_key').value).strip(),
-        system_prompt=system_prompt,
+        system_prompt=loaded_pack.system_prompt,
         enabled=as_bool(node.get_parameter('enabled').value),
         intent_model=intent_model,
         request_timeout_sec=float(node.get_parameter('request_timeout_sec').value),
@@ -290,9 +244,9 @@ def load_backend_config(node) -> ChatbotConfig:
         ),
         robot_name=str(node.get_parameter('robot_name').value),
         persona_prompt_path=str(node.get_parameter('persona_prompt_path').value),
-        response_prompt_addendum=response_prompt_addendum,
-        intent_prompt_addendum=intent_prompt_addendum,
-        environment_description=environment_description,
+        response_prompt_addendum=loaded_pack.response_prompt_addendum,
+        intent_prompt_addendum=loaded_pack.intent_prompt_addendum,
+        environment_description=loaded_pack.environment_description,
         response_schema=loaded_pack.response_schema,
         intent_schema=loaded_pack.intent_schema,
         planner_multi_step_heuristics=loaded_pack.planner_multi_step_heuristics,
@@ -421,9 +375,3 @@ def coerce_str_list(value, fallback: list[str] | None = None) -> list[str]:
             return cleaned
     return list(fallback or [])
 
-
-def _pick_prompt_value(current: str, param_default: str, pack_value: str) -> str:
-    """Apply precedence defaults < prompt pack < explicit non-default params."""
-    if str(current).strip() != str(param_default).strip():
-        return str(current).strip()
-    return str(pack_value).strip()

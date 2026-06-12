@@ -1,4 +1,4 @@
-"""Prompt-pack loading and defaults for the migrated chatbot backend."""
+"""Prompt-pack loading for the migrated chatbot backend."""
 
 from __future__ import annotations
 
@@ -22,40 +22,7 @@ except ImportError:  # pragma: no cover - runtime dependency
     yaml = None
 
 
-# ---------------------------------------------------------------------------
-# Built-in prompt-pack defaults
-# ---------------------------------------------------------------------------
-
-DEFAULT_SYSTEM_PROMPT = (
-    'You are a friendly robot called {robot_name}. '
-    'You are helpful, concise, and clear in spoken interactions.'
-)
-
-DEFAULT_RESPONSE_PROMPT_ADDENDUM = (
-    'Reply with short natural spoken text suitable for TTS. '
-    'Avoid markdown and avoid long lists. '
-    'For greeting-only turns, keep route as dialogue unless the user explicitly '
-    'asks for a physical action. '
-    'If unsure between dialogue and execution without an explicit action verb, '
-    'prefer dialogue. '
-    'For execution turns, keep verbal_ack as intent-to-act acknowledgement and '
-    'do not claim completion in that same utterance. Do not narrate the action '
-    'in parentheses or report observations/results in verbal_ack. '
-    'For execution turns, return only verbal_ack, route, confidence, and '
-    'user_intent metadata. Do not include a top-level plan field or '
-    'user_intent.plan.'
-)
-
-DEFAULT_INTENT_PROMPT_ADDENDUM = (
-    'Map user requests to one canonical intent label when possible. '
-    'When the user requests an action, you may return ack_text, ack_mode, '
-    'scene_targets, and goal. For greeting/social turns, prefer greet unless '
-    'an explicit physical action request is present. '
-    'Do not include a top-level plan field or user_intent.plan.'
-)
-
-DEFAULT_ENVIRONMENT_DESCRIPTION = 'No specific objects described.'
-
+# Structural defaults are safe because they are not prompt wording.
 DEFAULT_PLANNER_MULTI_STEP_HEURISTICS: dict[str, list[str]] = {
     'coordination_markers': [
         ' and then ',
@@ -172,81 +139,63 @@ class PromptPack:
 # ---------------------------------------------------------------------------
 
 def default_prompt_pack() -> PromptPack:
-    """Return built-in defaults used when no external prompt pack is available."""
-    return PromptPack(
-        system_prompt=DEFAULT_SYSTEM_PROMPT,
-        response_prompt_addendum=DEFAULT_RESPONSE_PROMPT_ADDENDUM,
-        intent_prompt_addendum=DEFAULT_INTENT_PROMPT_ADDENDUM,
-        environment_description=DEFAULT_ENVIRONMENT_DESCRIPTION,
-        response_schema=dict(DEFAULT_RESPONSE_SCHEMA),
-        intent_schema=dict(DEFAULT_INTENT_SCHEMA),
-        planner_multi_step_heuristics=_heuristics_copy(
-            DEFAULT_PLANNER_MULTI_STEP_HEURISTICS
-        ),
-    )
+    """Load the canonical packaged prompt pack."""
+    return load_prompt_pack('')
 
 
 def load_prompt_pack(path: str, logger=None) -> PromptPack:
-    """Load prompt pack from YAML file; return defaults on errors."""
-    defaults = default_prompt_pack()
+    """Load the canonical prompt pack from YAML; fail loudly on prompt defects."""
     pack_path = str(path or '').strip()
     source = Path(pack_path) if pack_path else _default_prompt_pack_path()
     if source is None:
-        return defaults
+        raise FileNotFoundError('Could not resolve chatbot prompt pack path')
     if not source.exists():
-        _warn(logger, f'Prompt pack path does not exist: "{source}"')
-        return defaults
+        raise FileNotFoundError(f'Chatbot prompt pack path does not exist: "{source}"')
 
     if yaml is None:
-        _warn(logger, 'PyYAML unavailable; prompt pack ignored')
-        return defaults
+        raise RuntimeError('PyYAML is required to load chatbot prompt packs')
 
     try:
         raw = source.read_text(encoding='utf-8')
     except Exception as err:  # pragma: no cover - filesystem dependent
-        _warn(logger, f'Could not read prompt pack: {err}')
-        return defaults
+        raise RuntimeError(f'Could not read chatbot prompt pack "{source}": {err}') from err
 
     try:
         parsed = yaml.safe_load(raw)
     except Exception as err:
-        _warn(logger, f'Prompt pack parse failed: {err}')
-        return defaults
+        raise ValueError(f'Chatbot prompt pack parse failed for "{source}": {err}') from err
 
     if not isinstance(parsed, dict):
-        _warn(logger, 'Prompt pack root must be a mapping')
-        return defaults
+        raise ValueError(f'Chatbot prompt pack root must be a mapping: "{source}"')
 
-    response_schema = parsed.get('response_schema', defaults.response_schema)
+    _require_text(parsed, 'system_prompt', source)
+    _require_text(parsed, 'response_prompt_addendum', source)
+    _require_text(parsed, 'intent_prompt_addendum', source)
+
+    response_schema = parsed.get('response_schema', DEFAULT_RESPONSE_SCHEMA)
     if not isinstance(response_schema, dict):
-        _warn(logger, 'response_schema must be a mapping; using defaults')
-        response_schema = defaults.response_schema
+        _warn(logger, 'response_schema must be a mapping; using structural defaults')
+        response_schema = DEFAULT_RESPONSE_SCHEMA
 
-    intent_schema = parsed.get('intent_schema', defaults.intent_schema)
+    intent_schema = parsed.get('intent_schema', DEFAULT_INTENT_SCHEMA)
     if not isinstance(intent_schema, dict):
-        _warn(logger, 'intent_schema must be a mapping; using defaults')
-        intent_schema = defaults.intent_schema
+        _warn(logger, 'intent_schema must be a mapping; using structural defaults')
+        intent_schema = DEFAULT_INTENT_SCHEMA
 
     planner_multi_step_heuristics = _coerce_heuristics(
         parsed.get(
             'planner_multi_step_heuristics',
-            defaults.planner_multi_step_heuristics,
+            DEFAULT_PLANNER_MULTI_STEP_HEURISTICS,
         ),
-        defaults=defaults.planner_multi_step_heuristics,
+        defaults=DEFAULT_PLANNER_MULTI_STEP_HEURISTICS,
         logger=logger,
     )
 
     return PromptPack(
-        system_prompt=_as_text(parsed.get('system_prompt', defaults.system_prompt)),
-        response_prompt_addendum=_as_text(
-            parsed.get('response_prompt_addendum', defaults.response_prompt_addendum)
-        ),
-        intent_prompt_addendum=_as_text(
-            parsed.get('intent_prompt_addendum', defaults.intent_prompt_addendum)
-        ),
-        environment_description=_as_text(
-            parsed.get('environment_description', defaults.environment_description)
-        ),
+        system_prompt=_as_text(parsed.get('system_prompt')),
+        response_prompt_addendum=_as_text(parsed.get('response_prompt_addendum')),
+        intent_prompt_addendum=_as_text(parsed.get('intent_prompt_addendum')),
+        environment_description=_as_text(parsed.get('environment_description')),
         response_schema=response_schema,
         intent_schema=intent_schema,
         planner_multi_step_heuristics=planner_multi_step_heuristics,
@@ -261,6 +210,11 @@ def _as_text(value) -> str:
     if value is None:
         return ''
     return str(value).strip()
+
+
+def _require_text(parsed: dict, key: str, source: Path) -> None:
+    if not _as_text(parsed.get(key)):
+        raise ValueError(f'Chatbot prompt pack "{source}" must define non-empty {key}')
 
 
 def _default_prompt_pack_path() -> Path | None:
