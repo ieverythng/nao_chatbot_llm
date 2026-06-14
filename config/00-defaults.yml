@@ -15,7 +15,7 @@
     temperature: 0.2
     top_p: 0.9
     think: false
-    response_max_tokens: 64
+    response_max_tokens: 192
     intent_max_tokens: 64
     fallback_response: 'I am having trouble reaching my language model right now.'
     max_history_messages: 20
@@ -59,7 +59,7 @@
     skill_catalog_max_chars: 3000
     knowledge_enabled: true
     knowledge_query_service_name: '/kb/query'
-    knowledge_query_timeout_sec: 0.5
+    knowledge_query_timeout_sec: 1.0
     knowledge_default_query_groups:
       - 'myself sees ?entity && ?entity rdf:type ?type'
       - 'myself sees ?entity && ?entity hasVisualCenterX ?center_x && ?entity hasVisualCenterY ?center_y'
@@ -93,5 +93,5 @@
       - '?predicate'
       - '?object'
     knowledge_default_models: ''
-    knowledge_max_results: 40
-    knowledge_max_chars: 3000
+    knowledge_max_results: 120
+    knowledge_max_chars: 8000

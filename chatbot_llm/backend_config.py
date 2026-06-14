@@ -94,7 +94,7 @@ def declare_backend_parameters(node) -> None:
     node.declare_parameter('temperature', 0.2)
     node.declare_parameter('top_p', 0.9)
     node.declare_parameter('think', False)
-    node.declare_parameter('response_max_tokens', 64)
+    node.declare_parameter('response_max_tokens', 192)
     node.declare_parameter('intent_max_tokens', 64)
     node.declare_parameter('preflight_enabled', True)
     node.declare_parameter('preflight_required', False)
@@ -130,7 +130,7 @@ def declare_backend_parameters(node) -> None:
     node.declare_parameter('turn_trace_topic', '/chatbot_llm/turn_trace')
     node.declare_parameter('knowledge_enabled', False)
     node.declare_parameter('knowledge_query_service_name', '/kb/query')
-    node.declare_parameter('knowledge_query_timeout_sec', 0.5)
+    node.declare_parameter('knowledge_query_timeout_sec', 1.0)
     node.declare_parameter(
         'knowledge_default_query_groups',
         [
@@ -171,8 +171,8 @@ def declare_backend_parameters(node) -> None:
         ['?entity', '?type', '?center_x', '?center_y', '?score', '?predicate', '?object'],
     )
     node.declare_parameter('knowledge_default_models', '')
-    node.declare_parameter('knowledge_max_results', 40)
-    node.declare_parameter('knowledge_max_chars', 3000)
+    node.declare_parameter('knowledge_max_results', 120)
+    node.declare_parameter('knowledge_max_chars', 8000)
 
 
 def load_backend_config(node) -> ChatbotConfig:
@@ -374,4 +374,3 @@ def coerce_str_list(value, fallback: list[str] | None = None) -> list[str]:
         if cleaned:
             return cleaned
     return list(fallback or [])
-
