@@ -567,6 +567,9 @@ def test_turn_engine_renders_execution_report_for_system_payload_with_llm():
         user_text=(
             '{"execution_report":{"goal_text":"navigate to the cup and report other objects",'
             '"requested_intents":["navigate_to","inspect_scene","report_result"],'
+            '"dialogue_context":["user:Navigate to the cup and tell me what else you see.",'
+            '"assistant:Sure, I will navigate to the cup and look around."],'
+            '"scene_targets":["cup"],'
             '"steps":[{"id":"step_1","name":"navigate_to","type":"skill",'
             '"status":"succeeded","result_summary":"I navigated to the cup.",'
             '"result_payload":{"skill":"navigate_to","status":"succeeded","target":"cup"}},'
@@ -587,6 +590,7 @@ def test_turn_engine_renders_execution_report_for_system_payload_with_llm():
     assert 'You are NAO.' in transport.calls[0]['messages'][0]['content']
     assert 'Respond briefly.' in transport.calls[0]['messages'][0]['content']
     assert 'Execution report wording task:' in transport.calls[0]['messages'][0]['content']
+    assert 'dialogue_context' in transport.calls[0]['messages'][1]['content']
     assert 'execution_report' in transport.calls[0]['messages'][1]['content']
 
 

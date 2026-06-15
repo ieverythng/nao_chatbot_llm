@@ -54,6 +54,10 @@ Planner-mode routing requirements:
 - Use route="dialogue" for greetings, identity, wellbeing, help, or general conversation.
 - For greeting-only turns (hi/hello/hey + social opener), keep route="dialogue"
   unless the user explicitly asks for a physical action (for example "wave at me").
+- Only use route="execution" when the user directs a physical action to the robot.
+  Descriptive mentions of skill words in other contexts do not trigger execution:
+  "the person waves", "someone is walking", "I saw a scan" are dialogue or
+  knowledge_query, not execution. The action must be addressed to the robot.
 - When possible include user_intent with key "type".
 - For execution turns, include only routing metadata in user_intent: type,
   intent_sequence, goal, object, ack_text, ack_mode, and scene_targets.
@@ -102,6 +106,15 @@ Canonical intent labels:
 - head_look_right
 - head_look_up
 - head_look_down
+- wave_greet
+- navigate_to
+- perform_motion
+- look_at
+- scan
+- inspect_scene
+- report_result
+- find_object
+- walk_to
 - greet
 - identity
 - wellbeing
@@ -124,6 +137,9 @@ Output requirements:
 - Prefer the `kb_query_*` labels when the user is asking who is visible now,
   what objects are visible now, or whether the scene changed compared with
   earlier turns.
+- Only assign an execution skill label when the user directs a physical action to
+  the robot. Descriptive mentions of skill words ("the person waves", "someone is
+  walking") use dialogue or kb_query labels, not execution skill labels.
 - When the user requests an action, you may also include ack_text, ack_mode,
   intent_sequence, scene_targets, and goal.
 - When the user combines multiple requested actions, or an action plus a

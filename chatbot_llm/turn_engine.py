@@ -100,6 +100,8 @@ _PLANNER_DIALOGUE_KEYS = (
 _EXECUTION_REPORT_KEYS = (
     'goal_text',
     'requested_intents',
+    'dialogue_context',
+    'scene_targets',
     'steps',
     'latest_result_summary',
     'latest_result_payload',
@@ -125,6 +127,11 @@ Execution report wording task:
 - You are wording the final spoken report for a completed robot execution step.
 - Use only facts from the execution_report JSON payload.
 - Summarize the whole executed step chain, not only the last step.
+- Synthesize related routine steps into natural language; do not recite each
+  internal motion or execution result as a separate ledger sentence.
+- Use goal_text and dialogue_context to produce a coherent continuation and to
+  decide which outcomes matter to the user.
+- Use step results as the authority for factual execution claims.
 - If a step status is succeeded, do not imply it failed.
 - Mention relevant observations from scan/perception results.
 - Return only the normal response JSON with verbal_ack as the TTS-ready report.
@@ -494,6 +501,19 @@ class DialogueTurnEngine:
             if not str(user_intent.get('goal', '')).strip():
                 user_intent = dict(user_intent)
                 user_intent['goal'] = str(user_text or '').strip()
+
+        # If the LLM routed to dialogue (e.g., mapped "wave at me" to greet),
+        # but the rules-fallback detects an executable skill intent, force
+        # execution so action requests do not get swallowed as conversation.
+        if inferred_route == _DIALOGUE_ROUTE and not _is_reflective_execution_question(user_text):
+            fb_intent = normalize_intent(detect_intent(user_text), default='')
+            if fb_intent and fb_intent != 'fallback' and is_execution_intent_label(fb_intent):
+                inferred_route = _EXECUTION_ROUTE
+                resolved_intent = fb_intent
+                user_intent = dict(user_intent)
+                user_intent['type'] = fb_intent
+                if not str(user_intent.get('goal', '')).strip():
+                    user_intent['goal'] = str(user_text or '').strip()
 
         response_confidence = coerce_float(
             response_payload.get(
@@ -1505,6 +1525,20 @@ def _extract_execution_report_context(payload: str) -> dict:
             if str(item).strip()
         ]
         if isinstance(context.get('requested_intents', []), list)
+        else [],
+        'dialogue_context': [
+            str(item).strip()
+            for item in context.get('dialogue_context', [])
+            if str(item).strip()
+        ]
+        if isinstance(context.get('dialogue_context', []), list)
+        else [],
+        'scene_targets': [
+            str(item).strip()
+            for item in context.get('scene_targets', [])
+            if str(item).strip()
+        ]
+        if isinstance(context.get('scene_targets', []), list)
         else [],
         'steps': normalized_steps,
         'latest_result_summary': str(context.get('latest_result_summary', '')).strip(),

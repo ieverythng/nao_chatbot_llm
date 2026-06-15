@@ -190,7 +190,7 @@ def detect_intent(text: str) -> str:
         return 'navigate_to'
     if _contains_any_phrase(
         lowered,
-        ('wave hello', 'wave at', 'please wave', 'greet with a wave'),
+        ('wave hello', 'wave at', 'please wave', 'greet with a wave', 'wave', 'wave to', 'wave at me'),
     ):
         return 'wave_greet'
     if _contains_any_phrase(
