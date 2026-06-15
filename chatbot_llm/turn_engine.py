@@ -18,7 +18,7 @@ from chatbot_llm.intent_rules import normalize_intent
 from chatbot_llm.prompt_builders import build_intent_prompt
 from chatbot_llm.prompt_builders import build_response_prompt
 from chatbot_llm.prompt_builders import load_persona_prompt
-from kb_skills.intent_labels import KB_QUERY_INTENTS
+from kb_skills.intent_labels import KB_QUERY_INTENTS, KB_QUERY_VISIBLE_OBJECTS
 
 
 _DIALOGUE_ROUTE = 'dialogue'
@@ -1376,7 +1376,32 @@ def _infer_kb_query_intent_from_text(user_text: str) -> str:
     inferred = normalize_intent(detect_intent(user_text), default='')
     if inferred in KB_QUERY_INTENTS:
         return inferred
+    # Catch specific-object attribute queries like "What is the name/color of X?"
+    # These are KB lookups even when detect_intent returns 'fallback'.
+    if _looks_like_object_attribute_query(user_text):
+        return KB_QUERY_VISIBLE_OBJECTS
     return ''
+
+
+def _looks_like_object_attribute_query(user_text: str) -> bool:
+    """Detect queries about object attributes: name, color, type, position."""
+    clean = ' '.join(str(user_text or '').strip().lower().split())
+    if not clean:
+        return False
+    # Must ask about an attribute
+    attr_markers = ('name', 'color', 'type', 'position', 'location', 'id')
+    has_attr = any(m in clean for m in attr_markers)
+    # Must reference a specific object (not general "what do you see")
+    obj_patterns = [
+        r'of\s+\w+',           # "of the cup", "of X"
+        r'the\s+\w+',          # "the probe cup"
+        r'is\s+the\s+',        # "is the name"
+    ]
+    has_object = any(re.search(p, clean) for p in obj_patterns)
+    return has_attr and has_object
+
+
+
 
 
 def _is_greeting_intent(resolved_intent: str, user_intent: dict) -> bool:
