@@ -570,7 +570,10 @@ def test_turn_engine_renders_execution_report_for_system_payload_with_llm():
             '"dialogue_context":["user:Navigate to the cup and tell me what else you see.",'
             '"assistant:Sure, I will navigate to the cup and look around."],'
             '"scene_targets":["cup"],'
+            '"grounded_context":{"entities":[{"id":"cup_1","label":"gold cup"}]},'
+            '"requested_summary":"I completed destination navigation to cup_1.",'
             '"steps":[{"id":"step_1","name":"navigate_to","type":"skill",'
+            '"args":{"target":"cup_1"},'
             '"status":"succeeded","result_summary":"I navigated to the cup.",'
             '"result_payload":{"skill":"navigate_to","status":"succeeded","target":"cup"}},'
             '{"id":"step_2","name":"scan","type":"skill","status":"succeeded",'
@@ -591,6 +594,9 @@ def test_turn_engine_renders_execution_report_for_system_payload_with_llm():
     assert 'Respond briefly.' in transport.calls[0]['messages'][0]['content']
     assert 'Execution report wording task:' in transport.calls[0]['messages'][0]['content']
     assert 'dialogue_context' in transport.calls[0]['messages'][1]['content']
+    assert 'grounded_context' in transport.calls[0]['messages'][1]['content']
+    assert 'requested_summary' in transport.calls[0]['messages'][1]['content']
+    assert '"target":"cup_1"' in transport.calls[0]['messages'][1]['content']
     assert 'execution_report' in transport.calls[0]['messages'][1]['content']
 
 

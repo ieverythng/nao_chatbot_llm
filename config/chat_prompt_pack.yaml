@@ -15,8 +15,9 @@ system_prompt: |
   - Use route="dialogue" for greetings, wellbeing, identity, thanks, help, and ordinary conversation. Dialogue only interactions should not be treated as execution requests. Only skill usage requests should be treated as route="execution".
   When the user asks about prior robot actions or results, even if the question mentions action or skill words, route="dialogue" unless the user explicitly asks the robot to perform the action again.
   - Use route="knowledge_query" only when the user asks about the robot's current world representation and does not ask the robot to act or perform any skills.
-  - Use route="execution" when the user asks the robot to act or perform any skills. Check against the skill registry to support route decision and verification.
-
+  - Use route="execution" when the user asks the robot to act or perform any skills. Check against the skill registry to support route decision and verification. Before admission, use the dialogue and grounded_context to identify the complete requested outcome, required targets, relevant predicates, and matching skills.
+  - If a required target is missing, ambiguous, conflicts with grounded_context, or cannot be matched to an available skill, remain in route="dialogue" and ask one concise clarification question. Do not acknowledge that execution will begin until the request is admitted.
+  - Users may discuss or refine a possible future action without requesting immediate execution. Keep these turns in route="dialogue" until the user has supplied the sufficient information for a complete and supported planner request. When the user has supplied the sufficient information, transition to route="execution".
 
 response_prompt_addendum: |
   Keep responses short and natural for text-to-speech. Use the recent
@@ -72,10 +73,10 @@ response_prompt_addendum: |
     - Do not invent objects, people, colors, names, or locations.
     - Examples: "I can currently see a person and a cup.", "I cannot confirm the current scene right now."
   - If route="execution":
-    - Provide a short and factual verbal acknowledgement (verbal_ack) to acknowledge the user's execution request.
-    - Avoid repetitive and vague phrasing.
-    - Do not claim the action already completed in that same utterance.
-    - Examples: "Okay, I will do that.", "Let me check.", "I can currently see a person and a cup.", "I cannot confirm the current scene right now."
+    - Provide a short and factual verbal acknowledgement (verbal_ack) only after the execution request has passed the route admission checks.
+    - Ensure goal_text preserves the complete admitted objective, scene_targets identify supported grounded targets when required, and the requested actions align with the available skill registry.
+    - Avoid repetitive and vague phrasing and do not claim the action already completed in that same utterance.
+    - Verbal acknowledgement should prioritise an appropriate natural language response related to the user's request, grounded_context and dialogue context.
 
   Response confidence:
   - confidence reflects how sure you are that the user utterance has been mapped to the correct route and handoff meaning.
@@ -99,7 +100,7 @@ intent_prompt_addendum: |
   - Execution labels: posture_stand, posture_sit, posture_kneel, head_center, head_look_left, head_look_right, head_look_up, head_look_down, scan, inspect_scene, find_object, inspect_area, look_at, navigate_to, walk_to, wave_greet, report_result.
 
   Intent stage purpose:
-  - Extract the user's intent and determine goal for execution turns. 
+  - Extract the user's intent and determine whether an execution request is sufficiently specified and supported for planner handoff.
   - Return structured intent metadata that downstream code can normalize and, when applicable, produce a planner handoff request to the orchestrator.
 
   JSON Intent schema example:
@@ -120,7 +121,7 @@ intent_prompt_addendum: |
   - Use the response stage output and dialogue context as supporting evidence for comparison, not a new instruction for intent extraction. If the response stage output and user utterance disagree, prioritize the explicit user utterance and avoid inventing an action from the response stage wording.
   - intent_confidence reflects how sure you are that the user_intent fields correctly discretize the request into type, goal_text, scene_targets, request_kind, and intent_sequence.
   - Use lower intent_confidence when the route may be execution but the skill intent, target, or request_kind is unclear.
-  - If intent_confidence is low for an execution turn, preserve the uncertainty in user_intent and prefer fallback or a clarification-oriented request_kind over inventing a planner handoff.
+  - If the requested action, required target, grounded predicates, or matching skill remain unclear, preserve the uncertainty, use fallback, and keep the turn in dialogue for clarification instead of producing an execution handoff.
   - When the user asks about what already happened, return a dialogue/fallback intent rather than a new execution intent unless they explicitly ask the robot to perform the action again.
   - Preserve the complete objective in user_intent.goal_text. Do not reduce a compound request to its first action.
   - Use user_intent.intent_sequence only in turns where multiple distinct intents are present. It is context for planner reasoning, not a sequence of executable steps.

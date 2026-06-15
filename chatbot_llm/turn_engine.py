@@ -102,6 +102,8 @@ _EXECUTION_REPORT_KEYS = (
     'requested_intents',
     'dialogue_context',
     'scene_targets',
+    'grounded_context',
+    'requested_summary',
     'steps',
     'latest_result_summary',
     'latest_result_payload',
@@ -124,13 +126,17 @@ Planner dialogue wording task:
 """.strip()
 _EXECUTION_REPORT_RESPONSE_ADDENDUM = """
 Execution report wording task:
-- You are wording the final spoken report for a completed robot execution step.
+- You are wording the final spoken report for a completed robot task.
 - Use only facts from the execution_report JSON payload.
 - Summarize the whole executed step chain, not only the last step.
 - Synthesize related routine steps into natural language; do not recite each
   internal motion or execution result as a separate ledger sentence.
 - Use goal_text and dialogue_context to produce a coherent continuation and to
   decide which outcomes matter to the user.
+- Use grounded_context to translate entity handles into meaningful user-facing
+  labels and relations when the facts are present.
+- Treat requested_summary as evidence or a wording hint, not as text that must
+  be repeated verbatim.
 - Use step results as the authority for factual execution claims.
 - If a step status is succeeded, do not imply it failed.
 - Mention relevant observations from scan/perception results.
@@ -1534,6 +1540,9 @@ def _extract_execution_report_context(payload: str) -> dict:
                     'id': str(step.get('id', '')).strip(),
                     'name': str(step.get('name', '')).strip(),
                     'type': str(step.get('type', '')).strip(),
+                    'args': step.get('args', {})
+                    if isinstance(step.get('args', {}), dict)
+                    else {},
                     'status': str(step.get('status', '')).strip(),
                     'reason': str(step.get('reason', '')).strip(),
                     'result_summary': str(step.get('result_summary', '')).strip(),
@@ -1565,6 +1574,10 @@ def _extract_execution_report_context(payload: str) -> dict:
         ]
         if isinstance(context.get('scene_targets', []), list)
         else [],
+        'grounded_context': context.get('grounded_context', {})
+        if isinstance(context.get('grounded_context', {}), dict)
+        else {},
+        'requested_summary': str(context.get('requested_summary', '')).strip(),
         'steps': normalized_steps,
         'latest_result_summary': str(context.get('latest_result_summary', '')).strip(),
         'latest_result_payload': context.get('latest_result_payload', {})

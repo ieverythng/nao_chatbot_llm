@@ -10,6 +10,12 @@ def test_default_prompt_pack_loads_canonical_yaml():
     assert 'friendly robot called' in pack.system_prompt
     assert 'You do not generate' in pack.system_prompt
     assert 'grounded_context' in pack.response_prompt_addendum
+    assert 'Do not acknowledge that execution will begin until the request is admitted' in (
+        pack.system_prompt
+    )
+    assert 'required target, grounded predicates, or matching skill remain unclear' in (
+        pack.intent_prompt_addendum
+    )
     assert 'Intent stage purpose' in pack.intent_prompt_addendum
     assert 'plan' not in pack.response_schema['properties']['user_intent']['properties']
     assert 'plan' not in pack.intent_schema['properties']['user_intent']['properties']
