@@ -58,6 +58,16 @@ _EXECUTION_HINT_MARKERS = (
     ' walk ',
     ' wave ',
 )
+_REFLECTIVE_EXECUTION_QUESTION_MARKERS = (
+    'what did you',
+    'what have you',
+    'what were you able to',
+    'how many',
+    'which direction',
+    'which directions',
+    'did you',
+    'have you',
+)
 _SOCIAL_TURN_MARKERS = {
     'hi',
     'hello',
@@ -459,6 +469,10 @@ class DialogueTurnEngine:
             resolved_intent=resolved_intent,
             user_intent=user_intent,
         )
+        if _is_reflective_execution_question(user_text):
+            inferred_route = _DIALOGUE_ROUTE
+            resolved_intent = ''
+            user_intent = _dialogue_user_intent(user_intent)
         # Keep greeting-like turns dialogue-first unless the user clearly asked
         # for an execution action. This avoids planner handoff on short social openers.
         if _is_greeting_intent(resolved_intent, user_intent) and not _looks_like_execution_text(
@@ -473,6 +487,7 @@ class DialogueTurnEngine:
             inferred_route == _DIALOGUE_ROUTE
             and not _is_social_turn(user_text)
             and not _is_capability_query(user_text)
+            and not _is_reflective_execution_question(user_text)
             and _ack_implies_execution(verbal_ack)
         ):
             inferred_route = _EXECUTION_ROUTE
@@ -488,15 +503,17 @@ class DialogueTurnEngine:
         )
 
         if not resolved_intent:
-            combined_hint_text = ' '.join(
-                item.strip()
-                for item in (str(user_text or ''), str(verbal_ack or ''))
-                if str(item or '').strip()
-            ).strip()
-            fallback_intent = normalize_intent(
-                detect_intent(combined_hint_text),
-                default='',
-            )
+            fallback_intent = ''
+            if not _is_reflective_execution_question(user_text):
+                combined_hint_text = ' '.join(
+                    item.strip()
+                    for item in (str(user_text or ''), str(verbal_ack or ''))
+                    if str(item or '').strip()
+                ).strip()
+                fallback_intent = normalize_intent(
+                    detect_intent(combined_hint_text),
+                    default='',
+                )
             if fallback_intent and fallback_intent != 'fallback':
                 resolved_intent = fallback_intent
                 if not user_intent:
@@ -1298,6 +1315,26 @@ def _is_capability_query(user_text: str) -> bool:
         'tell me about your skills',
     )
     return any(marker in normalized for marker in capability_markers)
+
+
+def _is_reflective_execution_question(user_text: str) -> bool:
+    """Return whether the user is asking about prior execution evidence."""
+    clean = ' '.join(str(user_text or '').strip().lower().split())
+    if not clean:
+        return False
+    if not any(marker in clean for marker in _REFLECTIVE_EXECUTION_QUESTION_MARKERS):
+        return False
+    return _looks_like_execution_text(clean)
+
+
+def _dialogue_user_intent(user_intent: dict) -> dict:
+    if not user_intent:
+        return {}
+    normalized = dict(user_intent)
+    normalized['type'] = 'fallback'
+    for key in ('goal', 'goal_text', 'intent_sequence'):
+        normalized.pop(key, None)
+    return normalized
 
 
 def _ack_implies_execution(verbal_ack: str) -> bool:

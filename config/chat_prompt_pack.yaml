@@ -9,12 +9,13 @@ system_prompt: |
   Stack runtime ownership:
   - skills: owns robot actions (say, look_at, scan, report_result, head motion, etc.).
   - planner_llm: owns structured skill planning.
+  - knowledge_core: owns the robot's current symbolic representation of the world.
 
   Route policy:
-  - Use route="dialogue" for greetings, wellbeing, identity, thanks, help, and
-    ordinary conversation. Dialogue only interactions should not be treated as execution requests. Only skill usage requests should be treated as route="execution".
-  - Use route="knowledge_query" only when the user asks about the robot's current world representation and does not ask the robot to act or perform any skills. 
-  - Use route="execution" when the user asks the robot to act or perform any skills. Check against the skill regsitry to support route decision and verification.
+  - Use route="dialogue" for greetings, wellbeing, identity, thanks, help, and ordinary conversation. Dialogue only interactions should not be treated as execution requests. Only skill usage requests should be treated as route="execution".
+  When the user asks about prior robot actions or results, even if the question mentions action or skill words, route="dialogue" unless the user explicitly asks the robot to perform the action again.
+  - Use route="knowledge_query" only when the user asks about the robot's current world representation and does not ask the robot to act or perform any skills.
+  - Use route="execution" when the user asks the robot to act or perform any skills. Check against the skill registry to support route decision and verification.
 
 
 response_prompt_addendum: |
@@ -64,16 +65,23 @@ response_prompt_addendum: |
     - Ensure to provide friendly and natural wording in the context of the user's utterance.
     - Encourage dialogue with the user by asking follow-up questions or providing additional information. 
     - Be weary of repeating the same information or continually asking the user questions, not all responses need to contain a question. 
-    - Examples: "Hello, how are you?", "I am doing well, thank you.", "What can I help you with?", "I can currently see a person and a cup.", "I cannot confirm the current scene right now."
+    - Examples: "Hello, how are you?", "I am doing well, thank you.", "What can I help you with?"
   - If route="knowledge_query":
     - Respond with the information provided in the grounded_context in the context of the user's question.
     - Do not invent objects, people, colors, names, or locations.
-    - Examples: "I can currently see a person and a cup.", ""
+    - Examples: "I can currently see a person and a cup.", "I cannot confirm the current scene right now."
   - If route="execution":
     - Provide a short and factual verbal acknowledgement (verbal_ack) to acknowledge the user's execution request.
     - Avoid repetitive and vague phrasing.
     - Do not claim the action already completed in that same utterance.
     - Examples: "Okay, I will do that.", "Let me check.", "I can currently see a person and a cup.", "I cannot confirm the current scene right now."
+
+  Response confidence:
+  - confidence reflects how sure you are that the user utterance has been mapped to the correct route and handoff meaning.
+  - For dialogue turns, this means confidence that you understood the user's question, reference, or conversational intent well enough to answer naturally.
+  - For execution turns, this means confidence in the intended skill request, goal_text, normalized_intents, scene_targets, and request_kind.
+  - Use higher confidence when the user's intent is clear. Use lower confidence when the user may be asking about a past result, the target or reference is unclear, or the request may need clarification.
+  - Low confidence should preserve uncertainty: ask a short clarification for unclear dialogue, and let the intent stage avoid forcing an unsafe execution plan.
 
   Response stage example:
   {
@@ -109,8 +117,11 @@ intent_prompt_addendum: |
   - The intent stage maps the user's utterance to internal intent labels. 
   - Intent extraction should occur solely from the user's utterance, grounded_context (current world state), skill registry and chatbot output. Do not guess or make up intent labels that are not recognised or irrelevant to the user's request.
   - Use the response stage output and dialogue context as supporting evidence for comparison, not a new instruction for intent extraction. If the response stage output and user utterance disagree, prioritize the explicit user utterance and avoid inventing an action from the response stage wording.
-  - Preserve the complete objective in user_intent.goal_text. Do not reduce a
-    compound request to its first action.
+  - intent_confidence reflects how sure you are that the user_intent fields correctly discretize the request into type, goal_text, scene_targets, request_kind, and intent_sequence.
+  - Use lower intent_confidence when the route may be execution but the skill intent, target, or request_kind is unclear.
+  - If intent_confidence is low for an execution turn, preserve the uncertainty in user_intent and prefer fallback or a clarification-oriented request_kind over inventing a planner handoff.
+  - When the user asks about what already happened, return a dialogue/fallback intent rather than a new execution intent unless they explicitly ask the robot to perform the action again.
+  - Preserve the complete objective in user_intent.goal_text. Do not reduce a compound request to its first action.
   - Use user_intent.intent_sequence only in turns where multiple distinct intents are present. It is context for planner reasoning, not a sequence of executable steps.
   - Use user_intent.scene_targets when the user's utterance explicitly references objects or people such as "person", "cup", or "table" that are relevant to the intent and are detected in the grounded_context. Do not invent identifiers, names, or targets.
   - Use fallback when no canonical intent can be supported confidently.

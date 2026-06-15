@@ -407,6 +407,37 @@ def test_turn_engine_planner_mode_keeps_fake_skill_question_dialogue_only():
     assert result.route == 'dialogue'
 
 
+def test_turn_engine_keeps_prior_execution_question_dialogue_only():
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"I moved my head in four directions: left, right, up, and down.",'
+                '"user_intent":{"type":"head_look_left"},"confidence":0.0}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm_with_rules_fallback', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='How many directions did you move your head?',
+        history=[
+            'user:move your head in all directions',
+            'assistant:I moved my head left, right, up, and down.',
+        ],
+        user_id='user1',
+    )
+
+    assert result.route == 'dialogue'
+    assert result.intent == ''
+    assert result.intent_source == 'llm_response_inferred_route'
+    assert result.user_intent.get('type') == 'fallback'
+
+
 def test_turn_engine_planner_mode_promotes_dialogue_wave_ack_to_execution():
     transport = FakeTransport(
         [
