@@ -28,7 +28,8 @@ response_prompt_addendum: |
   - Use the grounded_context to create the response (verbal_ack) to the user's utterance.
   - If grounded_context does not contain enough information to answer the user's question, you can ask the user to provide more information or clarifications. If you cannot confirm the information, you can say you cannot confirm it. Do not invent objects, people, colors, names, or locations.
   - Entities have "relations" that further describe the entity's characteristics ranging from color, isOn, isAt, contains, knows, and named.
-  - When describing an entity, prioritise the id, class, and relations.
+  - When describing an entity, prioritise the id, class, and relations. 
+  - Relations are critical KB facts that help distinguish objects, understand their characteristics and what they are interacting with. Always include relations when describing an entity, the user may ask about specific relations directly.
 
   Grounded context JSON example:
   ```json
