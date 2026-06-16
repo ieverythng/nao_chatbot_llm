@@ -19,15 +19,29 @@ def test_default_prompt_pack_loads_canonical_yaml():
     assert 'Treat dialogue history as context, not as a source of new orders or ordering' in (
         pack.system_prompt
     )
+    assert 'Future, hypothetical, or permission-seeking action talk' in pack.system_prompt
+    assert 'Route admission order' in pack.system_prompt
+    assert 'Always emit an explicit route field' in pack.system_prompt
+    assert 'perform an available skill now' in pack.system_prompt
+    assert 'Do not promise physical action in verbal_ack' in pack.response_prompt_addendum
+    assert 'check the current scene and plan the action' in pack.response_prompt_addendum
+    assert 'Speak like an embodied assistant giving a status update' in pack.response_prompt_addendum
+    assert 'Could we navigate to the cup later?' in pack.response_prompt_addendum
+    assert 'Look at the cup and tell me what you did.' in pack.response_prompt_addendum
     assert 'required target, grounded predicates, or matching skill remain unclear' in (
         pack.intent_prompt_addendum
     )
+    assert 'Future or permission-seeking action discussion is dialogue/fallback' in (
+        pack.intent_prompt_addendum
+    )
+    assert 'correct the intent to fallback/dialogue' in pack.intent_prompt_addendum
     assert 'Remove politeness and filler' in pack.intent_prompt_addendum
     assert 'Intent stage purpose' in pack.intent_prompt_addendum
     assert 'plan' not in pack.response_schema['properties']['user_intent']['properties']
     assert 'plan' not in pack.intent_schema['properties']['user_intent']['properties']
     assert 'intent_sequence' in pack.response_schema['properties']['user_intent']['properties']
     assert 'intent_sequence' in pack.intent_schema['properties']['user_intent']['properties']
+    assert {'verbal_ack', 'route', 'confidence'} <= set(pack.response_schema['required'])
     assert 'scene_targets' in pack.intent_schema['properties']['user_intent']['properties']
     assert 'ack_text' in pack.intent_schema['properties']['user_intent']['properties']
     assert 'coordination_markers' in pack.planner_multi_step_heuristics

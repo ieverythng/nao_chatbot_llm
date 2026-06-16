@@ -471,6 +471,7 @@ class DialogueTurnEngine:
         response_payload: dict,
     ) -> tuple[str, str, str, float, dict]:
         user_intent = _coerce_user_intent(response_payload.get('user_intent', {}))
+        explicit_route = _normalize_route(response_payload.get('route', ''))
         resolved_intent = self._resolve_user_intent_label(
             user_text=user_text,
             verbal_ack=verbal_ack,
@@ -498,6 +499,7 @@ class DialogueTurnEngine:
             inferred_route = _DIALOGUE_ROUTE
         if (
             inferred_route == _DIALOGUE_ROUTE
+            and not explicit_route
             and not _is_social_turn(user_text)
             and not _is_capability_query(user_text)
             and not _is_reflective_execution_question(user_text)
@@ -511,7 +513,11 @@ class DialogueTurnEngine:
         # If the LLM routed to dialogue (e.g., mapped "wave at me" to greet),
         # but the rules-fallback detects an executable skill intent, force
         # execution so action requests do not get swallowed as conversation.
-        if inferred_route == _DIALOGUE_ROUTE and not _is_reflective_execution_question(user_text):
+        if (
+            inferred_route == _DIALOGUE_ROUTE
+            and not explicit_route
+            and not _is_reflective_execution_question(user_text)
+        ):
             fb_intent = normalize_intent(detect_intent(user_text), default='')
             if fb_intent and fb_intent != 'fallback' and is_execution_intent_label(fb_intent):
                 inferred_route = _EXECUTION_ROUTE
@@ -611,13 +617,11 @@ class DialogueTurnEngine:
         user_intent: dict,
     ) -> str:
         clean_route = _normalize_route(requested_route)
-        if (
-            clean_route == _DIALOGUE_ROUTE
-            and is_execution_intent_label(str(user_intent.get('type', '')).strip() or resolved_intent)
-        ):
-            return _EXECUTION_ROUTE
         if clean_route:
             return clean_route
+
+        if _looks_like_execution_text(user_text):
+            return _EXECUTION_ROUTE
 
         intent_route = self._route_for_intent(
             str(user_intent.get('type', '')).strip() or resolved_intent

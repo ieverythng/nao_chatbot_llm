@@ -88,7 +88,7 @@ DEFAULT_RESPONSE_SCHEMA: dict[str, Any] = {
         },
         'confidence': {'type': 'number'},
     },
-    'required': ['verbal_ack'],
+    'required': ['verbal_ack', 'route', 'confidence'],
 }
 
 DEFAULT_INTENT_SCHEMA: dict[str, Any] = {

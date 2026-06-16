@@ -922,7 +922,7 @@ def test_turn_engine_falls_back_when_json_has_no_safe_ack():
     assert result.updated_history == ['user:stand up', 'assistant:fallback']
 
 
-def test_turn_engine_escalates_dialogue_route_when_ack_promises_execution():
+def test_turn_engine_honors_explicit_dialogue_route_when_ack_promises_execution():
     transport = FakeTransport(
         [
             (
@@ -944,11 +944,63 @@ def test_turn_engine_escalates_dialogue_route_when_ack_promises_execution():
         user_id='user1',
     )
 
+    assert result.route == 'dialogue'
+    assert result.intent_source == 'llm_response_route'
+
+
+def test_turn_engine_honors_explicit_dialogue_route_for_future_action_discussion() -> None:
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"Yes, we can plan that later when you ask me to do it.",'
+                '"route":"dialogue","user_intent":{"type":"navigate_to"},"confidence":0.86}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='Could we navigate to the probe cup later?',
+        history=[],
+        user_id='user1',
+    )
+
+    assert result.route == 'dialogue'
+    assert result.intent == 'navigate_to'
+    assert result.intent_source == 'llm_response_route'
+
+
+def test_turn_engine_routes_immediate_look_at_report_as_execution() -> None:
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"I understand. I will look at the probe cup and report back.",'
+                '"user_intent":{"type":"kb_query_visible_objects"},"confidence":0.0}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='Look at the probe cup and then tell me what you did.',
+        history=[],
+        user_id='user1',
+    )
+
     assert result.route == 'execution'
-    assert result.user_intent.get('goal', '') == 'Can you navigate to the book?'
 
 
-def test_turn_engine_overrides_dialogue_route_for_execution_skill_intent() -> None:
+def test_turn_engine_honors_explicit_dialogue_route_over_execution_skill_intent() -> None:
     transport = FakeTransport(
         [
             (
@@ -970,7 +1022,7 @@ def test_turn_engine_overrides_dialogue_route_for_execution_skill_intent() -> No
         user_id='user1',
     )
 
-    assert result.route == 'execution'
+    assert result.route == 'dialogue'
     assert result.intent == 'wave_greet'
 
 
