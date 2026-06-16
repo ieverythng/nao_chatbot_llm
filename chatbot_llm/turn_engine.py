@@ -104,10 +104,21 @@ _EXECUTION_REPORT_KEYS = (
     'scene_targets',
     'grounded_context',
     'requested_summary',
+    'report_role',
+    'future_steps',
     'steps',
     'latest_result_summary',
     'latest_result_payload',
 )
+_SYSTEM_TASK_RESPONSE_MODE_ADDENDUM = """
+System wording mode:
+- This turn is a closed internal wording task, not a new user request.
+- Keep the spoken answer short, natural for text-to-speech, and consistent with
+  the configured robot identity.
+- Do not apply route admission, planner handoff, or execution-acknowledgement
+  policy here. This prompt exists only to word an already-classified system
+  payload.
+""".strip()
 _PLANNER_COMPLETION_RESPONSE_ADDENDUM = """
 Planner completion wording task:
 - You are wording one spoken completion sentence after robot task execution.
@@ -126,20 +137,35 @@ Planner dialogue wording task:
 """.strip()
 _EXECUTION_REPORT_RESPONSE_ADDENDUM = """
 Execution report wording task:
-- You are wording the final spoken report for a completed robot task.
+- You are wording a spoken report for robot task execution.
 - Use only facts from the execution_report JSON payload.
-- Summarize the whole executed step chain, not only the last step.
-- Synthesize related routine steps into natural language; do not recite each
-  internal motion or execution result as a separate ledger sentence.
+- If report_role is "intermediate", report only the latest completed action or
+  observation needed at this point. Do not summarize future or not-yet-executed
+  steps, and do not claim the whole goal is finished.
+- For intermediate reports, use latest_result_summary and latest_result_payload
+  as the primary evidence. Older steps are context only and must not replace the
+  latest completed action.
+- Intermediate reports must not preview the next movement. Do not say "next
+  object", "another object", "I am now walking", or equivalent continuation
+  wording. Report only the arrival or observation that just completed.
+- If report_role is "final" or absent, summarize the whole executed step chain,
+  not only the last step.
+- Synthesize related routine steps into natural language when producing a final
+  report; do not recite each internal motion or execution result as a separate
+  ledger sentence.
 - Use goal_text and dialogue_context to produce a coherent continuation and to
   decide which outcomes matter to the user.
+- Do not answer with "I finished:" followed by the user's request. Synthesize
+  what was actually done from steps, latest_result_summary, and grounded_context.
 - Use grounded_context to translate entity handles into meaningful user-facing
   labels and relations when the facts are present.
 - Treat requested_summary as evidence or a wording hint, not as text that must
   be repeated verbatim.
-- Use step results as the authority for factual execution claims.
-- If a step status is succeeded, do not imply it failed.
+- Use step results as the authority for factual execution claims, respecting
+  success or failure flags and the status of the previous steps in the chain.
 - Mention relevant observations from scan/perception results.
+- Use one report for this report_result call. Preserve useful dialogue context,
+  avoid repeated information, and match the report_role.
 - Return only the normal response JSON with verbal_ack as the TTS-ready report.
 - Do not mention JSON, planner internals, report_result, routes, or policies.
 """.strip()
@@ -448,6 +474,11 @@ class DialogueTurnEngine:
 
         if self._config.intent_detection_mode == 'llm_with_rules_fallback':
             fallback_intent = detect_intent(user_text)
+            if (
+                is_execution_intent_label(fallback_intent)
+                and not _rules_execution_intent_allowed(user_text)
+            ):
+                fallback_intent = 'fallback'
             fallback_user_intent = (
                 {'type': fallback_intent}
                 if fallback_intent != 'fallback'
@@ -519,7 +550,12 @@ class DialogueTurnEngine:
             and not _is_reflective_execution_question(user_text)
         ):
             fb_intent = normalize_intent(detect_intent(user_text), default='')
-            if fb_intent and fb_intent != 'fallback' and is_execution_intent_label(fb_intent):
+            if (
+                fb_intent
+                and fb_intent != 'fallback'
+                and is_execution_intent_label(fb_intent)
+                and _rules_execution_intent_allowed(user_text)
+            ):
                 inferred_route = _EXECUTION_ROUTE
                 resolved_intent = fb_intent
                 user_intent = dict(user_intent)
@@ -533,6 +569,27 @@ class DialogueTurnEngine:
                 response_payload.get('confidence', 0.0),
             )
         )
+        route_repaired = False
+        if response_payload.get('_route_missing') or _route_is_contradictory(
+            user_text=user_text,
+            verbal_ack=verbal_ack,
+            route=inferred_route,
+        ):
+            repaired_route = _repair_response_route(
+                user_text=user_text,
+                verbal_ack=verbal_ack,
+                route=inferred_route,
+            )
+            if repaired_route:
+                inferred_route = repaired_route
+                route_repaired = True
+                if repaired_route == _DIALOGUE_ROUTE:
+                    user_intent = _dialogue_user_intent(user_intent)
+                elif repaired_route == _EXECUTION_ROUTE and not str(
+                    user_intent.get('goal', '')
+                ).strip():
+                    user_intent = dict(user_intent)
+                    user_intent['goal'] = str(user_text or '').strip()
 
         if not resolved_intent:
             fallback_intent = ''
@@ -547,6 +604,11 @@ class DialogueTurnEngine:
                     default='',
                 )
             if fallback_intent and fallback_intent != 'fallback':
+                if is_execution_intent_label(
+                    fallback_intent
+                ) and not _rules_execution_intent_allowed(user_text):
+                    fallback_intent = ''
+            if fallback_intent and fallback_intent != 'fallback':
                 resolved_intent = fallback_intent
                 if not user_intent:
                     user_intent = {'type': fallback_intent}
@@ -557,12 +619,14 @@ class DialogueTurnEngine:
                 # prefer execution so action intents do not get spoken-only.
                 if (
                     inferred_route == _DIALOGUE_ROUTE
+                    and not route_repaired
                     and is_execution_intent_label(fallback_intent)
+                    and _rules_execution_intent_allowed(user_text)
                 ):
                     inferred_route = _EXECUTION_ROUTE
 
         kb_query_intent = _infer_kb_query_intent_from_text(user_text)
-        if kb_query_intent:
+        if kb_query_intent and not route_repaired:
             stated_intent = str(user_intent.get('type', '')).strip().lower()
             if (
                 not _has_explicit_perception_action_request(user_text)
@@ -575,8 +639,16 @@ class DialogueTurnEngine:
                 user_intent = dict(user_intent)
                 user_intent['type'] = kb_query_intent
 
+        if _is_non_immediate_action_discussion(user_text):
+            inferred_route = _DIALOGUE_ROUTE
+            resolved_intent = ''
+            user_intent = _dialogue_user_intent(user_intent)
+            route_repaired = True
+
         if inferred_route == _DIALOGUE_ROUTE and not resolved_intent and not user_intent:
             intent_source = 'llm_response_route'
+        elif route_repaired:
+            intent_source = 'llm_response_route_repair'
         elif _normalize_route(response_payload.get('route', '')):
             intent_source = 'llm_response_route'
         else:
@@ -853,6 +925,8 @@ class DialogueTurnEngine:
                 route = _normalize_route(parsed.get('route', ''))
                 if route:
                     payload['route'] = route
+                else:
+                    payload['_route_missing'] = True
                 user_intent = _coerce_user_intent(parsed.get('user_intent', {}))
                 if user_intent:
                     payload['user_intent'] = user_intent
@@ -864,11 +938,11 @@ class DialogueTurnEngine:
                 return payload
         ack_text = _extract_ack_text(raw_response)
         if ack_text:
-            return {'verbal_ack': ack_text}
+            return {'verbal_ack': ack_text, '_route_missing': True}
         if _looks_like_json_payload(raw_response):
             _warn(self._logger, 'Response JSON did not include a safe verbal acknowledgement')
-            return {'verbal_ack': self._config.fallback_response}
-        return {'verbal_ack': str(raw_response).strip()}
+            return {'verbal_ack': self._config.fallback_response, '_route_missing': True}
+        return {'verbal_ack': str(raw_response).strip(), '_route_missing': True}
 
     def _query_intent(
         self,
@@ -994,8 +1068,9 @@ class DialogueTurnEngine:
         if parsed:
             candidate = _ack_from_parsed_response(parsed)
             if candidate:
-                return candidate
-        return _extract_ack_text(raw_response) or str(raw_response).strip()
+                return _postprocess_execution_report_ack(candidate, report_context)
+        candidate = _extract_ack_text(raw_response) or str(raw_response).strip()
+        return _postprocess_execution_report_ack(candidate, report_context)
 
     def _query_planner_dialogue_ack(self, dialogue_context: dict) -> str:
         if not self._config.enabled:
@@ -1042,7 +1117,7 @@ class DialogueTurnEngine:
             system_prompt=self._config.system_prompt,
             environment_description=self._config.environment_description,
             knowledge_snapshot='',
-            response_prompt_addendum=_join_prompt_addenda(
+            response_prompt_addendum=_system_task_response_addendum(
                 self._config.response_prompt_addendum,
                 task_addendum,
             ),
@@ -1144,6 +1219,79 @@ class DialogueTurnEngine:
 
 def _join_prompt_addenda(*parts: str) -> str:
     return '\n\n'.join(str(part).strip() for part in parts if str(part).strip())
+
+
+def _system_task_response_addendum(base_addendum: str, task_addendum: str) -> str:
+    return _join_prompt_addenda(
+        _SYSTEM_TASK_RESPONSE_MODE_ADDENDUM,
+        _extract_system_task_response_rules(base_addendum),
+        task_addendum,
+    )
+
+
+def _extract_system_task_response_rules(base_addendum: str) -> str:
+    sections = _response_addendum_sections(base_addendum)
+    parts: list[str] = []
+
+    intro_lines = [
+        line.strip()
+        for line in sections.get('__intro__', '').splitlines()
+        if 'text-to-speech' in line.lower()
+    ]
+    if intro_lines:
+        parts.append('\n'.join(intro_lines))
+
+    perception = sections.get('Perception and knowledge policy', '').strip()
+    if perception:
+        parts.append('Perception and knowledge policy:\n%s' % perception)
+
+    shared_style = _shared_response_style_rules(sections.get('Response style', ''))
+    if shared_style:
+        parts.append('Response style:\n%s' % shared_style)
+
+    extracted = _join_prompt_addenda(*parts)
+    if extracted:
+        return extracted
+    return str(base_addendum or '').strip()
+
+
+def _response_addendum_sections(text: str) -> dict[str, str]:
+    sections: dict[str, list[str]] = {'__intro__': []}
+    current = '__intro__'
+    for raw_line in str(text or '').splitlines():
+        stripped = raw_line.strip()
+        if stripped.endswith(':') and stripped and not stripped.startswith('- '):
+            current = stripped[:-1]
+            sections.setdefault(current, [])
+            continue
+        sections.setdefault(current, []).append(raw_line.rstrip())
+    return {
+        key: '\n'.join(value).strip()
+        for key, value in sections.items()
+        if any(line.strip() for line in value)
+    }
+
+
+def _shared_response_style_rules(section_text: str) -> str:
+    shared_lines: list[str] = []
+    skip_route_block = False
+    for raw_line in str(section_text or '').splitlines():
+        stripped = raw_line.strip()
+        if not stripped:
+            if not skip_route_block:
+                shared_lines.append('')
+            continue
+        if stripped.startswith('- If route="'):
+            skip_route_block = True
+            continue
+        if skip_route_block:
+            if stripped.startswith('- ') and not raw_line.startswith('  '):
+                skip_route_block = False
+            else:
+                continue
+        if not skip_route_block:
+            shared_lines.append(raw_line.rstrip())
+    return '\n'.join(shared_lines).strip()
 
 
 def _parse_json_dict(payload: str) -> dict:
@@ -1308,8 +1456,108 @@ def _normalize_route(value) -> str:
 
 
 def _looks_like_execution_text(user_text: str) -> bool:
+    if _is_information_only_action_word_question(user_text):
+        return False
     lowered = ' %s ' % ' '.join(str(user_text or '').strip().lower().split())
     return any(marker in lowered for marker in _EXECUTION_HINT_MARKERS)
+
+
+def _rules_execution_intent_allowed(user_text: str) -> bool:
+    return _looks_like_execution_text(user_text) and not _is_information_only_action_word_question(
+        user_text
+    )
+
+
+def _is_information_only_action_word_question(user_text: str) -> bool:
+    clean = ' '.join(str(user_text or '').strip().lower().split())
+    if not clean:
+        return False
+    normalized = ''.join(ch if ch.isalnum() or ch.isspace() else ' ' for ch in clean)
+    normalized = ' '.join(normalized.split())
+    asks_information = (
+        '?' in clean
+        or normalized.startswith(('what ', 'how ', 'why ', 'explain ', 'define '))
+        or normalized.startswith('tell me about ')
+    )
+    if not asks_information:
+        return False
+    if any(
+        marker in clean
+        for marker in (
+            'wave at',
+            'wave to',
+            'please wave',
+            'can you wave',
+            'could you wave',
+            'will you wave',
+            'would you wave',
+            'look at',
+            'navigate to',
+            'walk to',
+            'move to',
+            'go to',
+        )
+    ):
+        return False
+    return any(
+        marker in normalized
+        for marker in (
+            'wave particle',
+            'wave equation',
+            'particle equation',
+            'wave duality',
+            'physics',
+            'wavelength',
+        )
+    ) or normalized.startswith(('what is wave', 'what are waves', 'explain wave'))
+
+
+def _route_is_contradictory(*, user_text: str, verbal_ack: str, route: str) -> bool:
+    if route == _EXECUTION_ROUTE:
+        return _is_non_immediate_action_discussion(user_text)
+    if route in {_DIALOGUE_ROUTE, _KNOWLEDGE_QUERY_ROUTE}:
+        return (
+            _looks_like_execution_text(user_text)
+            and _ack_implies_execution(verbal_ack)
+            and not _is_non_immediate_action_discussion(user_text)
+            and not _is_reflective_execution_question(user_text)
+            and not _is_capability_query(user_text)
+        )
+    return False
+
+
+def _repair_response_route(*, user_text: str, verbal_ack: str, route: str) -> str:
+    if _is_reflective_execution_question(user_text):
+        return _DIALOGUE_ROUTE
+    if _is_capability_query(user_text):
+        return _DIALOGUE_ROUTE
+    if _is_social_turn(user_text) and not _looks_like_execution_text(user_text):
+        return _DIALOGUE_ROUTE
+    if _is_non_immediate_action_discussion(user_text):
+        return _DIALOGUE_ROUTE
+    if _looks_like_execution_text(user_text) and _ack_implies_execution(verbal_ack):
+        return _EXECUTION_ROUTE
+    if route in _SUPPORTED_ROUTES:
+        return route
+    return _DIALOGUE_ROUTE
+
+
+def _is_non_immediate_action_discussion(user_text: str) -> bool:
+    clean = ' '.join(str(user_text or '').strip().lower().split())
+    if not clean or not _looks_like_execution_text(clean):
+        return False
+    if not any(marker in clean for marker in ('could', 'would', 'can we', 'could we')):
+        return False
+    return any(
+        marker in clean
+        for marker in (
+            'later',
+            'some other time',
+            'at some point',
+            'afterwards',
+            'eventually',
+        )
+    )
 
 
 def _is_social_turn(user_text: str) -> bool:
@@ -1473,6 +1721,11 @@ def _sanitize_execution_ack(verbal_ack: str) -> str:
         'i have detected',
         'i observed',
         'i have observed',
+        'i am now',
+        "i'm now",
+        'i have arrived',
+        "i've arrived",
+        'i arrived',
         'i performed',
         'i have moved',
         'i have completed',
@@ -1555,6 +1808,29 @@ def _extract_execution_report_context(payload: str) -> dict:
                     else {},
                 }
             )
+    future_steps = context.get('future_steps', [])
+    normalized_future_steps = []
+    if isinstance(future_steps, list):
+        for step in future_steps:
+            if not isinstance(step, dict):
+                continue
+            normalized_future_steps.append(
+                {
+                    'id': str(step.get('id', '')).strip(),
+                    'name': str(step.get('name', '')).strip(),
+                    'type': str(step.get('type', '')).strip(),
+                    'args': step.get('args', {})
+                    if isinstance(step.get('args', {}), dict)
+                    else {},
+                    'requires': [
+                        str(item).strip()
+                        for item in step.get('requires', [])
+                        if str(item).strip()
+                    ]
+                    if isinstance(step.get('requires', []), list)
+                    else [],
+                }
+            )
     normalized = {
         'goal_text': str(context.get('goal_text', '')).strip(),
         'requested_intents': [
@@ -1582,6 +1858,8 @@ def _extract_execution_report_context(payload: str) -> dict:
         if isinstance(context.get('grounded_context', {}), dict)
         else {},
         'requested_summary': str(context.get('requested_summary', '')).strip(),
+        'report_role': str(context.get('report_role', '')).strip(),
+        'future_steps': normalized_future_steps,
         'steps': normalized_steps,
         'latest_result_summary': str(context.get('latest_result_summary', '')).strip(),
         'latest_result_payload': context.get('latest_result_payload', {})
@@ -1639,8 +1917,28 @@ def _fallback_planner_completion_ack(completion_context: dict) -> str:
             return summary_text
     goal_text = str(completion_context.get('goal_text', '')).strip()
     if goal_text:
-        return 'I finished: %s.' % goal_text.rstrip('.')
+        return 'I completed the requested task.'
     return ''
+
+
+def _friendly_step_label(step_name: str) -> str:
+    clean = str(step_name or '').strip().lower()
+    labels = {
+        'look_at': 'looked at the target',
+        'navigate_to': 'navigated to the target',
+        'walk_to': 'walked to the target',
+        'wave_greet': 'waved',
+        'perform_motion': 'performed the motion',
+        'scan': 'looked around',
+        'inspect_scene': 'inspected the scene',
+        'find_object': 'looked for the object',
+        'pick_object': 'picked up the object',
+        'place_object': 'placed the object',
+        'bring_object': 'brought the object',
+    }
+    if clean in labels:
+        return labels[clean]
+    return clean.replace('_', ' ') if clean else 'completed the step'
 
 
 def _fallback_execution_report_ack(report_context: dict) -> str:
@@ -1648,16 +1946,28 @@ def _fallback_execution_report_ack(report_context: dict) -> str:
         step for step in report_context.get('steps', [])
         if isinstance(step, dict) and str(step.get('status', '')).strip().lower() == 'succeeded'
     ]
+    latest_summary = str(report_context.get('latest_result_summary', '')).strip()
+    if str(report_context.get('report_role', '')).strip().lower() == 'intermediate':
+        if latest_summary:
+            return latest_summary
+        if successful_steps:
+            latest_step_summary = str(successful_steps[-1].get('result_summary', '')).strip()
+            if latest_step_summary:
+                return latest_step_summary
+
     if successful_steps:
+        navigation_report = _ordered_navigation_report(successful_steps, report_context)
+        if navigation_report:
+            return navigation_report
         summaries = [
             str(step.get('result_summary', '')).strip()
             for step in successful_steps
             if str(step.get('result_summary', '')).strip()
+            and not _is_placeholder_report_summary(str(step.get('result_summary', '')).strip())
         ]
         if summaries:
             return ' '.join(summaries[-2:])
 
-    latest_summary = str(report_context.get('latest_result_summary', '')).strip()
     if latest_summary:
         return latest_summary
     latest_payload = report_context.get('latest_result_payload', {})
@@ -1665,10 +1975,212 @@ def _fallback_execution_report_ack(report_context: dict) -> str:
         summary_text = str(latest_payload.get('summary_text', '')).strip()
         if summary_text:
             return summary_text
-    goal_text = str(report_context.get('goal_text', '')).strip()
-    if goal_text:
-        return 'I finished: %s.' % goal_text.rstrip('.')
+    step_names = [
+        _friendly_step_label(str(step.get('name', '')).strip())
+        for step in successful_steps[-2:]
+        if isinstance(step, dict) and str(step.get('name', '')).strip()
+    ]
+    if step_names:
+        if len(step_names) == 1:
+            return 'I %s.' % step_names[0]
+        return 'I %s and then %s.' % (step_names[0], step_names[1])
+    if str(report_context.get('goal_text', '')).strip():
+        return 'I completed the requested task.'
     return ''
+
+
+def _postprocess_execution_report_ack(candidate: str, report_context: dict) -> str:
+    """Reject report wording that duplicates or promises a future report."""
+    clean = str(candidate or '').strip()
+    if not clean:
+        return ''
+    lowered = clean.lower()
+    if any(
+        marker in lowered
+        for marker in (
+            'i finished:',
+            'will report back',
+            'will report on',
+            'will let you know',
+            'will tell you',
+            'can report the current scene summary',
+            'can report what i observed',
+            'can report what i saw',
+            'can report it',
+            'going to report',
+            "i'll report",
+            "i'll let you know",
+        )
+    ):
+        return ''
+    if _is_placeholder_report_summary(clean):
+        return ''
+    if str(report_context.get('report_role', '')).strip().lower() == 'intermediate' and (
+        'next object' in lowered
+        or 'another object' in lowered
+        or 'i am now walking' in lowered
+        or "i'm now walking" in lowered
+        or 'ready to move' in lowered
+    ):
+        return ''
+    if _uses_stale_intermediate_arrival(clean, report_context):
+        return ''
+
+    sentences = _split_sentences(clean)
+    if len(sentences) <= 1:
+        return clean
+    successful_steps = _successful_non_report_steps(report_context)
+    if len(successful_steps) == 1 and any(_is_generic_completion_sentence(item) for item in sentences):
+        return ''
+    return clean
+
+
+def _uses_stale_intermediate_arrival(candidate: str, report_context: dict) -> bool:
+    if str(report_context.get('report_role', '')).strip().lower() != 'intermediate':
+        return False
+    lowered = str(candidate or '').strip().lower()
+    if 'arrived at' not in lowered and 'arrived to' not in lowered:
+        return False
+    navigation_steps = [
+        step for step in _successful_non_report_steps(report_context)
+        if str(step.get('name', '')).strip().lower() in {'navigate_to', 'walk_to'}
+    ]
+    if len(navigation_steps) <= 1:
+        return False
+    if 'first object' in lowered:
+        return True
+    latest_target = _latest_step_target(navigation_steps[-1], report_context)
+    if not latest_target:
+        return False
+    for step in navigation_steps[:-1]:
+        target = _latest_step_target(step, report_context)
+        if target and target != latest_target and target.lower() in lowered:
+            return True
+    return False
+
+
+def _latest_step_target(step: dict, report_context: dict) -> str:
+    payload = step.get('result_payload', {})
+    if isinstance(payload, dict):
+        target = str(
+            payload.get('target')
+            or payload.get('object')
+            or payload.get('location')
+            or payload.get('target_frame')
+            or ''
+        ).strip()
+        if target:
+            return target
+    args = step.get('args', {})
+    if isinstance(args, dict):
+        target = str(
+            args.get('target')
+            or args.get('object')
+            or args.get('location')
+            or args.get('target_frame')
+            or ''
+        ).strip()
+        if target:
+            return target
+    latest_payload = report_context.get('latest_result_payload', {})
+    if isinstance(latest_payload, dict):
+        return str(
+            latest_payload.get('target')
+            or latest_payload.get('object')
+            or latest_payload.get('location')
+            or latest_payload.get('target_frame')
+            or ''
+        ).strip()
+    return ''
+
+
+def _successful_non_report_steps(report_context: dict) -> list[dict]:
+    return [
+        step
+        for step in report_context.get('steps', [])
+        if isinstance(step, dict)
+        and str(step.get('status', '')).strip().lower() == 'succeeded'
+        and str(step.get('name', '')).strip().lower() != 'report_result'
+    ]
+
+
+def _ordered_navigation_report(successful_steps: list[dict], report_context: dict) -> str:
+    goal_text = str(report_context.get('goal_text', '')).strip().lower()
+    if not any(marker in goal_text for marker in ('each object', 'every object', 'all objects')):
+        return ''
+    targets = []
+    for step in successful_steps:
+        if str(step.get('name', '')).strip().lower() not in {'navigate_to', 'walk_to'}:
+            continue
+        target = _latest_step_target(step, report_context)
+        if target and target not in targets:
+            targets.append(target)
+    if len(targets) < 2:
+        return ''
+    labels = [_friendly_target_label(target) for target in targets]
+    return 'I walked to %s and reported each arrival.' % _natural_join(labels)
+
+
+def _friendly_target_label(target: str) -> str:
+    clean = str(target or '').strip()
+    if not clean:
+        return 'the target'
+    lowered = clean.lower()
+    for prefix in ('codex_probe_', 'detected_', 'object_'):
+        if lowered.startswith(prefix):
+            clean = clean[len(prefix):]
+            break
+    return 'the %s' % clean.replace('_', ' ')
+
+
+def _natural_join(items: list[str]) -> str:
+    clean_items = [str(item or '').strip() for item in items if str(item or '').strip()]
+    if not clean_items:
+        return ''
+    if len(clean_items) == 1:
+        return clean_items[0]
+    if len(clean_items) == 2:
+        return '%s and %s' % (clean_items[0], clean_items[1])
+    return '%s, and %s' % (', '.join(clean_items[:-1]), clean_items[-1])
+
+
+def _is_placeholder_report_summary(text: str) -> bool:
+    lowered = str(text or '').strip().lower()
+    return any(
+        marker in lowered
+        for marker in (
+            'can report the current scene summary',
+            'can report current scene summary',
+            'can report what i observed',
+            'can report what i saw',
+            'can report it',
+            'will report back',
+            'will let you know',
+        )
+    )
+
+
+def _split_sentences(text: str) -> list[str]:
+    return [
+        item.strip()
+        for item in re.split(r'(?<=[.!?])\s+', str(text or '').strip())
+        if item.strip()
+    ]
+
+
+def _is_generic_completion_sentence(sentence: str) -> bool:
+    lowered = str(sentence or '').strip().lower()
+    return any(
+        marker in lowered
+        for marker in (
+            'completed the task',
+            'completed this task',
+            'completed the',
+            'have completed',
+            'i finished the task',
+            'i have finished the task',
+        )
+    )
 
 
 def _fallback_planner_dialogue_ack(dialogue_context: dict) -> str:

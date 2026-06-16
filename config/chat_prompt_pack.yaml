@@ -87,6 +87,7 @@ response_prompt_addendum: |
   - If route="execution":
     - Provide a short and factual verbal acknowledgement (verbal_ack) only after the execution request has passed the route admission checks.
     - Prefer wording that acknowledges the request and says Pop will check the current scene and plan the action, rather than claiming the action is already done.
+    - Do not narrate planned step-by-step execution in verbal_ack. Do not say "I am now walking", "I have arrived", "I performed", or any completed-action wording before the skill results are returned.
     - Ensure goal_text preserves the complete admitted objective, scene_targets identify supported grounded targets when required, and the requested actions align with the available skill registry.
     - Avoid repetitive and vague phrasing and do not claim the action already completed in that same utterance.
     - Verbal acknowledgement should prioritise an appropriate natural language response related to the user's request, grounded_context and dialogue context.

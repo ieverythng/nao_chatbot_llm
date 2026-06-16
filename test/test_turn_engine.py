@@ -1,5 +1,6 @@
 from chatbot_llm.backend_config import ChatbotConfig
 from chatbot_llm.turn_engine import DialogueTurnEngine
+from chatbot_llm.turn_engine import _system_task_response_addendum
 import pytest
 
 
@@ -332,7 +333,7 @@ def test_turn_engine_planner_mode_uses_single_response_stage_for_execution():
     assert 'Grounded context:\nperson_1 rdf:type Person' in transport.calls[0]['messages'][0]['content']
 
 
-def test_turn_engine_planner_mode_infers_execution_route_without_second_call():
+def test_turn_engine_planner_mode_repairs_missing_execution_route_without_second_call():
     transport = FakeTransport(
         [
             '{"verbal_ack":"I can do that.","user_intent":{"type":"posture_stand"},"confidence":0.51}',
@@ -354,7 +355,7 @@ def test_turn_engine_planner_mode_infers_execution_route_without_second_call():
     assert len(transport.calls) == 1
     assert result.route == 'execution'
     assert result.intent == 'posture_stand'
-    assert result.intent_source == 'llm_response_inferred_route'
+    assert result.intent_source == 'llm_response_route_repair'
 
 
 def test_turn_engine_planner_mode_keeps_capability_question_dialogue_only():
@@ -434,7 +435,7 @@ def test_turn_engine_keeps_prior_execution_question_dialogue_only():
 
     assert result.route == 'dialogue'
     assert result.intent == ''
-    assert result.intent_source == 'llm_response_inferred_route'
+    assert result.intent_source == 'llm_response_route_repair'
     assert result.user_intent.get('type') == 'fallback'
 
 
@@ -592,6 +593,7 @@ def test_turn_engine_renders_execution_report_for_system_payload_with_llm():
     assert len(transport.calls) == 1
     assert 'You are NAO.' in transport.calls[0]['messages'][0]['content']
     assert 'Respond briefly.' in transport.calls[0]['messages'][0]['content']
+    assert 'System wording mode:' in transport.calls[0]['messages'][0]['content']
     assert 'Execution report wording task:' in transport.calls[0]['messages'][0]['content']
     assert 'dialogue_context' in transport.calls[0]['messages'][1]['content']
     assert 'grounded_context' in transport.calls[0]['messages'][1]['content']
@@ -624,6 +626,334 @@ def test_turn_engine_execution_report_fallback_uses_step_summaries():
     assert result.verbal_ack == 'I navigated to the cup. I found two blueberries.'
 
 
+def test_turn_engine_execution_report_rejects_future_report_closure():
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='rules'),
+        transport=FakeTransport(
+            [
+                (
+                    '{"verbal_ack":"I looked at codex_probe_cup and will report '
+                    'back on what I observed."}'
+                )
+            ]
+        ),
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text=(
+            '{"execution_report":{"steps":['
+            '{"name":"look_at","status":"succeeded",'
+            '"result_summary":"I looked at codex_probe_cup."}]}}'
+        ),
+        history=[],
+        user_id='__system__',
+    )
+
+    assert result.intent_source == 'execution_report'
+    assert result.verbal_ack == 'I looked at codex_probe_cup.'
+
+
+def test_turn_engine_execution_report_rejects_single_skill_double_summary():
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='rules'),
+        transport=FakeTransport(
+            [
+                (
+                    '{"verbal_ack":"I have completed the wave gesture. '
+                    'I performed a friendly wave at you."}'
+                )
+            ]
+        ),
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text=(
+            '{"execution_report":{"steps":['
+            '{"name":"wave_greet","status":"succeeded",'
+            '"result_summary":"I performed a friendly wave at you."}]}}'
+        ),
+        history=[],
+        user_id='__system__',
+    )
+
+    assert result.intent_source == 'execution_report'
+    assert result.verbal_ack == 'I performed a friendly wave at you.'
+
+
+def test_turn_engine_execution_report_prompt_distinguishes_intermediate_role():
+    transport = FakeTransport(
+        [
+            '{"verbal_ack":"I have navigated to the apple."}',
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='rules'),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text=(
+            '{"execution_report":{"goal_text":"walk to every object and report each stop",'
+            '"report_role":"intermediate",'
+            '"latest_result_summary":"I completed destination navigation to codex_probe_apple.",'
+            '"steps":[{"name":"navigate_to","status":"succeeded",'
+            '"result_summary":"I completed destination navigation to codex_probe_apple."}],'
+            '"future_steps":[{"name":"navigate_to","args":{"target":"codex_probe_book"}},'
+            '{"name":"report_result","args":{}}]}}'
+        ),
+        history=[],
+        user_id='__system__',
+    )
+
+    prompt = transport.calls[0]['messages'][0]['content']
+    payload = transport.calls[0]['messages'][1]['content']
+    assert result.intent_source == 'execution_report'
+    assert result.verbal_ack == 'I have navigated to the apple.'
+    assert 'If report_role is "intermediate"' in prompt
+    assert '"report_role":"intermediate"' in payload
+    assert 'future_steps' in payload
+
+
+def test_turn_engine_execution_report_rejects_next_object_without_future_navigation():
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='rules'),
+        transport=FakeTransport(
+            [
+                (
+                    '{"verbal_ack":"I have arrived at the phone. It is silver '
+                    'and on the table. I will now move to the next object."}'
+                )
+            ]
+        ),
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text=(
+            '{"execution_report":{"goal_text":"walk to every object and report each stop",'
+            '"report_role":"intermediate",'
+            '"latest_result_summary":"I completed destination navigation to codex_probe_phone.",'
+            '"steps":[{"name":"navigate_to","status":"succeeded",'
+            '"result_summary":"I arrived at the phone."}],'
+            '"future_steps":[{"name":"wave_greet","args":{}}]}}'
+        ),
+        history=[],
+        user_id='__system__',
+    )
+
+    assert result.intent_source == 'execution_report'
+    assert result.verbal_ack == 'I completed destination navigation to codex_probe_phone.'
+
+
+def test_turn_engine_execution_report_rejects_stale_intermediate_arrival():
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='rules'),
+        transport=FakeTransport(
+            [
+                (
+                    '{"verbal_ack":"I have arrived at the first object, which is '
+                    'the codex_probe_apple. It is red and located on the table. '
+                    'Now I am walking to the next object, codex_probe_book."}'
+                )
+            ]
+        ),
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text=(
+            '{"execution_report":{"goal_text":"walk to every object and report each stop",'
+            '"report_role":"intermediate",'
+            '"latest_result_summary":"I completed destination navigation to codex_probe_book.",'
+            '"latest_result_payload":{"target":"codex_probe_book"},'
+            '"steps":[{"name":"navigate_to","status":"succeeded",'
+            '"args":{"target":"codex_probe_apple"},'
+            '"result_summary":"I arrived at the apple.",'
+            '"result_payload":{"target":"codex_probe_apple"}},'
+            '{"name":"navigate_to","status":"succeeded",'
+            '"args":{"target":"codex_probe_book"},'
+            '"result_summary":"I completed destination navigation to codex_probe_book.",'
+            '"result_payload":{"target":"codex_probe_book"}}],'
+            '"future_steps":[{"name":"navigate_to","args":{"target":"codex_probe_cup"}}]}}'
+        ),
+        history=[],
+        user_id='__system__',
+    )
+
+    assert result.intent_source == 'execution_report'
+    assert result.verbal_ack == 'I completed destination navigation to codex_probe_book.'
+
+
+def test_turn_engine_execution_report_rejects_intermediate_next_movement_preview():
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='rules'),
+        transport=FakeTransport(
+            [
+                (
+                    '{"verbal_ack":"I have arrived at the first object, '
+                    'codex_probe_apple. I am now ready to move to the next object."}'
+                )
+            ]
+        ),
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text=(
+            '{"execution_report":{"goal_text":"walk to every object and report each stop",'
+            '"report_role":"intermediate",'
+            '"latest_result_summary":"I completed destination navigation to codex_probe_apple.",'
+            '"steps":[{"name":"navigate_to","status":"succeeded",'
+            '"result_summary":"I completed destination navigation to codex_probe_apple."}],'
+            '"future_steps":[{"name":"navigate_to","args":{"target":"codex_probe_book"}}]}}'
+        ),
+        history=[],
+        user_id='__system__',
+    )
+
+    assert result.intent_source == 'execution_report'
+    assert result.verbal_ack == 'I completed destination navigation to codex_probe_apple.'
+
+
+def test_turn_engine_execution_report_intermediate_fallback_prefers_latest_summary():
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='rules'),
+        transport=FakeTransport(['']),
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text=(
+            '{"execution_report":{"report_role":"intermediate",'
+            '"latest_result_summary":"I arrived at the book.",'
+            '"steps":[{"name":"navigate_to","status":"succeeded",'
+            '"result_summary":"I arrived at the apple."},'
+            '{"name":"navigate_to","status":"succeeded",'
+            '"result_summary":"I arrived at the book."}]}}'
+        ),
+        history=[],
+        user_id='__system__',
+    )
+
+    assert result.intent_source == 'execution_report'
+    assert result.verbal_ack == 'I arrived at the book.'
+
+
+def test_turn_engine_execution_report_rejects_quoted_goal_completion():
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='rules'),
+        transport=FakeTransport(
+            [
+                (
+                    '{"verbal_ack":"I finished: Look at the probe cup and then '
+                    'tell me what you did."}'
+                )
+            ]
+        ),
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text=(
+            '{"execution_report":{"goal_text":"Look at the probe cup and then tell me what you did.",'
+            '"steps":[{"name":"look_at","status":"succeeded"}]}}'
+        ),
+        history=[],
+        user_id='__system__',
+    )
+
+    assert result.intent_source == 'execution_report'
+    assert result.verbal_ack == 'I looked at the target.'
+
+
+def test_turn_engine_execution_report_rejects_placeholder_scene_report():
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='rules'),
+        transport=FakeTransport(
+            [
+                (
+                    '{"verbal_ack":"I navigated to the probe cup and then looked '
+                    'around. I can report the current scene summary."}'
+                )
+            ]
+        ),
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text=(
+            '{"execution_report":{"goal_text":"Navigate to the probe cup and then tell me what else you see.",'
+            '"steps":[{"name":"navigate_to","status":"succeeded",'
+            '"result_summary":"I navigated to the probe cup."},'
+            '{"name":"scan","status":"succeeded",'
+            '"result_summary":"I found a silver phone, a red apple, and a blue book."}]}}'
+        ),
+        history=[],
+        user_id='__system__',
+    )
+
+    assert result.intent_source == 'execution_report'
+    assert result.verbal_ack == (
+        'I navigated to the probe cup. I found a silver phone, a red apple, and a blue book.'
+    )
+
+
+def test_turn_engine_execution_report_fallback_synthesizes_multi_object_chain():
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='rules'),
+        transport=FakeTransport(
+            [
+                (
+                    '{"verbal_ack":"I completed destination navigation to codex_probe_phone. '
+                    'I looked around and can report the current scene summary."}'
+                )
+            ]
+        ),
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text=(
+            '{"execution_report":{"goal_text":"walk to every object and report each arrival",'
+            '"steps":[{"name":"navigate_to","status":"succeeded",'
+            '"args":{"target":"codex_probe_apple"},'
+            '"result_summary":"I completed destination navigation to codex_probe_apple."},'
+            '{"name":"report_result","status":"succeeded",'
+            '"result_summary":"I have arrived at the apple."},'
+            '{"name":"navigate_to","status":"succeeded",'
+            '"args":{"target":"codex_probe_book"},'
+            '"result_summary":"I completed destination navigation to codex_probe_book."},'
+            '{"name":"report_result","status":"succeeded",'
+            '"result_summary":"I have arrived at the book."},'
+            '{"name":"navigate_to","status":"succeeded",'
+            '"args":{"target":"codex_probe_phone"},'
+            '"result_summary":"I completed destination navigation to codex_probe_phone."},'
+            '{"name":"scan","status":"succeeded",'
+            '"result_summary":"I looked around and can report the current scene summary."}]}}'
+        ),
+        history=[],
+        user_id='__system__',
+    )
+
+    assert result.intent_source == 'execution_report'
+    assert result.verbal_ack == (
+        'I walked to the apple, the book, and the phone and reported each arrival.'
+    )
+
+
 def test_turn_engine_planner_completion_fallback_without_llm_response():
     engine = DialogueTurnEngine(
         config=make_config(intent_mode='rules'),
@@ -642,6 +972,70 @@ def test_turn_engine_planner_completion_fallback_without_llm_response():
     assert result.intent_source == 'planner_completion'
     assert result.verbal_ack == 'Head motion completed.'
     assert result.route == 'dialogue'
+
+
+def test_turn_engine_renders_planner_completion_without_interactive_route_policy():
+    transport = FakeTransport(
+        [
+            '{"verbal_ack":"I scanned the room and found one person."}',
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='rules'),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text=(
+            '{"planner_completion":{"goal_text":"scan the room",'
+            '"result_summary":"found one person","requested_intents":["scan"]}}'
+        ),
+        history=[],
+        user_id='__system__',
+    )
+
+    assert result.intent_source == 'planner_completion'
+    assert 'Respond briefly.' in transport.calls[0]['messages'][0]['content']
+    assert 'System wording mode:' in transport.calls[0]['messages'][0]['content']
+    assert 'Planner completion wording task:' in transport.calls[0]['messages'][0]['content']
+
+
+def test_system_task_response_addendum_keeps_relevant_response_guidance_only():
+    base_addendum = """
+Keep responses short and natural for text-to-speech.
+
+Perception and knowledge policy:
+- grounded_context is a JSON object that contains the robot's current world state.
+- Do not invent objects, people, colors, names, or locations.
+
+Response style:
+- A verbal acknowledgement (verbal_ack) must be provided for all routes.
+- Speak like an embodied assistant giving a status update.
+- If route="dialogue":
+  - Ensure to provide friendly and natural wording.
+- If route="execution":
+  - Provide a short and factual verbal acknowledgement.
+
+Response confidence:
+- confidence reflects how sure you are.
+
+Route contrast examples:
+- User: "Could we navigate to the cup later?"
+""".strip()
+
+    text = _system_task_response_addendum(
+        base_addendum,
+        'Execution report wording task:\n- Use only facts from the payload.',
+    )
+
+    assert 'Keep responses short and natural for text-to-speech.' in text
+    assert 'Perception and knowledge policy:' in text
+    assert 'Speak like an embodied assistant giving a status update.' in text
+    assert 'Could we navigate to the cup later?' not in text
+    assert 'If route="execution":' not in text
+    assert 'Execution report wording task:' in text
 
 
 def test_turn_engine_renders_planner_dialogue_for_system_payload_with_llm():
@@ -922,7 +1316,7 @@ def test_turn_engine_falls_back_when_json_has_no_safe_ack():
     assert result.updated_history == ['user:stand up', 'assistant:fallback']
 
 
-def test_turn_engine_honors_explicit_dialogue_route_when_ack_promises_execution():
+def test_turn_engine_repairs_dialogue_route_when_ack_promises_execution():
     transport = FakeTransport(
         [
             (
@@ -944,8 +1338,8 @@ def test_turn_engine_honors_explicit_dialogue_route_when_ack_promises_execution(
         user_id='user1',
     )
 
-    assert result.route == 'dialogue'
-    assert result.intent_source == 'llm_response_route'
+    assert result.route == 'execution'
+    assert result.intent_source == 'llm_response_route_repair'
 
 
 def test_turn_engine_honors_explicit_dialogue_route_for_future_action_discussion() -> None:
@@ -971,8 +1365,62 @@ def test_turn_engine_honors_explicit_dialogue_route_for_future_action_discussion
     )
 
     assert result.route == 'dialogue'
-    assert result.intent == 'navigate_to'
-    assert result.intent_source == 'llm_response_route'
+    assert result.intent == ''
+    assert result.intent_source == 'llm_response_route_repair'
+
+
+def test_turn_engine_repairs_missing_route_for_future_action_discussion() -> None:
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"Yes, we can plan that later when you ask me to do it.",'
+                '"user_intent":{"type":"navigate_to"},"confidence":0.86}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='Could we navigate to the probe cup later?',
+        history=[],
+        user_id='user1',
+    )
+
+    assert result.route == 'dialogue'
+    assert result.intent_source == 'llm_response_route_repair'
+
+
+def test_turn_engine_repairs_explicit_execution_route_for_future_action_discussion() -> None:
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"Yes, we can plan that later when you ask me to do it.",'
+                '"route":"execution","user_intent":{"type":"navigate_to"},'
+                '"confidence":0.86}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='Could we navigate to the probe cup later?',
+        history=[],
+        user_id='user1',
+    )
+
+    assert result.route == 'dialogue'
+    assert result.intent == ''
+    assert result.intent_source == 'llm_response_route_repair'
 
 
 def test_turn_engine_routes_immediate_look_at_report_as_execution() -> None:
@@ -1000,7 +1448,7 @@ def test_turn_engine_routes_immediate_look_at_report_as_execution() -> None:
     assert result.route == 'execution'
 
 
-def test_turn_engine_honors_explicit_dialogue_route_over_execution_skill_intent() -> None:
+def test_turn_engine_repairs_dialogue_route_over_execution_skill_intent() -> None:
     transport = FakeTransport(
         [
             (
@@ -1022,8 +1470,38 @@ def test_turn_engine_honors_explicit_dialogue_route_over_execution_skill_intent(
         user_id='user1',
     )
 
-    assert result.route == 'dialogue'
+    assert result.route == 'execution'
     assert result.intent == 'wave_greet'
+
+
+def test_turn_engine_keeps_wave_particle_question_on_dialogue_route() -> None:
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"The wave-particle relation is described by '
+                'the de Broglie equation.","route":"dialogue"}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='Wave-particle equation?',
+        history=[
+            'user:speed of light?',
+            'assistant:The speed of light in a vacuum is approximately 299,792,458 meters per second.',
+        ],
+        user_id='user1',
+    )
+
+    assert result.route == 'dialogue'
+    assert result.intent != 'wave_greet'
+    assert result.user_intent == {}
 
 
 def test_turn_engine_keeps_social_greeting_on_dialogue_route() -> None:
@@ -1159,6 +1637,40 @@ def test_turn_engine_planner_mode_sanitizes_execution_ack_result_leak() -> None:
     assert result.verbal_ack == 'Sure, I will look around and report what I can see.'
     assert '(performs' not in result.updated_history[-1]
     assert 'currently see' not in result.updated_history[-1]
+
+
+def test_turn_engine_planner_mode_sanitizes_step_trace_execution_ack() -> None:
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"Sure, I will walk to each object one by one, '
+                "let you know when I arrive, and then proceed to the next. Let's begin.\\n\\n"
+                'I am now walking to the apple. I have arrived at the apple. '
+                'I am now walking to the book. I have arrived at the book.",'
+                '"route":"execution","user_intent":{"type":"navigate_to"}}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='walk to every object',
+        history=[],
+        user_id='user1',
+    )
+
+    assert result.route == 'execution'
+    assert result.verbal_ack == (
+        "Sure, I will walk to each object one by one, let you know when I arrive, "
+        "and then proceed to the next. Let's begin."
+    )
+    assert 'I am now walking' not in result.updated_history[-1]
+    assert 'I have arrived' not in result.updated_history[-1]
 
 
 def test_turn_engine_planner_mode_sanitizes_past_tense_scan_ack() -> None:
