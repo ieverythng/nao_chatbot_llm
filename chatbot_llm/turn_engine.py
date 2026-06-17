@@ -57,6 +57,22 @@ _EXECUTION_HINT_MARKERS = (
     ' navigate ',
     ' walk ',
     ' wave ',
+    ' add ',
+    ' remember ',
+    ' store ',
+    ' save ',
+    ' revise ',
+    ' update ',
+    ' change ',
+    ' correct ',
+    ' remove ',
+    ' delete ',
+    ' forget ',
+    ' knowledge base',
+    ' kb ',
+    ' rdf:type',
+    ' dbp:',
+    ' oro:',
 )
 _REFLECTIVE_EXECUTION_QUESTION_MARKERS = (
     'what did you',
@@ -187,6 +203,9 @@ class TurnExecutionResult:
     intent_confidence: float
     user_intent: dict
     route: str
+
+
+_MAX_VERBAL_ACK_CHARS = 900
 
 
 # ---------------------------------------------------------------------------
@@ -530,6 +549,18 @@ class DialogueTurnEngine:
             inferred_route = _DIALOGUE_ROUTE
         if (
             inferred_route == _DIALOGUE_ROUTE
+            and explicit_route == _DIALOGUE_ROUTE
+            and _is_repeat_action_request(user_text)
+            and _ack_implies_execution(verbal_ack)
+            and not _is_reflective_execution_question(user_text)
+            and not _is_capability_query(user_text)
+        ):
+            inferred_route = _EXECUTION_ROUTE
+            if not str(user_intent.get('goal', '')).strip():
+                user_intent = dict(user_intent)
+                user_intent['goal'] = str(user_text or '').strip()
+        if (
+            inferred_route == _DIALOGUE_ROUTE
             and not explicit_route
             and not _is_social_turn(user_text)
             and not _is_capability_query(user_text)
@@ -585,11 +616,19 @@ class DialogueTurnEngine:
                 route_repaired = True
                 if repaired_route == _DIALOGUE_ROUTE:
                     user_intent = _dialogue_user_intent(user_intent)
-                elif repaired_route == _EXECUTION_ROUTE and not str(
-                    user_intent.get('goal', '')
-                ).strip():
+                elif repaired_route == _EXECUTION_ROUTE:
                     user_intent = dict(user_intent)
-                    user_intent['goal'] = str(user_text or '').strip()
+                    repaired_intent = normalize_intent(detect_intent(user_text), default='')
+                    if (
+                        repaired_intent
+                        and repaired_intent != 'fallback'
+                        and str(user_intent.get('type', '')).strip().lower()
+                        in {'', 'fallback'}
+                    ):
+                        resolved_intent = repaired_intent
+                        user_intent['type'] = repaired_intent
+                    if not str(user_intent.get('goal', '')).strip():
+                        user_intent['goal'] = str(user_text or '').strip()
 
         if not resolved_intent:
             fallback_intent = ''
@@ -606,7 +645,14 @@ class DialogueTurnEngine:
             if fallback_intent and fallback_intent != 'fallback':
                 if is_execution_intent_label(
                     fallback_intent
-                ) and not _rules_execution_intent_allowed(user_text):
+                ) and not (
+                    _rules_execution_intent_allowed(user_text)
+                    or (
+                        inferred_route == _EXECUTION_ROUTE
+                        and _is_repeat_action_request(user_text)
+                        and _ack_implies_execution(verbal_ack)
+                    )
+                ):
                     fallback_intent = ''
             if fallback_intent and fallback_intent != 'fallback':
                 resolved_intent = fallback_intent
@@ -628,7 +674,8 @@ class DialogueTurnEngine:
         kb_query_intent = _infer_kb_query_intent_from_text(user_text)
         if kb_query_intent and not route_repaired:
             stated_intent = str(user_intent.get('type', '')).strip().lower()
-            if (
+            non_mutating_kb_question = _looks_like_non_mutating_kb_question(user_text)
+            if non_mutating_kb_question or (
                 not _has_explicit_perception_action_request(user_text)
                 and stated_intent in {'', 'fallback', 'inspect_scene'}
                 and str(resolved_intent or '').strip().lower()
@@ -1184,6 +1231,7 @@ class DialogueTurnEngine:
         user_intent: dict,
         route: str,
     ) -> TurnExecutionResult:
+        verbal_ack = _limit_verbal_ack(verbal_ack)
         return TurnExecutionResult(
             success=success,
             verbal_ack=verbal_ack,
@@ -1387,6 +1435,19 @@ def _ack_from_parsed_response(parsed: dict) -> str:
     return ''
 
 
+def _limit_verbal_ack(verbal_ack: str) -> str:
+    text = ' '.join(str(verbal_ack or '').strip().split())
+    if len(text) <= _MAX_VERBAL_ACK_CHARS:
+        return text
+    boundary = max(text.rfind('.', 0, _MAX_VERBAL_ACK_CHARS), text.rfind('?', 0, _MAX_VERBAL_ACK_CHARS))
+    if boundary < int(_MAX_VERBAL_ACK_CHARS * 0.55):
+        boundary = text.rfind(' ', 0, _MAX_VERBAL_ACK_CHARS)
+    if boundary < int(_MAX_VERBAL_ACK_CHARS * 0.55):
+        boundary = _MAX_VERBAL_ACK_CHARS
+    summary = text[:boundary].strip(' ,;:.')
+    return '%s. I can continue if you want more detail.' % summary
+
+
 def _looks_like_json_payload(payload: str) -> bool:
     clean_payload = str(payload or '').strip()
     return clean_payload.startswith(('{', '"{', '```json', '```'))
@@ -1466,6 +1527,23 @@ def _rules_execution_intent_allowed(user_text: str) -> bool:
     return _looks_like_execution_text(user_text) and not _is_information_only_action_word_question(
         user_text
     )
+
+
+def _is_repeat_action_request(user_text: str) -> bool:
+    clean = ' '.join(str(user_text or '').strip().lower().split())
+    if not clean:
+        return False
+    normalized = ''.join(ch if ch.isalnum() or ch.isspace() else ' ' for ch in clean)
+    normalized = ' '.join(normalized.split())
+    return normalized in {
+        'again',
+        'do it again',
+        'do that again',
+        'repeat it',
+        'repeat that',
+        'repeat the action',
+        'one more time',
+    }
 
 
 def _is_information_only_action_word_question(user_text: str) -> bool:
@@ -1634,11 +1712,33 @@ def _infer_kb_query_intent_from_text(user_text: str) -> str:
     inferred = normalize_intent(detect_intent(user_text), default='')
     if inferred in KB_QUERY_INTENTS:
         return inferred
+    if _looks_like_non_mutating_kb_question(user_text):
+        return KB_QUERY_VISIBLE_OBJECTS
     # Catch specific-object attribute queries like "What is the name/color of X?"
     # These are KB lookups even when detect_intent returns 'fallback'.
     if _looks_like_object_attribute_query(user_text):
         return KB_QUERY_VISIBLE_OBJECTS
     return ''
+
+
+def _looks_like_non_mutating_kb_question(user_text: str) -> bool:
+    clean = ' '.join(str(user_text or '').strip().lower().split())
+    if not clean:
+        return False
+    normalized = ''.join(ch if ch.isalnum() or ch.isspace() else ' ' for ch in clean)
+    normalized = ' '.join(normalized.split())
+    return normalized.startswith(
+        (
+            'what do you remember',
+            'what can you remember',
+            'do you remember',
+            'what do you know',
+            'what is',
+            'what are',
+            'which facts',
+            'tell me what',
+        )
+    )
 
 
 def _looks_like_object_attribute_query(user_text: str) -> bool:

@@ -1342,6 +1342,63 @@ def test_turn_engine_repairs_dialogue_route_when_ack_promises_execution():
     assert result.intent_source == 'llm_response_route_repair'
 
 
+def test_turn_engine_routes_explicit_kb_add_as_execution() -> None:
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"Sure, I will add this to my knowledge base.",'
+                '"route":"dialogue","user_intent":{"type":"fallback"}}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm_with_rules_fallback', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text=(
+            'Add this to your knowledge base: codex_chat_marker rdf:type Cube, '
+            'codex_chat_marker dbp:name NOVA.'
+        ),
+        history=[],
+        user_id='user1',
+    )
+
+    assert result.route == 'execution'
+    assert result.intent == 'kb_add'
+    assert result.user_intent.get('type') == 'kb_add'
+
+
+def test_turn_engine_keeps_kb_question_non_mutating() -> None:
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"I remember that the probe cup is gold.",'
+                '"route":"execution","user_intent":{"type":"kb_add"}}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm_with_rules_fallback', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='What do you remember about the probe cup?',
+        history=[],
+        user_id='user1',
+    )
+
+    assert result.route == 'knowledge_query'
+    assert result.intent != 'kb_add'
+    assert result.user_intent.get('type') == 'kb_query_visible_objects'
+
+
 def test_turn_engine_honors_explicit_dialogue_route_for_future_action_discussion() -> None:
     transport = FakeTransport(
         [
@@ -1502,6 +1559,31 @@ def test_turn_engine_keeps_wave_particle_question_on_dialogue_route() -> None:
     assert result.route == 'dialogue'
     assert result.intent != 'wave_greet'
     assert result.user_intent == {}
+
+
+def test_turn_engine_clamps_long_dialogue_response_for_speech_transport() -> None:
+    long_answer = ' '.join(['Time dilation means moving clocks run slower.'] * 80)
+    transport = FakeTransport(
+        [
+            '{"verbal_ack":"%s","route":"dialogue"}' % long_answer,
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='Can you explain time dilation in relativity?',
+        history=[],
+        user_id='user1',
+    )
+
+    assert result.route == 'dialogue'
+    assert len(result.verbal_ack) <= 950
+    assert result.verbal_ack.endswith('I can continue if you want more detail.')
 
 
 def test_turn_engine_keeps_social_greeting_on_dialogue_route() -> None:
