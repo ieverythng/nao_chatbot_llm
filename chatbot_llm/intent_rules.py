@@ -34,6 +34,7 @@ SUPPORTED_INTENTS = (
 )
 
 _FALLBACK_EXECUTION_SKILL_INTENTS = {
+    'bring_object',
     'perform_motion',
     'look_at',
     'scan',
@@ -41,6 +42,8 @@ _FALLBACK_EXECUTION_SKILL_INTENTS = {
     'find_object',
     'navigate_to',
     'inspect_area',
+    'pick_object',
+    'place_object',
     'walk_to',
     'wave_greet',
     'kb_add',
@@ -197,6 +200,21 @@ def detect_intent(text: str) -> str:
         ('navigate to', 'go to', 'move to', 'walk to'),
     ):
         return 'navigate_to'
+    if _contains_any_phrase(
+        lowered,
+        ('bring ', 'bring the', 'bring a', 'bring an', 'bring me'),
+    ):
+        return 'bring_object'
+    if _contains_any_phrase(
+        lowered,
+        ('pick up', 'pick the', 'pick a', 'pick an', 'grab the', 'grab a'),
+    ):
+        return 'pick_object'
+    if _contains_any_phrase(
+        lowered,
+        ('place ', 'put ', 'set down', 'drop off'),
+    ):
+        return 'place_object'
     if _contains_any_phrase(
         lowered,
         ('wave hello', 'wave at', 'please wave', 'greet with a wave', 'wave', 'wave to', 'wave at me'),

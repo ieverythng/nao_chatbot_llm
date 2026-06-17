@@ -1505,6 +1505,33 @@ def test_turn_engine_routes_immediate_look_at_report_as_execution() -> None:
     assert result.route == 'execution'
 
 
+def test_turn_engine_fills_missing_bring_intent_for_planner_mode() -> None:
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"Sure, I will bring the apple and the book to Alex.",'
+                '"route":"execution","user_intent":{},"confidence":0.0}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm_with_rules_fallback', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='Bring the apple and the book to Alex, then report what you did.',
+        history=[],
+        user_id='user1',
+    )
+
+    assert result.route == 'execution'
+    assert result.intent == 'bring_object'
+    assert result.user_intent['type'] == 'bring_object'
+
+
 def test_turn_engine_repairs_dialogue_route_over_execution_skill_intent() -> None:
     transport = FakeTransport(
         [
@@ -1558,6 +1585,33 @@ def test_turn_engine_keeps_wave_particle_question_on_dialogue_route() -> None:
 
     assert result.route == 'dialogue'
     assert result.intent != 'wave_greet'
+    assert result.user_intent == {}
+
+
+def test_turn_engine_keeps_personal_preference_question_dialogue_only() -> None:
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"Okay, I will try that now.",'
+                '"route":"execution","user_intent":{"type":"help"}}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm_with_rules_fallback', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='What is your favorite movie?',
+        history=['assistant:I arrived at the apple.'],
+        user_id='user1',
+    )
+
+    assert result.route == 'dialogue'
+    assert result.intent == ''
     assert result.user_intent == {}
 
 

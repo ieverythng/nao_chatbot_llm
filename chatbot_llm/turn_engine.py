@@ -175,6 +175,10 @@ Execution report wording task:
   what was actually done from steps, latest_result_summary, and grounded_context.
 - Use grounded_context to translate entity handles into meaningful user-facing
   labels and relations when the facts are present.
+- When a place_object or bring_object result uses a person or Human as the
+  destination, describe it as delivering or handing the object to that person,
+  not placing the object on that person. Keep "on" only for support surfaces
+  such as tables, shelves, counters, or named places.
 - Treat requested_summary as evidence or a wording hint, not as text that must
   be repeated verbatim.
 - Use step results as the authority for factual execution claims, respecting
@@ -533,6 +537,7 @@ class DialogueTurnEngine:
             resolved_intent=resolved_intent,
             user_intent=user_intent,
         )
+        route_repaired = False
         if _is_reflective_execution_question(user_text):
             inferred_route = _DIALOGUE_ROUTE
             resolved_intent = ''
@@ -547,6 +552,11 @@ class DialogueTurnEngine:
             inferred_route = _DIALOGUE_ROUTE
         if _is_capability_query(user_text):
             inferred_route = _DIALOGUE_ROUTE
+        if _is_personal_preference_question(user_text):
+            inferred_route = _DIALOGUE_ROUTE
+            resolved_intent = ''
+            user_intent = {}
+            route_repaired = explicit_route == _EXECUTION_ROUTE
         if (
             inferred_route == _DIALOGUE_ROUTE
             and explicit_route == _DIALOGUE_ROUTE
@@ -600,7 +610,6 @@ class DialogueTurnEngine:
                 response_payload.get('confidence', 0.0),
             )
         )
-        route_repaired = False
         if response_payload.get('_route_missing') or _route_is_contradictory(
             user_text=user_text,
             verbal_ack=verbal_ack,
@@ -671,16 +680,25 @@ class DialogueTurnEngine:
                 ):
                     inferred_route = _EXECUTION_ROUTE
 
-        kb_query_intent = _infer_kb_query_intent_from_text(user_text)
+        kb_query_intent = (
+            ''
+            if _is_personal_preference_question(user_text)
+            else _infer_kb_query_intent_from_text(user_text)
+        )
         if kb_query_intent and not route_repaired:
             stated_intent = str(user_intent.get('type', '')).strip().lower()
             non_mutating_kb_question = _looks_like_non_mutating_kb_question(user_text)
-            if non_mutating_kb_question or (
+            explicit_non_kb_execution = (
+                inferred_route == _EXECUTION_ROUTE
+                and _looks_like_execution_text(user_text)
+                and stated_intent not in {'kb_add', 'kb_revise', 'kb_remove'}
+            )
+            if not explicit_non_kb_execution and (non_mutating_kb_question or (
                 not _has_explicit_perception_action_request(user_text)
                 and stated_intent in {'', 'fallback', 'inspect_scene'}
                 and str(resolved_intent or '').strip().lower()
                 in {'', 'fallback', 'inspect_scene', kb_query_intent}
-            ):
+            )):
                 inferred_route = _KNOWLEDGE_QUERY_ROUTE
                 resolved_intent = kb_query_intent
                 user_intent = dict(user_intent)
@@ -1609,6 +1627,8 @@ def _repair_response_route(*, user_text: str, verbal_ack: str, route: str) -> st
         return _DIALOGUE_ROUTE
     if _is_capability_query(user_text):
         return _DIALOGUE_ROUTE
+    if _is_personal_preference_question(user_text):
+        return _DIALOGUE_ROUTE
     if _is_social_turn(user_text) and not _looks_like_execution_text(user_text):
         return _DIALOGUE_ROUTE
     if _is_non_immediate_action_discussion(user_text):
@@ -1671,6 +1691,32 @@ def _is_capability_query(user_text: str) -> bool:
         'tell me about your skills',
     )
     return any(marker in normalized for marker in capability_markers)
+
+
+def _is_personal_preference_question(user_text: str) -> bool:
+    """Return whether the user is asking for conversation, not robot execution."""
+    clean = ' '.join(str(user_text or '').strip().lower().split())
+    if not clean:
+        return False
+    normalized = ''.join(ch if ch.isalnum() or ch.isspace() else ' ' for ch in clean)
+    normalized = ' '.join(normalized.split())
+    if not (
+        '?' in clean
+        or normalized.startswith(('what ', 'which ', 'who ', 'do you ', 'tell me '))
+    ):
+        return False
+    preference_markers = (
+        'your favorite',
+        'your favourite',
+        'do you like',
+        'what do you like',
+        'which do you like',
+        'what do you prefer',
+        'which do you prefer',
+        'your preference',
+        'your opinion',
+    )
+    return any(marker in normalized for marker in preference_markers)
 
 
 def _is_reflective_execution_question(user_text: str) -> bool:
@@ -2125,6 +2171,7 @@ def _postprocess_execution_report_ack(candidate: str, report_context: dict) -> s
         return ''
     if _uses_stale_intermediate_arrival(clean, report_context):
         return ''
+    clean = _rewrite_person_delivery_surface_phrase(clean, report_context)
 
     sentences = _split_sentences(clean)
     if len(sentences) <= 1:
@@ -2157,6 +2204,101 @@ def _uses_stale_intermediate_arrival(candidate: str, report_context: dict) -> bo
         if target and target != latest_target and target.lower() in lowered:
             return True
     return False
+
+
+def _rewrite_person_delivery_surface_phrase(candidate: str, report_context: dict) -> str:
+    person_labels = _person_delivery_destination_labels(report_context)
+    if not person_labels:
+        return candidate
+    rewritten = str(candidate or '').strip()
+    for label in sorted(person_labels, key=len, reverse=True):
+        escaped = re.escape(label)
+        rewritten = re.sub(
+            r'\b(?:placed|put)\s+(?P<object>[^.?!;]+?)\s+(?:on|onto)\s+(?P<label>%s)\b'
+            % escaped,
+            lambda match: (
+                'delivered %s to %s'
+                % (match.group('object').strip(), match.group('label').strip())
+            ),
+            rewritten,
+            flags=re.IGNORECASE,
+        )
+    return rewritten
+
+
+def _person_delivery_destination_labels(report_context: dict) -> set[str]:
+    entity_labels = _grounded_person_labels_by_id(report_context)
+    labels: set[str] = set()
+    for step in _successful_non_report_steps(report_context):
+        if str(step.get('name', '')).strip().lower() != 'place_object':
+            continue
+        destination_id = _step_destination_id(step)
+        if not destination_id:
+            continue
+        for label in entity_labels.get(destination_id, ()):
+            clean = str(label or '').strip()
+            if clean:
+                labels.add(clean)
+    return labels
+
+
+def _grounded_person_labels_by_id(report_context: dict) -> dict[str, set[str]]:
+    grounded_context = report_context.get('grounded_context', {})
+    if not isinstance(grounded_context, dict):
+        return {}
+    labels_by_id: dict[str, set[str]] = {}
+    for entity in grounded_context.get('entities', []):
+        if not isinstance(entity, dict):
+            continue
+        entity_id = str(entity.get('id', '')).strip()
+        if not entity_id or not _grounded_entity_is_person(entity):
+            continue
+        labels = {entity_id}
+        for key in ('label', 'name', 'display_name'):
+            value = str(entity.get(key, '')).strip()
+            if value:
+                labels.add(value)
+        for relation in entity.get('relations', []):
+            if not isinstance(relation, dict):
+                continue
+            predicate = str(relation.get('predicate', '')).strip().lower()
+            if predicate.endswith('name') or predicate in {'name', 'label'}:
+                value = str(relation.get('object', '')).strip()
+                if value:
+                    labels.add(value)
+        labels_by_id[entity_id] = labels
+    return labels_by_id
+
+
+def _grounded_entity_is_person(entity: dict) -> bool:
+    kind = str(entity.get('kind', '')).strip().lower()
+    entity_class = str(entity.get('class', '')).strip().lower()
+    if kind in {'person', 'human'} or entity_class in {'person', 'human'}:
+        return True
+    for relation in entity.get('relations', []):
+        if not isinstance(relation, dict):
+            continue
+        predicate = str(relation.get('predicate', '')).strip().lower()
+        value = str(relation.get('object', '')).strip().lower()
+        if predicate.endswith('type') and value in {'person', 'human', 'foaf:person'}:
+            return True
+    return False
+
+
+def _step_destination_id(step: dict) -> str:
+    for source in (step.get('args', {}), step.get('result_payload', {})):
+        if not isinstance(source, dict):
+            continue
+        destination = str(
+            source.get('destination')
+            or source.get('recipient')
+            or source.get('recipient_id')
+            or source.get('destination_id')
+            or ''
+        ).strip()
+        if destination:
+            return destination
+    return ''
 
 
 def _latest_step_target(step: dict, report_context: dict) -> str:
