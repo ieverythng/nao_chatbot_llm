@@ -20,6 +20,7 @@ def make_config(
     intent_mode: str = 'rules',
     *,
     planner_mode_enabled: bool = False,
+    turn_pipeline_mode: str = 'response_first',
 ) -> ChatbotConfig:
     return ChatbotConfig(
         server_url='http://localhost:11434/api/chat',
@@ -59,6 +60,7 @@ def make_config(
         },
         identity_reminder_every_n_turns=6,
         intent_detection_mode=intent_mode,
+        turn_pipeline_mode=turn_pipeline_mode,
         prompt_pack_path='',
         use_skill_catalog=False,
         skill_catalog_packages=[],
@@ -331,6 +333,125 @@ def test_turn_engine_planner_mode_uses_single_response_stage_for_execution():
     )
     assert 'planner_llm owns all' in transport.calls[0]['messages'][0]['content']
     assert 'Grounded context:\nperson_1 rdf:type Person' in transport.calls[0]['messages'][0]['content']
+
+
+def test_turn_engine_intent_first_locks_route_before_response_wording():
+    transport = FakeTransport(
+        [
+            (
+                '{"user_intent":{"type":"look_at","goal_text":"look at the cup",'
+                '"scene_targets":["cup"]},"intent_confidence":0.91}'
+            ),
+            (
+                '{"verbal_ack":"Sure, I will check the current scene and look at the cup.",'
+                '"route":"execution","confidence":0.86}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(
+            intent_mode='llm',
+            planner_mode_enabled=True,
+            turn_pipeline_mode='intent_first',
+        ),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='look at the cup',
+        history=[],
+        user_id='user1',
+        knowledge_snapshot='Grounded context JSON:\n```json\n{"entities":[]}\n```',
+    )
+
+    assert len(transport.calls) == 2
+    assert result.route == 'execution'
+    assert result.intent == 'look_at'
+    assert result.intent_source == 'llm_intent_route_lock'
+    assert result.user_intent['goal_text'] == 'look at the cup'
+    response_prompt = transport.calls[1]['messages'][0]['content']
+    assert 'Locked route context:' in response_prompt
+    assert '"route":"execution"' in response_prompt
+    assert 'Do not change it' in response_prompt
+
+
+def test_turn_engine_intent_first_prevents_wave_particle_execution_regression():
+    transport = FakeTransport(
+        [
+            (
+                '{"user_intent":{"type":"wave_greet","goal_text":"explain wave particle duality"},'
+                '"intent_confidence":0.74}'
+            ),
+            (
+                '{"verbal_ack":"Wave-particle duality is the idea that quantum objects '
+                'can show wave-like and particle-like behavior.","route":"dialogue",'
+                '"confidence":0.82}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(
+            intent_mode='llm',
+            planner_mode_enabled=True,
+            turn_pipeline_mode='intent_first',
+        ),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='What is wave-particle duality?',
+        history=[],
+        user_id='user1',
+    )
+
+    assert result.route == 'dialogue'
+    assert result.intent == ''
+    assert result.intent_source == 'llm_intent_route_lock'
+    assert result.user_intent.get('type') == 'fallback'
+    assert 'wave-particle duality' in result.verbal_ack.lower()
+    response_prompt = transport.calls[1]['messages'][0]['content']
+    assert '"route":"dialogue"' in response_prompt
+
+
+def test_turn_engine_intent_first_locks_scene_question_to_knowledge_query():
+    transport = FakeTransport(
+        [
+            (
+                '{"user_intent":{"type":"inspect_scene","goal_text":"describe visible objects"},'
+                '"intent_confidence":0.67}'
+            ),
+            (
+                '{"verbal_ack":"I can currently see one cup on the table.",'
+                '"route":"knowledge_query","confidence":0.88}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(
+            intent_mode='llm',
+            planner_mode_enabled=True,
+            turn_pipeline_mode='intent_first',
+        ),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='What can you see now?',
+        history=[],
+        user_id='user1',
+        knowledge_snapshot='Scene digest: Objects (1): cup x1 [on table]',
+    )
+
+    assert result.route == 'knowledge_query'
+    assert result.intent == 'kb_query_visible_objects'
+    assert result.user_intent['type'] == 'kb_query_visible_objects'
+    assert '"route":"knowledge_query"' in transport.calls[1]['messages'][0]['content']
 
 
 def test_turn_engine_planner_mode_repairs_missing_execution_route_without_second_call():

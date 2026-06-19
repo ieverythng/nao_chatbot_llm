@@ -13,6 +13,7 @@ from chatbot_llm.skill_catalog import parse_package_list
 # ---------------------------------------------------------------------------
 
 INTENT_DETECTION_MODES = {'rules', 'llm', 'llm_with_rules_fallback'}
+TURN_PIPELINE_MODES = {'response_first', 'intent_first'}
 
 @dataclass(frozen=True)
 class ChatbotConfig:
@@ -52,6 +53,7 @@ class ChatbotConfig:
     planner_multi_step_heuristics: dict
     identity_reminder_every_n_turns: int
     intent_detection_mode: str
+    turn_pipeline_mode: str
     prompt_pack_path: str
     use_skill_catalog: bool
     skill_catalog_packages: list[str]
@@ -112,6 +114,7 @@ def declare_backend_parameters(node) -> None:
     node.declare_parameter('persona_prompt_path', '')
     node.declare_parameter('identity_reminder_every_n_turns', 6)
     node.declare_parameter('intent_detection_mode', 'llm_with_rules_fallback')
+    node.declare_parameter('turn_pipeline_mode', 'response_first')
 
     node.declare_parameter('prompt_pack_path', '')
     node.declare_parameter('use_skill_catalog', True)
@@ -187,6 +190,13 @@ def load_backend_config(node) -> ChatbotConfig:
             % intent_detection_mode
         )
         intent_detection_mode = 'llm_with_rules_fallback'
+    turn_pipeline_mode = str(node.get_parameter('turn_pipeline_mode').value).strip().lower()
+    if turn_pipeline_mode not in TURN_PIPELINE_MODES:
+        node.get_logger().warn(
+            'Unsupported turn_pipeline_mode=%s, defaulting to response_first'
+            % turn_pipeline_mode
+        )
+        turn_pipeline_mode = 'response_first'
 
     model = str(node.get_parameter('model').value).strip()
     intent_model = str(node.get_parameter('intent_model').value).strip() or model
@@ -255,6 +265,7 @@ def load_backend_config(node) -> ChatbotConfig:
             int(node.get_parameter('identity_reminder_every_n_turns').value),
         ),
         intent_detection_mode=intent_detection_mode,
+        turn_pipeline_mode=turn_pipeline_mode,
         prompt_pack_path=prompt_pack_path,
         use_skill_catalog=as_bool(node.get_parameter('use_skill_catalog').value),
         skill_catalog_packages=parse_package_list(

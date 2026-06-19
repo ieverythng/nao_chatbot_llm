@@ -29,6 +29,7 @@ STRING_PARAMETER_NAMES = {
     'robot_name',
     'server_url',
     'skill_catalog_packages',
+    'turn_pipeline_mode',
 }
 
 

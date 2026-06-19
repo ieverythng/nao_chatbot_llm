@@ -312,6 +312,25 @@ class DialogueTurnEngine:
         )
         history_messages = self._inject_identity_reminder(history_messages)
 
+        if (
+            self._config.planner_mode_enabled
+            and self._config.turn_pipeline_mode == 'intent_first'
+        ):
+            result = self._execute_intent_first_planner_turn(
+                user_text=user_text,
+                history=history,
+                history_messages=history_messages,
+                user_id=user_id,
+                knowledge_snapshot=knowledge_snapshot,
+                progress_callback=progress_callback,
+                turn_id=turn_id,
+                trace=trace,
+                cancel_requested=cancel_requested,
+            )
+            self._publish_progress(progress_callback, 'complete', 1.0)
+            self._trace(trace, turn_id, 'TURN_DONE', 'intent-first planner-mode complete')
+            return result
+
         self._publish_progress(progress_callback, 'generating_response', 0.35)
         if cancel_requested():
             return self._cancelled_result(history)
@@ -463,6 +482,167 @@ class DialogueTurnEngine:
     # -----------------------------------------------------------------------
     # Intent resolution and fallback paths
     # -----------------------------------------------------------------------
+
+    def _execute_intent_first_planner_turn(
+        self,
+        *,
+        user_text: str,
+        history: list[str],
+        history_messages: list[dict],
+        user_id: str,
+        knowledge_snapshot: str,
+        progress_callback,
+        turn_id: str,
+        trace,
+        cancel_requested,
+    ) -> TurnExecutionResult:
+        self._publish_progress(progress_callback, 'extracting_intent', 0.25)
+        if cancel_requested():
+            return self._cancelled_result(history)
+
+        self._trace(
+            trace,
+            turn_id,
+            'LLM_REQUEST',
+            'stage=intent_first model=%s timeout=%.1fs'
+            % (self._config.intent_model, self._config.intent_request_timeout_sec),
+        )
+        intent_payload = self._query_intent(
+            history_messages=history_messages,
+            user_text=user_text,
+            assistant_response='',
+            user_id=user_id,
+            knowledge_snapshot=knowledge_snapshot,
+            timeout_sec=self._config.intent_request_timeout_sec,
+        )
+        (
+            resolved_intent,
+            intent_source,
+            intent_confidence,
+            user_intent,
+        ) = self._resolve_intent(
+            user_text=user_text,
+            verbal_ack='',
+            intent_payload=intent_payload,
+        )
+        route, resolved_intent, user_intent, intent_source = self._lock_intent_first_route(
+            user_text=user_text,
+            resolved_intent=resolved_intent,
+            user_intent=user_intent,
+            intent_source=intent_source,
+        )
+        self._trace(
+            trace,
+            turn_id,
+            'ROUTE_LOCKED',
+            'mode=intent_first route=%s intent=%s source=%s confidence=%.2f'
+            % (route, resolved_intent or '-', intent_source, intent_confidence),
+        )
+
+        self._publish_progress(progress_callback, 'generating_response', 0.65)
+        if cancel_requested():
+            return self._cancelled_result(history)
+
+        response_payload = self._query_response(
+            history_messages=history_messages,
+            user_text=user_text,
+            user_id=user_id,
+            knowledge_snapshot=knowledge_snapshot,
+            timeout_sec=self._config.request_timeout_sec,
+            locked_route_context={
+                'route': route,
+                'resolved_intent': resolved_intent,
+                'user_intent': user_intent,
+            },
+        )
+        verbal_ack = str(response_payload.get('verbal_ack', '')).strip()
+        if not verbal_ack:
+            verbal_ack = (
+                'Okay, I will try that now.'
+                if route == _EXECUTION_ROUTE
+                else self._config.fallback_response
+            )
+        if route == _EXECUTION_ROUTE:
+            verbal_ack = _sanitize_execution_ack(verbal_ack)
+
+        updated_history = messages_to_history(
+            history_messages
+            + [
+                {'role': 'user', 'content': user_text},
+                {'role': 'assistant', 'content': verbal_ack},
+            ],
+            max_history_messages=self._config.max_history_messages,
+        )
+        self._handled_requests += 1
+        return self._build_result(
+            success=True,
+            verbal_ack=verbal_ack,
+            updated_history=updated_history,
+            intent=resolved_intent,
+            intent_source=intent_source,
+            intent_confidence=intent_confidence,
+            user_intent=user_intent,
+            route=route,
+        )
+
+    def _lock_intent_first_route(
+        self,
+        *,
+        user_text: str,
+        resolved_intent: str,
+        user_intent: dict,
+        intent_source: str,
+    ) -> tuple[str, str, dict, str]:
+        if (
+            _is_reflective_execution_question(user_text)
+            or _is_social_turn(user_text)
+            or _is_capability_query(user_text)
+            or _is_personal_preference_question(user_text)
+            or _is_information_only_action_word_question(user_text)
+            or _is_non_immediate_action_discussion(user_text)
+        ):
+            return _DIALOGUE_ROUTE, '', _dialogue_user_intent(user_intent), (
+                intent_source + '_route_lock'
+            )
+
+        kb_query_intent = _infer_kb_query_intent_from_text(user_text)
+        if kb_query_intent:
+            locked_intent = kb_query_intent
+            locked_user_intent = dict(user_intent)
+            locked_user_intent['type'] = locked_intent
+            return (
+                _KNOWLEDGE_QUERY_ROUTE,
+                locked_intent,
+                locked_user_intent,
+                intent_source + '_route_lock',
+            )
+
+        route = self._route_for_intent(
+            str(user_intent.get('type', '')).strip() or resolved_intent
+        )
+        if route == _EXECUTION_ROUTE and not _rules_execution_intent_allowed(user_text):
+            return _DIALOGUE_ROUTE, '', _dialogue_user_intent(user_intent), (
+                intent_source + '_route_lock'
+            )
+        if route == _DIALOGUE_ROUTE and _looks_like_execution_text(user_text):
+            fallback_intent = normalize_intent(detect_intent(user_text), default='')
+            if (
+                fallback_intent
+                and fallback_intent != 'fallback'
+                and is_execution_intent_label(fallback_intent)
+                and _rules_execution_intent_allowed(user_text)
+            ):
+                locked_user_intent = dict(user_intent)
+                locked_user_intent['type'] = fallback_intent
+                if not str(locked_user_intent.get('goal', '')).strip():
+                    locked_user_intent['goal'] = str(user_text or '').strip()
+                return (
+                    _EXECUTION_ROUTE,
+                    fallback_intent,
+                    locked_user_intent,
+                    intent_source + '_route_lock',
+                )
+        return route, resolved_intent, user_intent, intent_source + '_route_lock'
 
     def _resolve_intent(
         self,
@@ -952,6 +1132,7 @@ class DialogueTurnEngine:
         user_id: str,
         knowledge_snapshot: str,
         timeout_sec: float,
+        locked_route_context: dict | None = None,
     ) -> dict:
         prompt = build_response_prompt(
             robot_name=self._config.robot_name,
@@ -964,6 +1145,11 @@ class DialogueTurnEngine:
             persona_prompt=self._persona_prompt,
             planner_mode_enabled=self._config.planner_mode_enabled,
         )
+        if locked_route_context:
+            prompt = _join_prompt_addenda(
+                prompt,
+                _locked_route_prompt_block(locked_route_context),
+            )
         messages = [{'role': 'system', 'content': prompt}]
         messages.extend(history_messages)
         messages.append({'role': 'user', 'content': user_text})
@@ -1292,6 +1478,26 @@ def _system_task_response_addendum(base_addendum: str, task_addendum: str) -> st
         _SYSTEM_TASK_RESPONSE_MODE_ADDENDUM,
         _extract_system_task_response_rules(base_addendum),
         task_addendum,
+    )
+
+
+def _locked_route_prompt_block(context: dict) -> str:
+    route = _normalize_route(context.get('route', '')) or _DIALOGUE_ROUTE
+    payload = {
+        'route': route,
+        'resolved_intent': str(context.get('resolved_intent', '')).strip(),
+        'user_intent': _coerce_user_intent(context.get('user_intent', {})),
+    }
+    return _join_prompt_addenda(
+        'Locked route context:',
+        json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(',', ':')),
+        (
+            'The route above was selected by the intent stage before this wording '
+            'request. Do not change it. Return the same route in the response JSON. '
+            'If route is dialogue or knowledge_query, do not promise physical action. '
+            'If route is execution, acknowledge the request in future tense only and '
+            'do not claim completion or observations.'
+        ),
     )
 
 
@@ -1758,6 +1964,8 @@ def _infer_kb_query_intent_from_text(user_text: str) -> str:
     inferred = normalize_intent(detect_intent(user_text), default='')
     if inferred in KB_QUERY_INTENTS:
         return inferred
+    if _looks_like_visible_scene_question(user_text):
+        return KB_QUERY_VISIBLE_OBJECTS
     if _looks_like_non_mutating_kb_question(user_text):
         return KB_QUERY_VISIBLE_OBJECTS
     # Catch specific-object attribute queries like "What is the name/color of X?"
@@ -1765,6 +1973,27 @@ def _infer_kb_query_intent_from_text(user_text: str) -> str:
     if _looks_like_object_attribute_query(user_text):
         return KB_QUERY_VISIBLE_OBJECTS
     return ''
+
+
+def _looks_like_visible_scene_question(user_text: str) -> bool:
+    clean = ' '.join(str(user_text or '').strip().lower().split())
+    if not clean:
+        return False
+    normalized = ''.join(ch if ch.isalnum() or ch.isspace() else ' ' for ch in clean)
+    normalized = ' '.join(normalized.split())
+    return normalized.startswith(
+        (
+            'what can you see',
+            'what do you see',
+            'what are you seeing',
+            'who can you see',
+            'who do you see',
+            'what objects can you see',
+            'what objects do you see',
+            'how many objects can you see',
+            'how many objects do you see',
+        )
+    )
 
 
 def _looks_like_non_mutating_kb_question(user_text: str) -> bool:

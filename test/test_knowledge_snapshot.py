@@ -49,6 +49,7 @@ def make_config() -> ChatbotConfig:
         },
         identity_reminder_every_n_turns=6,
         intent_detection_mode='llm',
+        turn_pipeline_mode='response_first',
         prompt_pack_path='',
         use_skill_catalog=False,
         skill_catalog_packages=[],
