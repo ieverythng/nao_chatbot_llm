@@ -2,6 +2,7 @@ import json
 
 from chatbot_llm.planner_request_adapter import build_planner_request_intent
 from chatbot_llm.planner_request_adapter import build_planner_request_payload
+from chatbot_llm.planner_request_adapter import normalize_goal_text
 from chatbot_llm.planner_request_adapter import should_route_intents_through_planner
 from chatbot_llm.planner_request_adapter import Intent
 from chatbot_llm.turn_engine import TurnExecutionResult
@@ -242,6 +243,32 @@ def test_build_planner_request_payload_prefers_explicit_goal_text() -> None:
 
     assert payload['goal_text'] == 'inspect the cup and report completion'
     assert 'user_text' not in payload
+
+
+def test_normalize_goal_text_strips_leading_filler_and_trailing_punctuation() -> None:
+    assert (
+        normalize_goal_text('Can you now change the color of the book to purple!')
+        == 'change the color of the book to purple'
+    )
+    assert (
+        normalize_goal_text('Hey Pop, could you please look at the cup for me')
+        == 'look at the cup for me'
+    )
+    assert normalize_goal_text('inspect the cup and report completion') == (
+        'inspect the cup and report completion'
+    )
+    assert normalize_goal_text('') == ''
+
+
+def test_goal_text_fallback_normalizes_verbatim_user_text() -> None:
+    payload = build_planner_request_payload(
+        turn_id='turn_verbatim',
+        user_text='Can you now change the color of the book to purple!',
+        turn_result=_make_result(user_intent={'type': 'look_at'}),
+        knowledge_context='',
+    )
+
+    assert payload['goal_text'] == 'change the color of the book to purple'
 
 
 def test_build_planner_request_payload_ignores_plan_hints_from_chatbot_result():

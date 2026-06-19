@@ -626,6 +626,71 @@ def test_turn_engine_execution_report_fallback_uses_step_summaries():
     assert result.verbal_ack == 'I navigated to the cup. I found two blueberries.'
 
 
+def test_turn_engine_execution_report_words_person_delivery_as_to_not_on():
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='rules'),
+        transport=FakeTransport(
+            [
+                (
+                    '{"verbal_ack":"I found the kitchen cup, which is white, '
+                    'and brought it to the person named Alex. I have placed '
+                    'the cup on Alex."}'
+                )
+            ]
+        ),
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text=(
+            '{"execution_report":{"goal_text":"bring the kitchen cup to the person named ALEX",'
+            '"grounded_context":{"entities":[{"id":"codex_recipient_person",'
+            '"kind":"person","class":"Human","relations":[{"predicate":"dbp:name",'
+            '"object":"Alex"}]}]},'
+            '"steps":[{"name":"place_object","status":"succeeded",'
+            '"args":{"target":"codex_kitchen_cup","destination":"codex_recipient_person"},'
+            '"result_summary":"I placed the cup with Alex.",'
+            '"result_payload":{"target":"codex_kitchen_cup",'
+            '"destination":"codex_recipient_person"}}]}}'
+        ),
+        history=[],
+        user_id='__system__',
+    )
+
+    assert result.intent_source == 'execution_report'
+    assert result.verbal_ack.endswith('I have delivered the cup to Alex.')
+    assert 'on Alex' not in result.verbal_ack
+
+
+def test_turn_engine_execution_report_preserves_surface_placement_wording():
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='rules'),
+        transport=FakeTransport(
+            ['{"verbal_ack":"I picked up the apple and placed it on the table."}']
+        ),
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text=(
+            '{"execution_report":{"goal_text":"pick up the apple and place it on the table",'
+            '"grounded_context":{"entities":[{"id":"table_zmrkd","kind":"object",'
+            '"class":"Table","relations":[{"predicate":"dbp:name","object":"table"}]}]},'
+            '"steps":[{"name":"place_object","status":"succeeded",'
+            '"args":{"target":"apple_ajrte","destination":"table_zmrkd"},'
+            '"result_summary":"I placed the apple on the table.",'
+            '"result_payload":{"target":"apple_ajrte","destination":"table_zmrkd"}}]}}'
+        ),
+        history=[],
+        user_id='__system__',
+    )
+
+    assert result.intent_source == 'execution_report'
+    assert result.verbal_ack == 'I picked up the apple and placed it on the table.'
+
+
 def test_turn_engine_execution_report_rejects_future_report_closure():
     engine = DialogueTurnEngine(
         config=make_config(intent_mode='rules'),

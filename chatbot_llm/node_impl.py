@@ -21,6 +21,7 @@ from chatbot_llm.backend_config import load_backend_config
 from chatbot_llm.intent_adapter import build_response_intents
 from chatbot_llm.knowledge_snapshot import KnowledgeSnapshotSettings
 from chatbot_llm.knowledge_snapshot import build_grounded_context_block
+from chatbot_llm.knowledge_snapshot import build_scene_digest
 from chatbot_llm.knowledge_snapshot import extract_scene_memory_entry
 from chatbot_llm.knowledge_snapshot import resolve_knowledge_snapshot_settings
 from chatbot_llm.knowledge_snapshot_client import KnowledgeSnapshotClient
@@ -45,6 +46,10 @@ except ImportError:  # pragma: no cover - optional dependency
 SYSTEM_USER_ID = '__system__'
 ASSISTANT_USER_ID = '__assistant__'
 DEFAULT_ROLE = '__default__'
+
+# Cap only the LLM-facing grounded-context serialization (visible entities first);
+# the grounded-context contract and the authoritative scene-digest counts are untouched.
+_GROUNDED_BLOCK_MAX_ENTITIES = 30
 
 
 # ---------------------------------------------------------------------------
@@ -212,6 +217,7 @@ class LLMChatbot(Node):
 
         current_snapshot = self._knowledge_snapshot_client.fetch_snapshot(
             session.knowledge_settings,
+            user_text=text,
             turn_id=turn_id,
             trace=self._trace,
         )
@@ -224,7 +230,14 @@ class LLMChatbot(Node):
                 current_snapshot,
                 knowledge_rows=current_snapshot_rows,
             )
-        grounded_context_text = build_grounded_context_block(grounded_context)
+        scene_digest = build_scene_digest(grounded_context)
+        grounded_context_block = build_grounded_context_block(
+            grounded_context,
+            max_entities=_GROUNDED_BLOCK_MAX_ENTITIES,
+        )
+        grounded_context_text = '\n\n'.join(
+            part for part in (scene_digest, grounded_context_block) if part
+        )
         if grounded_context_text:
             self._trace(
                 turn_id,
