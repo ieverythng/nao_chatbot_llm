@@ -16,8 +16,10 @@ from chatbot_llm.intent_rules import detect_intent
 from chatbot_llm.intent_rules import is_execution_intent_label
 from chatbot_llm.intent_rules import normalize_intent
 from chatbot_llm.prompt_builders import build_intent_prompt
+from chatbot_llm.prompt_builders import build_irr_prompt
 from chatbot_llm.prompt_builders import build_response_prompt
 from chatbot_llm.prompt_builders import load_persona_prompt
+from chatbot_llm.irr_contract import guard_irr_decision
 from kb_skills.intent_labels import KB_QUERY_INTENTS, KB_QUERY_VISIBLE_OBJECTS
 
 
@@ -161,6 +163,12 @@ class TurnExecutionResult:
     intent_confidence: float
     user_intent: dict
     route: str
+    route_reason: str = ''
+    planner_handoff_requested: bool = False
+    evidence_used: dict | None = None
+    safety_flags: tuple[str, ...] = ()
+    guard_violations: tuple[str, ...] = ()
+    pipeline_mode: str = 'response_first'
 
 
 # ---------------------------------------------------------------------------
@@ -176,12 +184,14 @@ class DialogueTurnEngine:
         transport,
         logger,
         skill_catalog_text: str,
+        skill_manifest: list[dict] | None = None,
     ) -> None:
         """Create one reusable two-stage turn engine."""
         self._config = config
         self._transport = transport
         self._logger = logger
         self._skill_catalog_text = str(skill_catalog_text or '').strip()
+        self._skill_manifest = [dict(item) for item in (skill_manifest or []) if isinstance(item, dict)]
         self._persona_prompt = load_persona_prompt(config.persona_prompt_path, logger=logger)
         self._handled_requests = 0
 
@@ -195,6 +205,7 @@ class DialogueTurnEngine:
         history: list[str],
         user_id: str,
         knowledge_snapshot: str = '',
+        turn_state: dict | None = None,
         progress_callback=None,
         turn_id: str = '',
         trace=None,
@@ -262,6 +273,21 @@ class DialogueTurnEngine:
             max_history_messages=self._config.max_history_messages,
         )
         history_messages = self._inject_identity_reminder(history_messages)
+
+        if (
+            self._config.planner_mode_enabled
+            and self._config.turn_pipeline_mode == 'atomic_irr'
+        ):
+            return self._execute_atomic_irr_turn(
+                user_text=user_text,
+                history=history,
+                history_messages=history_messages,
+                user_id=user_id,
+                turn_state=dict(turn_state or {}),
+                progress_callback=progress_callback,
+                turn_id=turn_id,
+                trace=trace,
+            )
 
         self._publish_progress(progress_callback, 'generating_response', 0.35)
         if cancel_requested():
@@ -348,6 +374,9 @@ class DialogueTurnEngine:
                 intent_confidence=intent_confidence,
                 user_intent=user_intent,
                 route=route,
+                route_reason='response_first_resolution',
+                planner_handoff_requested=route == _EXECUTION_ROUTE,
+                pipeline_mode=self._config.turn_pipeline_mode,
             )
 
         self._publish_progress(progress_callback, 'extracting_intent', 0.7)
@@ -414,6 +443,82 @@ class DialogueTurnEngine:
     # -----------------------------------------------------------------------
     # Intent resolution and fallback paths
     # -----------------------------------------------------------------------
+
+    def _execute_atomic_irr_turn(
+        self,
+        *,
+        user_text: str,
+        history: list[str],
+        history_messages: list[dict],
+        user_id: str,
+        turn_state: dict,
+        progress_callback,
+        turn_id: str,
+        trace,
+    ) -> TurnExecutionResult:
+        self._publish_progress(progress_callback, 'generating_irr', 0.45)
+        timeout_sec = (
+            self._config.first_request_timeout_sec
+            if self._handled_requests == 0
+            else self._config.request_timeout_sec
+        )
+        self._trace(
+            trace,
+            turn_id,
+            'LLM_REQUEST',
+            'stage=atomic_irr model=%s history=%d timeout=%.1fs'
+            % (self._config.model, len(history_messages), timeout_sec),
+        )
+        payload = self._query_atomic_irr(
+            history_messages=history_messages,
+            user_text=user_text,
+            user_id=user_id,
+            turn_state=turn_state,
+            timeout_sec=timeout_sec,
+        )
+        guarded = guard_irr_decision(
+            payload,
+            turn_state=turn_state,
+            fallback_response=self._config.fallback_response,
+            enforce_canonical_targets=self._config.irr_canonical_guard_enabled,
+        )
+        self._trace(
+            trace,
+            turn_id,
+            'IRR_GUARD',
+            'route=%s requested=%s violations=%s'
+            % (
+                guarded.route,
+                guarded.planner_handoff_requested,
+                ','.join(guarded.violations) or 'none',
+            ),
+        )
+        updated_history = messages_to_history(
+            history_messages
+            + [
+                {'role': 'user', 'content': user_text},
+                {'role': 'assistant', 'content': guarded.response_text},
+            ],
+            max_history_messages=self._config.max_history_messages,
+        )
+        self._handled_requests += 1
+        self._publish_progress(progress_callback, 'complete', 1.0)
+        return self._build_result(
+            success=bool(payload),
+            verbal_ack=guarded.response_text,
+            updated_history=updated_history or list(history),
+            intent=str(guarded.intent.get('type', '')).strip() or 'fallback',
+            intent_source='atomic_irr',
+            intent_confidence=guarded.confidence,
+            user_intent=guarded.user_intent(),
+            route=guarded.route,
+            route_reason=guarded.route_reason,
+            planner_handoff_requested=guarded.planner_handoff_requested,
+            evidence_used=guarded.evidence_used,
+            safety_flags=guarded.safety_flags,
+            guard_violations=guarded.violations,
+            pipeline_mode='atomic_irr',
+        )
 
     def _resolve_intent(
         self,
@@ -866,6 +971,46 @@ class DialogueTurnEngine:
             return {'verbal_ack': self._config.fallback_response}
         return {'verbal_ack': str(raw_response).strip()}
 
+    def _query_atomic_irr(
+        self,
+        *,
+        history_messages: list[dict],
+        user_text: str,
+        user_id: str,
+        turn_state: dict,
+        timeout_sec: float,
+    ) -> dict:
+        prompt = build_irr_prompt(
+            robot_name=self._config.robot_name,
+            user_id=user_id,
+            system_prompt=self._config.system_prompt,
+            environment_description=self._config.environment_description,
+            turn_state_json=json.dumps(turn_state, ensure_ascii=True, sort_keys=True),
+            irr_prompt_addendum=self._config.irr_prompt_addendum,
+            skill_catalog_text=self._skill_catalog_text,
+            persona_prompt=self._persona_prompt,
+        )
+        messages = [{'role': 'system', 'content': prompt}]
+        messages.extend(history_messages)
+        messages.append({'role': 'user', 'content': user_text})
+        messages = trim_messages(messages, max_history_messages=self._config.max_history_messages)
+        raw_response = self._transport.query(
+            messages=messages,
+            timeout_sec=timeout_sec,
+            model=self._config.model,
+            temperature=self._config.temperature,
+            top_p=self._config.top_p,
+            think=self._config.think,
+            max_tokens=self._config.irr_max_tokens,
+            response_format=self._config.irr_schema,
+        )
+        if not raw_response:
+            return {}
+        parsed = _extract_json_object(raw_response)
+        if not parsed:
+            _warn(self._logger, 'Atomic IRR response was not valid JSON')
+        return parsed
+
     def _query_intent(
         self,
         history_messages: list[dict],
@@ -1104,6 +1249,12 @@ class DialogueTurnEngine:
         intent_confidence: float,
         user_intent: dict,
         route: str,
+        route_reason: str = '',
+        planner_handoff_requested: bool = False,
+        evidence_used: dict | None = None,
+        safety_flags: tuple[str, ...] = (),
+        guard_violations: tuple[str, ...] = (),
+        pipeline_mode: str = 'response_first',
     ) -> TurnExecutionResult:
         return TurnExecutionResult(
             success=success,
@@ -1114,6 +1265,12 @@ class DialogueTurnEngine:
             intent_confidence=intent_confidence,
             user_intent=user_intent,
             route=route,
+            route_reason=route_reason,
+            planner_handoff_requested=planner_handoff_requested,
+            evidence_used=dict(evidence_used or {}),
+            safety_flags=tuple(safety_flags),
+            guard_violations=tuple(guard_violations),
+            pipeline_mode=pipeline_mode,
         )
 
     @staticmethod

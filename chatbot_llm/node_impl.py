@@ -28,9 +28,12 @@ from chatbot_llm.ollama_transport import OllamaTransport
 from chatbot_llm.planner_handoff import PlannerHandoff
 from chatbot_llm.skill_catalog import build_skill_catalog_text
 from chatbot_llm.skill_catalog import build_skill_catalog_text_from_shared_registry
+from chatbot_llm.skill_catalog import build_turn_state_skill_manifest
 from chatbot_llm.turn_engine import DialogueTurnEngine
 from chatbot_llm.turn_engine import _extract_ack_text
 from chatbot_llm.turn_engine import _looks_like_json_payload
+from chatbot_llm.turn_state import build_turn_state
+from chatbot_llm.turn_state import resolve_mentioned_subject_ids
 from hri_actions_msgs.msg import Intent
 from std_msgs.msg import String
 
@@ -100,6 +103,7 @@ class LLMChatbot(Node):
         self._knowledge_snapshot_client = None
         self._skill_catalog_text = ''
         self._skill_catalog_size = 0
+        self._skill_manifest: list[dict] = []
         self._default_locale = ''
 
         self._session: DialogueSession | None = None
@@ -224,6 +228,22 @@ class LLMChatbot(Node):
                 current_snapshot,
                 knowledge_rows=current_snapshot_rows,
             )
+        if self._config.irr_subject_lookup_enabled and turn_role == 'user':
+            subjects = resolve_mentioned_subject_ids(text, grounded_context)
+            if subjects:
+                current_snapshot = self._knowledge_snapshot_client.enrich_snapshot_for_subjects(
+                    current_snapshot,
+                    session.knowledge_settings,
+                    subjects,
+                    turn_id=turn_id,
+                    trace=self._trace,
+                )
+                current_snapshot_rows = tuple(self._knowledge_snapshot_client.last_rows)
+                if self._planner_handoff is not None:
+                    grounded_context = self._planner_handoff.grounded_context(
+                        current_snapshot,
+                        knowledge_rows=current_snapshot_rows,
+                    )
         grounded_context_text = build_grounded_context_block(grounded_context)
         if grounded_context_text:
             self._trace(
@@ -237,6 +257,14 @@ class LLMChatbot(Node):
             history=list(session.history),
             user_id=user_id,
             knowledge_snapshot=grounded_context_text,
+            turn_state=build_turn_state(
+                turn_id=turn_id,
+                utterance=text,
+                history=list(session.history),
+                grounded_context=grounded_context,
+                active_goal_id=session.active_planner_goal_id,
+                skill_manifest=self._skill_manifest,
+            ) if self._config.irr_turn_state_enabled else {},
             progress_callback=lambda status, progress: self._trace(
                 turn_id,
                 'PROGRESS',
@@ -310,6 +338,12 @@ class LLMChatbot(Node):
                 'planner_mode_enabled': bool(self._config.planner_mode_enabled),
                 'planner_handoff_allowed': planner_handoff_allowed,
                 'planner_handoff_published': planner_handoff_published,
+                'planner_handoff_requested': result.planner_handoff_requested,
+                'pipeline_mode': result.pipeline_mode,
+                'route_reason': result.route_reason,
+                'evidence_used': dict(result.evidence_used or {}),
+                'safety_flags': list(result.safety_flags),
+                'guard_violations': list(result.guard_violations),
                 'direct_intent_count': len(direct_intents),
                 'grounded_context': grounded_context,
             }
@@ -348,10 +382,12 @@ class LLMChatbot(Node):
 
         self._skill_catalog_text = ''
         self._skill_catalog_size = 0
+        self._skill_manifest = []
         if self._config.use_skill_catalog and self._config.skill_catalog_packages:
             self._skill_catalog_text, descriptors = build_skill_catalog_text_from_shared_registry(
                 max_entries=self._config.skill_catalog_max_entries,
                 max_chars=self._config.skill_catalog_max_chars,
+                registry_path=self._config.skill_registry_path,
             )
             if not descriptors:
                 self._skill_catalog_text, descriptors = build_skill_catalog_text(
@@ -361,6 +397,11 @@ class LLMChatbot(Node):
                     logger=self.get_logger(),
                 )
             self._skill_catalog_size = len(descriptors)
+            self._skill_manifest = build_turn_state_skill_manifest(
+                self._config.skill_registry_path
+            )
+            if not self._skill_manifest:
+                self._skill_manifest = [item.turn_state_entry() for item in descriptors]
 
         self._knowledge_snapshot_client = KnowledgeSnapshotClient(
             node=self,
@@ -374,6 +415,7 @@ class LLMChatbot(Node):
             transport=self._transport,
             logger=self.get_logger(),
             skill_catalog_text=self._skill_catalog_text,
+            skill_manifest=self._skill_manifest,
         )
 
         self._diag_pub = self.create_publisher(DiagnosticArray, '/diagnostics', 1)
@@ -418,12 +460,13 @@ class LLMChatbot(Node):
 
         self.get_logger().info(
             '[STACK READY] chatbot_llm configured | server_url=%s model=%s intent_model=%s '
-            'intent_mode=%s skill_catalog=%s planner_mode=%s planner_topic=%s'
+            'intent_mode=%s turn_pipeline=%s skill_catalog=%s planner_mode=%s planner_topic=%s'
             % (
                 self._config.server_url,
                 self._config.model,
                 self._config.intent_model,
                 self._config.intent_detection_mode,
+                self._config.turn_pipeline_mode,
                 self._skill_catalog_size,
                 self._config.planner_mode_enabled,
                 self._config.planner_request_topic,

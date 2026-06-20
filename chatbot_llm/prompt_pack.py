@@ -120,6 +120,83 @@ DEFAULT_INTENT_SCHEMA: dict[str, Any] = {
     },
 }
 
+DEFAULT_IRR_SCHEMA: dict[str, Any] = {
+    'type': 'object',
+    'properties': {
+        'route': {'type': 'string', 'enum': ['dialogue', 'knowledge_query', 'execution']},
+        'route_reason': {'type': 'string'},
+        'confidence': {'type': 'number'},
+        'intent': {
+            'type': 'object',
+            'properties': {
+                'type': {'type': 'string'},
+                'goal_text': {'type': 'string'},
+                'request_kind': {
+                    'type': 'string',
+                    'enum': [
+                        'new_goal',
+                        'clarification_answer',
+                        'goal_update',
+                        'cancel_request',
+                        'none',
+                    ],
+                },
+                'scene_targets': {'type': 'array', 'items': {'type': 'string'}},
+                'intent_sequence': {'type': 'array', 'items': {'type': 'string'}},
+                'arguments': {'type': 'object', 'additionalProperties': {'type': 'string'}},
+            },
+            'required': [
+                'type',
+                'goal_text',
+                'request_kind',
+                'scene_targets',
+                'intent_sequence',
+                'arguments',
+            ],
+        },
+        'response': {
+            'type': 'object',
+            'properties': {
+                'text': {'type': 'string'},
+                'style': {
+                    'type': 'string',
+                    'enum': ['answer', 'acknowledgement', 'clarification', 'failure'],
+                },
+            },
+            'required': ['text', 'style'],
+        },
+        'planner_handoff': {
+            'type': 'object',
+            'properties': {
+                'requested': {'type': 'boolean'},
+                'reason': {'type': 'string'},
+            },
+            'required': ['requested', 'reason'],
+        },
+        'evidence_used': {
+            'type': 'object',
+            'properties': {
+                'grounding_id': {'type': 'string'},
+                'entity_ids': {'type': 'array', 'items': {'type': 'string'}},
+                'kb_subjects': {'type': 'array', 'items': {'type': 'string'}},
+                'latest_result_ids': {'type': 'array', 'items': {'type': 'string'}},
+            },
+            'required': ['grounding_id', 'entity_ids', 'kb_subjects', 'latest_result_ids'],
+        },
+        'safety_flags': {'type': 'array', 'items': {'type': 'string'}},
+    },
+    'required': [
+        'route',
+        'route_reason',
+        'confidence',
+        'intent',
+        'response',
+        'planner_handoff',
+        'evidence_used',
+        'safety_flags',
+    ],
+}
+
 
 @dataclass(frozen=True)
 class PromptPack:
@@ -128,9 +205,11 @@ class PromptPack:
     system_prompt: str
     response_prompt_addendum: str
     intent_prompt_addendum: str
+    irr_prompt_addendum: str
     environment_description: str
     response_schema: dict[str, Any]
     intent_schema: dict[str, Any]
+    irr_schema: dict[str, Any]
     planner_multi_step_heuristics: dict[str, list[str]]
 
 
@@ -182,6 +261,11 @@ def load_prompt_pack(path: str, logger=None) -> PromptPack:
         _warn(logger, 'intent_schema must be a mapping; using structural defaults')
         intent_schema = DEFAULT_INTENT_SCHEMA
 
+    irr_schema = parsed.get('irr_schema', DEFAULT_IRR_SCHEMA)
+    if not isinstance(irr_schema, dict):
+        _warn(logger, 'irr_schema must be a mapping; using structural defaults')
+        irr_schema = DEFAULT_IRR_SCHEMA
+
     planner_multi_step_heuristics = _coerce_heuristics(
         parsed.get(
             'planner_multi_step_heuristics',
@@ -195,9 +279,11 @@ def load_prompt_pack(path: str, logger=None) -> PromptPack:
         system_prompt=_as_text(parsed.get('system_prompt')),
         response_prompt_addendum=_as_text(parsed.get('response_prompt_addendum')),
         intent_prompt_addendum=_as_text(parsed.get('intent_prompt_addendum')),
+        irr_prompt_addendum=_as_text(parsed.get('irr_prompt_addendum')),
         environment_description=_as_text(parsed.get('environment_description')),
         response_schema=response_schema,
         intent_schema=intent_schema,
+        irr_schema=irr_schema,
         planner_multi_step_heuristics=planner_multi_step_heuristics,
     )
 

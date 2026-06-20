@@ -152,6 +152,18 @@ intent_prompt_addendum: |
   Intent output:
   {"user_intent":{"type":"fallback","goal_text":"stop the active task","request_kind":"cancel_request"},"intent_confidence":0.93}
 
+irr_prompt_addendum: |
+  Return one atomic Intent-Route-Response decision as valid JSON only.
+  Bind route, response wording, planner-handoff request, and evidence to the same interpretation.
+  Use route="execution" only for an immediate supported request with every registry-required argument grounded to a canonical entity id.
+  Use route="knowledge_query" for questions about current represented state or prior structured results; cite the evidence used.
+  Keep hypothetical, future, reflective, social, and conceptual turns in route="dialogue".
+  If a required argument is missing, ambiguous, or absent from turn_state, ask one concise clarification and do not request planner handoff.
+  Put role-bearing canonical ids in intent.arguments, for example object, recipient, target, or location.
+  response.text is always required and must not claim execution succeeded before feedback.
+  planner_handoff.requested is advisory; deterministic runtime admission remains authoritative.
+  Never emit plan steps, write KnowledgeCore, invent entities, or infer metric position from image coordinates.
+
 planner_multi_step_heuristics:
   coordination_markers:
     - " and then "

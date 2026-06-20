@@ -244,3 +244,46 @@ to keep the surface narrow:
 - **Speech synthesis / markup.** The chatbot returns text; the
   dialogue_manager (and its Say sub-skill) handle TTS, markup,
   closed captions, and the LED/gesture choreography.
+
+
+Atomic IRR research path
+------------------------
+
+Planner-enabled user turns may opt into the `atomic_irr` ablation. This is an
+internal decision path, not a new ROS contract:
+
+```
+current request + bounded history + grounded_context + skill registry
+                              |
+                              v
+                  deterministic ts.v1 turn state
+                              |
+                              v
+                  one structured LLM call (irr.v1)
+                              |
+                              v
+                    deterministic IRR guard
+                   /            |            \
+            dialogue     knowledge_query    execution
+                                               |
+                                               v
+                                  existing planner publisher
+```
+
+The model returns a route, intent, response text, evidence references, and an
+advisory planner-handoff request together. It never returns an executable plan,
+does not own speech timing, and cannot publish by itself. The guard validates
+route consistency, evidence references, and registry-required canonical
+arguments. Incomplete or unknown execution targets become one clarification
+turn rather than a planner request.
+
+`ts.v1` is rebuilt for each call from inbound history and current evidence. It
+contains a bounded entity projection, active goal identifier, latest execution
+summary, and a compact skill manifest. It does not become persistent chatbot
+memory or a replacement for KnowledgeCore, scene grounding, planner state, or
+execution-time skill validation.
+
+System-origin planner completion, planner dialogue, execution report, and
+report-result turns are checked before pipeline selection. They therefore keep
+their existing dedicated wording prompts in every mode, including
+`atomic_irr`.

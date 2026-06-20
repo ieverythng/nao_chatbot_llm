@@ -111,6 +111,41 @@ class KnowledgeSnapshotClient:
             )
         return snapshot
 
+    def enrich_snapshot_for_subjects(
+        self,
+        snapshot: str,
+        settings: KnowledgeSnapshotSettings,
+        subject_ids: list[str],
+        *,
+        turn_id: str = '',
+        trace=None,
+    ) -> str:
+        """Add bounded relation rows for canonical subjects already resolved in state."""
+        if not settings.enabled or not subject_ids:
+            return snapshot
+        rows = list(self.last_rows)
+        for subject_id in subject_ids[:4]:
+            rows.extend(
+                self._query_client.query_rows(
+                    patterns=['%s ?predicate ?object' % subject_id],
+                    query_vars=['?predicate', '?object'],
+                    models=list(settings.models),
+                    turn_id=turn_id,
+                    trace=trace,
+                    trace_stage='KB_SUBJECT_LOOKUP',
+                )
+            )
+        deduped_rows = KnowledgeCoreQueryClient.dedupe_rows(rows)
+        self.last_rows = tuple(dict(item) for item in deduped_rows)
+        enriched = format_knowledge_snapshot(json.dumps(deduped_rows), settings)
+        self._trace(
+            trace,
+            turn_id,
+            'KB_SUBJECT_LOOKUP',
+            'resolved subjects=%s rows=%d' % (','.join(subject_ids[:4]), len(deduped_rows)),
+        )
+        return enriched or snapshot
+
     @staticmethod
     def _trace(trace, turn_id: str, stage: str, message: str, level: str = 'info') -> None:
         """Forward trace hooks without forcing callers to provide one."""

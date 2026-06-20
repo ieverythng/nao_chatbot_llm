@@ -13,6 +13,7 @@ from chatbot_llm.skill_catalog import parse_package_list
 # ---------------------------------------------------------------------------
 
 INTENT_DETECTION_MODES = {'rules', 'llm', 'llm_with_rules_fallback'}
+TURN_PIPELINE_MODES = {'response_first', 'intent_first', 'atomic_irr'}
 
 @dataclass(frozen=True)
 class ChatbotConfig:
@@ -33,6 +34,7 @@ class ChatbotConfig:
     think: bool
     response_max_tokens: int
     intent_max_tokens: int
+    irr_max_tokens: int
     preflight_enabled: bool
     preflight_required: bool
     preflight_timeout_sec: float
@@ -46,9 +48,11 @@ class ChatbotConfig:
     persona_prompt_path: str
     response_prompt_addendum: str
     intent_prompt_addendum: str
+    irr_prompt_addendum: str
     environment_description: str
     response_schema: dict
     intent_schema: dict
+    irr_schema: dict
     planner_multi_step_heuristics: dict
     identity_reminder_every_n_turns: int
     intent_detection_mode: str
@@ -57,7 +61,12 @@ class ChatbotConfig:
     skill_catalog_packages: list[str]
     skill_catalog_max_entries: int
     skill_catalog_max_chars: int
+    skill_registry_path: str
     planner_mode_enabled: bool
+    turn_pipeline_mode: str
+    irr_turn_state_enabled: bool
+    irr_canonical_guard_enabled: bool
+    irr_subject_lookup_enabled: bool
     planner_request_topic: str
     planner_request_intent: str
     planner_scene_summary_topic: str
@@ -96,6 +105,7 @@ def declare_backend_parameters(node) -> None:
     node.declare_parameter('think', False)
     node.declare_parameter('response_max_tokens', 192)
     node.declare_parameter('intent_max_tokens', 64)
+    node.declare_parameter('irr_max_tokens', 384)
     node.declare_parameter('preflight_enabled', True)
     node.declare_parameter('preflight_required', False)
     node.declare_parameter('preflight_timeout_sec', 45.0)
@@ -121,7 +131,12 @@ def declare_backend_parameters(node) -> None:
     )
     node.declare_parameter('skill_catalog_max_entries', 16)
     node.declare_parameter('skill_catalog_max_chars', 3000)
+    node.declare_parameter('skill_registry_path', '')
     node.declare_parameter('planner_mode_enabled', False)
+    node.declare_parameter('turn_pipeline_mode', 'response_first')
+    node.declare_parameter('irr_turn_state_enabled', True)
+    node.declare_parameter('irr_canonical_guard_enabled', True)
+    node.declare_parameter('irr_subject_lookup_enabled', False)
     node.declare_parameter('planner_request_topic', '/planner/request')
     node.declare_parameter('planner_request_intent', 'planner_request')
     node.declare_parameter('planner_scene_summary_topic', '/scene/summary')
@@ -190,6 +205,13 @@ def load_backend_config(node) -> ChatbotConfig:
 
     model = str(node.get_parameter('model').value).strip()
     intent_model = str(node.get_parameter('intent_model').value).strip() or model
+    turn_pipeline_mode = str(node.get_parameter('turn_pipeline_mode').value).strip().lower()
+    if turn_pipeline_mode not in TURN_PIPELINE_MODES:
+        node.get_logger().warn(
+            'Unsupported turn_pipeline_mode=%s, defaulting to response_first'
+            % turn_pipeline_mode
+        )
+        turn_pipeline_mode = 'response_first'
 
     return ChatbotConfig(
         server_url=str(node.get_parameter('server_url').value).strip(),
@@ -216,6 +238,7 @@ def load_backend_config(node) -> ChatbotConfig:
         think=as_bool(node.get_parameter('think').value),
         response_max_tokens=max(1, int(node.get_parameter('response_max_tokens').value)),
         intent_max_tokens=max(1, int(node.get_parameter('intent_max_tokens').value)),
+        irr_max_tokens=max(64, int(node.get_parameter('irr_max_tokens').value)),
         preflight_enabled=as_bool(node.get_parameter('preflight_enabled').value),
         preflight_required=as_bool(node.get_parameter('preflight_required').value),
         preflight_timeout_sec=max(
@@ -246,9 +269,11 @@ def load_backend_config(node) -> ChatbotConfig:
         persona_prompt_path=str(node.get_parameter('persona_prompt_path').value),
         response_prompt_addendum=loaded_pack.response_prompt_addendum,
         intent_prompt_addendum=loaded_pack.intent_prompt_addendum,
+        irr_prompt_addendum=loaded_pack.irr_prompt_addendum,
         environment_description=loaded_pack.environment_description,
         response_schema=loaded_pack.response_schema,
         intent_schema=loaded_pack.intent_schema,
+        irr_schema=loaded_pack.irr_schema,
         planner_multi_step_heuristics=loaded_pack.planner_multi_step_heuristics,
         identity_reminder_every_n_turns=max(
             0,
@@ -268,7 +293,16 @@ def load_backend_config(node) -> ChatbotConfig:
             0,
             int(node.get_parameter('skill_catalog_max_chars').value),
         ),
+        skill_registry_path=str(node.get_parameter('skill_registry_path').value).strip(),
         planner_mode_enabled=as_bool(node.get_parameter('planner_mode_enabled').value),
+        turn_pipeline_mode=turn_pipeline_mode,
+        irr_turn_state_enabled=as_bool(node.get_parameter('irr_turn_state_enabled').value),
+        irr_canonical_guard_enabled=as_bool(
+            node.get_parameter('irr_canonical_guard_enabled').value
+        ),
+        irr_subject_lookup_enabled=as_bool(
+            node.get_parameter('irr_subject_lookup_enabled').value
+        ),
         planner_request_topic=str(node.get_parameter('planner_request_topic').value).strip()
         or '/planner/request',
         planner_request_intent=str(node.get_parameter('planner_request_intent').value).strip()

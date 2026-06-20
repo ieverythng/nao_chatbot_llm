@@ -17,6 +17,10 @@ def test_default_prompt_pack_loads_canonical_yaml():
         pack.intent_prompt_addendum
     )
     assert 'Intent stage purpose' in pack.intent_prompt_addendum
+    assert 'one atomic Intent-Route-Response decision' in pack.irr_prompt_addendum
+    assert 'planner_handoff' in pack.irr_schema['properties']
+    assert 'speak_now' not in pack.irr_schema['properties']['response']['properties']
+    assert 'requested' in pack.irr_schema['properties']['planner_handoff']['properties']
     assert 'plan' not in pack.response_schema['properties']['user_intent']['properties']
     assert 'plan' not in pack.intent_schema['properties']['user_intent']['properties']
     assert 'intent_sequence' in pack.response_schema['properties']['user_intent']['properties']

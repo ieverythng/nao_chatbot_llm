@@ -155,6 +155,21 @@ Output requirements:
 """.strip()
 )
 
+IRR_STAGE_TEMPLATE = Template(
+    """
+You are the atomic semantic admission component for robot $robot_name.
+Use the current turn_state as authoritative evidence and return exactly one IRR JSON object.
+You interpret the turn; you do not plan skills, execute actions, or write KnowledgeCore.
+
+The user_id of the person you are talking to is $user_id.
+Environment description:
+$environment
+
+Turn state:
+$turn_state
+""".strip()
+)
+
 
 # ---------------------------------------------------------------------------
 # Public prompt assembly helpers
@@ -225,6 +240,31 @@ def build_intent_prompt(
         _knowledge_snapshot_block(knowledge_snapshot),
         skill_catalog_text,
         intent_prompt_addendum,
+    )
+
+
+def build_irr_prompt(
+    robot_name: str,
+    user_id: str,
+    system_prompt: str,
+    environment_description: str,
+    turn_state_json: str,
+    irr_prompt_addendum: str,
+    skill_catalog_text: str,
+    persona_prompt: str,
+) -> str:
+    """Build the isolated single-call IRR prompt."""
+    return _join_prompt_parts(
+        persona_prompt,
+        _safe_format(system_prompt, robot_name=robot_name, user_id=user_id),
+        IRR_STAGE_TEMPLATE.safe_substitute(
+            robot_name=robot_name,
+            user_id=user_id or 'user1',
+            environment=environment_description or 'No specific objects described.',
+            turn_state=turn_state_json,
+        ),
+        skill_catalog_text,
+        irr_prompt_addendum,
     )
 
 

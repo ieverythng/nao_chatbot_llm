@@ -1,5 +1,6 @@
 from chatbot_llm.backend_config import ChatbotConfig
 from chatbot_llm.turn_engine import DialogueTurnEngine
+from dataclasses import replace
 import pytest
 
 
@@ -36,6 +37,7 @@ def make_config(
         think=False,
         response_max_tokens=64,
         intent_max_tokens=64,
+        irr_max_tokens=384,
         preflight_enabled=True,
         preflight_required=False,
         preflight_timeout_sec=45.0,
@@ -49,9 +51,11 @@ def make_config(
         persona_prompt_path='',
         response_prompt_addendum='Respond briefly.',
         intent_prompt_addendum='Infer intent.',
+        irr_prompt_addendum='Return one atomic IRR object.',
         environment_description='No specific objects described.',
         response_schema={'type': 'object'},
         intent_schema={'type': 'object'},
+        irr_schema={'type': 'object'},
         planner_multi_step_heuristics={
             'coordination_markers': [' and then ', ' then '],
             'action_hint_tokens': ['stand', 'sit', 'look', 'move', 'head'],
@@ -63,7 +67,12 @@ def make_config(
         skill_catalog_packages=[],
         skill_catalog_max_entries=0,
         skill_catalog_max_chars=0,
+        skill_registry_path='',
         planner_mode_enabled=planner_mode_enabled,
+        turn_pipeline_mode='response_first',
+        irr_turn_state_enabled=True,
+        irr_canonical_guard_enabled=True,
+        irr_subject_lookup_enabled=False,
         planner_request_topic='/planner/request',
         planner_request_intent='planner_request',
         planner_scene_summary_topic='/scene/summary',
@@ -108,6 +117,95 @@ def test_turn_engine_rules_mode_generates_motion_reply():
         'user:please stand up',
         'assistant:Sure. I am switching to a standing posture.',
     ]
+
+
+def test_atomic_irr_uses_one_call_and_preserves_canonical_arguments() -> None:
+    transport = FakeTransport(
+        [
+            '{"route":"execution","route_reason":"supported_now","confidence":0.96,'
+            '"intent":{"type":"bring_object","goal_text":"bring the cup to Alex",'
+            '"request_kind":"new_goal","intent_sequence":["bring_object"],'
+            '"arguments":{"object":"cup_1","recipient":"person_1"}},'
+            '"response":{"text":"I will bring the cup to Alex.","style":"acknowledgement"},'
+            '"planner_handoff":{"requested":true,"reason":"grounded"},'
+            '"evidence_used":{"grounding_id":"gc:abc","entity_ids":["cup_1","person_1"],'
+            '"kb_subjects":[],"latest_result_ids":[]},"safety_flags":[]}'
+        ]
+    )
+    config = replace(
+        make_config(intent_mode='llm', planner_mode_enabled=True),
+        turn_pipeline_mode='atomic_irr',
+    )
+    engine = DialogueTurnEngine(
+        config=config,
+        transport=transport,
+        logger=None,
+        skill_catalog_text='Available skills: bring_object',
+        skill_manifest=[
+            {
+                'name': 'bring_object',
+                'params': ['object', 'recipient'],
+                'required_params': ['object', 'recipient'],
+            }
+        ],
+    )
+
+    result = engine.execute_turn(
+        user_text='Bring the cup to Alex',
+        history=[],
+        user_id='user1',
+        turn_id='default:1',
+        turn_state={
+            'world_state': {
+                'grounding_id': 'gc:abc',
+                'entities': [{'id': 'cup_1'}, {'id': 'person_1'}],
+            },
+            'available_skills': [
+                {
+                    'name': 'bring_object',
+                    'params': ['object', 'recipient'],
+                    'required_params': ['object', 'recipient'],
+                }
+            ],
+        },
+    )
+
+    assert len(transport.calls) == 1
+    assert transport.calls[0]['max_tokens'] == 384
+    assert result.pipeline_mode == 'atomic_irr'
+    assert result.route == 'execution'
+    assert result.planner_handoff_requested is True
+    assert result.user_intent['object'] == 'cup_1'
+    assert result.user_intent['recipient'] == 'person_1'
+    assert result.guard_violations == ()
+
+
+def test_atomic_irr_does_not_replace_system_completion_wording_path() -> None:
+    transport = FakeTransport(['{"verbal_ack":"I waved successfully."}'])
+    config = replace(
+        make_config(intent_mode='llm', planner_mode_enabled=True),
+        turn_pipeline_mode='atomic_irr',
+    )
+    engine = DialogueTurnEngine(
+        config=config,
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text=(
+            '{"planner_completion":{"goal_text":"wave",'
+            '"result_summary":"wave succeeded"}}'
+        ),
+        history=[],
+        user_id='__system__',
+    )
+
+    assert len(transport.calls) == 1
+    assert transport.calls[0]['response_format'] == config.response_schema
+    assert result.intent_source == 'planner_completion'
+    assert result.verbal_ack == 'I waved successfully.'
 
 
 def test_turn_engine_llm_mode_uses_two_stage_json_outputs():
