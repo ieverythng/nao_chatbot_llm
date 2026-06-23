@@ -1,6 +1,7 @@
 from chatbot_llm.backend_config import ChatbotConfig
 from chatbot_llm.turn_engine import DialogueTurnEngine
 from chatbot_llm.turn_engine import _system_task_response_addendum
+from chatbot_llm.prompt_builders import build_intent_prompt
 import pytest
 
 
@@ -21,6 +22,8 @@ def make_config(
     *,
     planner_mode_enabled: bool = False,
     turn_pipeline_mode: str = 'response_first',
+    response_prompt_addendum: str = 'Respond briefly.',
+    intent_prompt_addendum: str = 'Infer intent.',
 ) -> ChatbotConfig:
     return ChatbotConfig(
         server_url='http://localhost:11434/api/chat',
@@ -49,8 +52,8 @@ def make_config(
         scene_memory_turns=4,
         robot_name='NAO',
         persona_prompt_path='',
-        response_prompt_addendum='Respond briefly.',
-        intent_prompt_addendum='Infer intent.',
+        response_prompt_addendum=response_prompt_addendum,
+        intent_prompt_addendum=intent_prompt_addendum,
         environment_description='No specific objects described.',
         response_schema={'type': 'object'},
         intent_schema={'type': 'object'},
@@ -189,7 +192,15 @@ def test_turn_engine_prompt_exposes_updated_grounded_relation_for_followups():
         ]
     )
     engine = DialogueTurnEngine(
-        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        config=make_config(
+            intent_mode='llm',
+            planner_mode_enabled=True,
+            response_prompt_addendum=(
+                'Response style:\n'
+                '- Resolve pronouns such as "it" from recent dialogue focus '
+                'and current grounded entities.'
+            ),
+        ),
         transport=transport,
         logger=None,
         skill_catalog_text='',
@@ -215,8 +226,6 @@ def test_turn_engine_prompt_exposes_updated_grounded_relation_for_followups():
     assert '"predicate":"dbp:name"' in prompt
     assert '"object":"TITAS"' in prompt
     assert 'Resolve pronouns such as "it"' in prompt
-    assert 'salient stable' in prompt
-    assert 'names, colors, and locations' in prompt
 
 
 @pytest.mark.parametrize('user_text', ['What about now?', 'What can you see?'])
@@ -264,7 +273,13 @@ def test_turn_engine_prompt_explicitly_mentions_recent_history():
         ]
     )
     engine = DialogueTurnEngine(
-        config=make_config(intent_mode='llm'),
+        config=make_config(
+            intent_mode='llm',
+            intent_prompt_addendum=(
+                'Knowledge-query labels: kb_query_visible_people, '
+                'kb_query_visible_objects, kb_query_scene_change.'
+            ),
+        ),
         transport=transport,
         logger=None,
         skill_catalog_text='',
@@ -328,10 +343,11 @@ def test_turn_engine_planner_mode_uses_single_response_stage_for_execution():
     assert result.user_intent['goal'] == 'look left and then sit down'
     assert 'plan' not in result.user_intent
     assert (
-        'Planner-mode routing requirements:'
+        'Planner-mode response fields:'
         in transport.calls[0]['messages'][0]['content']
     )
-    assert 'planner_llm owns all' in transport.calls[0]['messages'][0]['content']
+    assert 'executable plans after this response' in transport.calls[0]['messages'][0]['content']
+    assert 'Route policy, response style, and examples' in transport.calls[0]['messages'][0]['content']
     assert 'Grounded context:\nperson_1 rdf:type Person' in transport.calls[0]['messages'][0]['content']
 
 
@@ -452,6 +468,150 @@ def test_turn_engine_intent_first_locks_scene_question_to_knowledge_query():
     assert result.intent == 'kb_query_visible_objects'
     assert result.user_intent['type'] == 'kb_query_visible_objects'
     assert '"route":"knowledge_query"' in transport.calls[1]['messages'][0]['content']
+
+
+def test_turn_engine_intent_first_rejects_low_confidence_kb_route_for_action_request():
+    transport = FakeTransport(
+        [
+            (
+                '{"user_intent":{"type":"kb_query_visible_objects",'
+                '"goal_text":"describe visible objects"},"intent_confidence":0.0}'
+            ),
+            (
+                '{"verbal_ack":"I understand. I will check the scene and plan the task.",'
+                '"route":"execution","confidence":0.76}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(
+            intent_mode='llm',
+            planner_mode_enabled=True,
+            turn_pipeline_mode='intent_first',
+        ),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='Look at the probe cup and tell me what you did.',
+        history=[],
+        user_id='user1',
+        knowledge_snapshot='Scene digest: Objects (1): probe cup [on table]',
+    )
+
+    assert result.route == 'execution'
+    assert result.intent == 'fallback'
+    assert result.user_intent['goal_text'] == 'Look at the probe cup and tell me what you did.'
+    assert result.user_intent['route_conflict']['rejected_type'] == 'kb_query_visible_objects'
+    assert '"route":"execution"' in transport.calls[1]['messages'][0]['content']
+
+
+def test_turn_engine_intent_first_repairs_kb_mutation_mislabeled_as_query():
+    transport = FakeTransport(
+        [
+            (
+                '{"user_intent":{"type":"kb_query_visible_objects",'
+                '"goal_text":"describe visible objects"},"intent_confidence":0.0}'
+            ),
+            (
+                '{"verbal_ack":"I will update the knowledge base with that fact.",'
+                '"route":"execution","confidence":0.82}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(
+            intent_mode='llm',
+            planner_mode_enabled=True,
+            turn_pipeline_mode='intent_first',
+        ),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='Can you add another person with the name Watson to your knowledge base!',
+        history=[],
+        user_id='user1',
+    )
+
+    assert result.route == 'execution'
+    assert result.intent == 'kb_add'
+    assert result.user_intent['type'] == 'kb_add'
+
+
+def test_turn_engine_intent_first_rejects_dialogue_route_action_promise():
+    transport = FakeTransport(
+        [
+            (
+                '{"user_intent":{"type":"help","goal_text":"discuss a future plan"},'
+                '"intent_confidence":0.66}'
+            ),
+            (
+                '{"verbal_ack":"Sure, I will navigate to the probe cup now.",'
+                '"route":"execution","confidence":0.84}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(
+            intent_mode='llm',
+            planner_mode_enabled=True,
+            turn_pipeline_mode='intent_first',
+        ),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='Could we navigate to the probe cup later?',
+        history=[],
+        user_id='user1',
+    )
+
+    assert result.route == 'dialogue'
+    assert result.intent == ''
+    assert result.verbal_ack == 'I can talk about that without starting a robot action.'
+
+
+def test_turn_engine_intent_first_rejects_knowledge_query_action_promise():
+    transport = FakeTransport(
+        [
+            (
+                '{"user_intent":{"type":"inspect_scene","goal_text":"describe visible objects"},'
+                '"intent_confidence":0.66}'
+            ),
+            (
+                '{"verbal_ack":"I will walk to the cup and inspect it now.",'
+                '"route":"execution","confidence":0.84}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(
+            intent_mode='llm',
+            planner_mode_enabled=True,
+            turn_pipeline_mode='intent_first',
+        ),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='What can you see now?',
+        history=[],
+        user_id='user1',
+        knowledge_snapshot='Scene digest: Objects (1): cup x1 [on table]',
+    )
+
+    assert result.route == 'knowledge_query'
+    assert result.intent == 'kb_query_visible_objects'
+    assert result.verbal_ack == 'I will answer from the current grounded context.'
 
 
 def test_turn_engine_planner_mode_repairs_missing_execution_route_without_second_call():
@@ -887,6 +1047,7 @@ def test_turn_engine_execution_report_prompt_distinguishes_intermediate_role():
         user_text=(
             '{"execution_report":{"goal_text":"walk to every object and report each stop",'
             '"report_role":"intermediate",'
+            '"report_scope":"direct_dependencies",'
             '"latest_result_summary":"I completed destination navigation to codex_probe_apple.",'
             '"steps":[{"name":"navigate_to","status":"succeeded",'
             '"result_summary":"I completed destination navigation to codex_probe_apple."}],'
@@ -902,7 +1063,9 @@ def test_turn_engine_execution_report_prompt_distinguishes_intermediate_role():
     assert result.intent_source == 'execution_report'
     assert result.verbal_ack == 'I have navigated to the apple.'
     assert 'If report_role is "intermediate"' in prompt
+    assert 'First decide the report span from report_scope' in prompt
     assert '"report_role":"intermediate"' in payload
+    assert '"report_scope":"direct_dependencies"' in payload
     assert 'future_steps' in payload
 
 
@@ -929,6 +1092,39 @@ def test_turn_engine_execution_report_rejects_next_object_without_future_navigat
             '"steps":[{"name":"navigate_to","status":"succeeded",'
             '"result_summary":"I arrived at the phone."}],'
             '"future_steps":[{"name":"wave_greet","args":{}}]}}'
+        ),
+        history=[],
+        user_id='__system__',
+    )
+
+    assert result.intent_source == 'execution_report'
+    assert result.verbal_ack == 'I completed destination navigation to codex_probe_phone.'
+
+
+def test_turn_engine_execution_report_direct_scope_rejects_global_recap():
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='rules'),
+        transport=FakeTransport(
+            [
+                (
+                    '{"verbal_ack":"I have walked to each object one by one. '
+                    'I arrived at the apple, then the book, and finally the phone."}'
+                )
+            ]
+        ),
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text=(
+            '{"execution_report":{"goal_text":"walk to every object and report each stop",'
+            '"report_role":"final",'
+            '"report_scope":"direct_dependencies",'
+            '"latest_result_summary":"I completed destination navigation to codex_probe_phone.",'
+            '"steps":[{"name":"navigate_to","status":"succeeded",'
+            '"args":{"target":"codex_probe_phone"},'
+            '"result_summary":"I completed destination navigation to codex_probe_phone."}]}}'
         ),
         history=[],
         user_id='__system__',
@@ -1222,6 +1418,29 @@ Route contrast examples:
     assert 'Could we navigate to the cup later?' not in text
     assert 'If route="execution":' not in text
     assert 'Execution report wording task:' in text
+
+
+def test_intent_prompt_builder_keeps_policy_in_prompt_pack_addendum():
+    prompt = build_intent_prompt(
+        robot_name='Pop',
+        user_id='user1',
+        system_prompt='Base system prompt.',
+        environment_description='Lab.',
+        knowledge_snapshot='',
+        intent_prompt_addendum=(
+            'Canonical intent labels from pack:\n'
+            '- look_at\n'
+            '- kb_add\n'
+            '- fallback'
+        ),
+        skill_catalog_text='',
+        persona_prompt='',
+    )
+
+    assert 'Base system prompt.' in prompt
+    assert 'Canonical intent labels from pack:' in prompt
+    assert 'Intent labels, route policy, and examples are defined by the configured' in prompt
+    assert 'Canonical intent labels:\n- posture_stand' not in prompt
 
 
 def test_turn_engine_renders_planner_dialogue_for_system_payload_with_llm():
@@ -1772,6 +1991,60 @@ def test_turn_engine_keeps_wave_particle_question_on_dialogue_route() -> None:
     assert result.route == 'dialogue'
     assert result.intent != 'wave_greet'
     assert result.user_intent == {}
+
+
+def test_turn_engine_keeps_wave_particle_duality_question_dialogue_when_route_missing() -> None:
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"Wave-particle duality is a concept in quantum '
+                'mechanics."}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='What is wave-particle duality?',
+        history=[],
+        user_id='user1',
+    )
+
+    assert result.route == 'dialogue'
+    assert result.intent == ''
+    assert result.user_intent == {}
+
+
+def test_turn_engine_keeps_wave_particle_duality_dialogue_despite_bad_skill_intent() -> None:
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"Wave-particle duality describes quantum behavior.",'
+                '"route":"dialogue","user_intent":{"type":"wave_greet"}}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='What is wave-particle duality?',
+        history=['assistant:I can move my head and wave.'],
+        user_id='user1',
+    )
+
+    assert result.route == 'dialogue'
+    assert result.intent == ''
+    assert result.user_intent.get('type') == 'fallback'
 
 
 def test_turn_engine_keeps_personal_preference_question_dialogue_only() -> None:

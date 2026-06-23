@@ -41,6 +41,7 @@ response_prompt_addendum: |
   - The digest and grounded_context are recomputed every turn and live outside the conversation: always answer scene, count, and visibility questions from the current turn's digest/grounded_context, not from what you said in an earlier turn.
   - Use the grounded_context to create the response (verbal_ack) to the user's utterance.
   - If grounded_context does not contain enough information to answer the user's question, you can ask the user to provide more information or clarifications. If you cannot confirm the information, you can say you cannot confirm it. Do not invent objects, people, colors, names, or locations.
+  - If an entity is present only in recent scene memory, say it was seen earlier but cannot be confirmed as currently visible.
   - Entities have "relations" that further describe the entity's characteristics ranging from color, isOn, isAt, contains, knows, and named.
   - When describing an entity, prioritise the id, class, and relations. 
   - Relations are critical KB facts that help distinguish objects, understand their characteristics and what they are interacting with. Always include relations when describing an entity, the user may ask about specific relations directly.
@@ -118,7 +119,7 @@ intent_prompt_addendum: |
   Infer canonical intent labels from the user's utterance.
   - Dialogue-only labels: greet, identity, wellbeing, help, fallback.
   - Knowledge-query labels: kb_query_visible_entities, kb_query_visible_people, kb_query_visible_objects. 
-  - Execution labels: posture_stand, posture_sit, posture_kneel, head_center, head_look_left, head_look_right, head_look_up, head_look_down, scan, inspect_scene, find_object, inspect_area, look_at, navigate_to, walk_to, wave_greet, report_result.
+  - Execution labels: posture_stand, posture_sit, posture_kneel, head_center, head_look_left, head_look_right, head_look_up, head_look_down, scan, inspect_scene, find_object, inspect_area, look_at, navigate_to, walk_to, wave_greet, pick_object, place_object, bring_object, kb_add, kb_revise, kb_remove, report_result.
 
   Intent stage purpose:
   - Extract the user's intent and determine whether an execution request is sufficiently specified and supported for planner handoff.
@@ -146,7 +147,7 @@ intent_prompt_addendum: |
   - If the requested action, required target, grounded predicates, or matching skill remain unclear, preserve the uncertainty, use fallback, and keep the turn in dialogue for clarification instead of producing an execution handoff.
   - When the user asks about what already happened, return a dialogue/fallback intent rather than a new execution intent unless they explicitly ask the robot to perform the action again.
   - If chatbot_output promises a physical action but the user utterance is future, hypothetical, or past-focused, correct the intent to fallback/dialogue instead of following the promise.
-  - goal_text must be a concise imperative objective written in your own words for the planner, never the user's verbatim sentence. Drop greetings, politeness, and filler such as "hey", "pop", "can you", "could you", "please", "now", "for me", and trailing punctuation, while preserving every requested action, target, ordering, and report.
+  - Remove politeness and filler from goal_text. It must be a concise imperative objective written in your own words for the planner, never the user's verbatim sentence. Drop greetings and filler such as "hey", "pop", "can you", "could you", "please", "now", "for me", and trailing punctuation, while preserving every requested action, target, ordering, and report.
   - Use user_intent.intent_sequence only in turns where multiple distinct intents are present. It is context for planner reasoning, not a sequence of executable steps.
   - Use user_intent.scene_targets when the user's utterance explicitly references objects or people such as "person", "cup", or "table" that are relevant to the intent and are detected in the grounded_context. Do not invent identifiers, names, or targets.
   - Use fallback when no canonical intent can be supported confidently.

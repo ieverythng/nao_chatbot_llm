@@ -88,6 +88,35 @@ def test_build_planner_request_intent_encodes_expected_message_shape():
     assert 'user_text' not in payload
 
 
+def test_build_planner_request_payload_preserves_intent_sequence_hints():
+    payload = build_planner_request_payload(
+        turn_id='turn_sequence',
+        user_text='move your head in all directions',
+        turn_result=_make_result(
+            intent='head_look_left',
+            user_intent={
+                'type': 'head_look_left',
+                'goal': 'move the head in all directions',
+                'intent_sequence': [
+                    'head_look_left',
+                    'head_look_right',
+                    'head_look_up',
+                    'head_look_down',
+                ],
+            },
+        ),
+        knowledge_context='',
+    )
+
+    assert payload['normalized_intents'] == [
+        'head_look_left',
+        'head_look_right',
+        'head_look_up',
+        'head_look_down',
+    ]
+    assert payload['goal_text'] == 'move the head in all directions'
+
+
 def test_build_planner_request_intent_uses_confidence_floor_for_execution_route():
     msg = build_planner_request_intent(
         turn_id='turn_floor',
