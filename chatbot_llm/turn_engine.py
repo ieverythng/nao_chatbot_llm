@@ -164,8 +164,8 @@ Execution report wording task:
 - Intermediate reports must not preview the next movement. Do not say "next
   object", "another object", "I am now walking", or equivalent continuation
   wording. Report only the arrival or observation that just completed.
-- If report_role is "final" or absent, summarize the whole executed step chain,
-  not only the last step.
+- If report_role is "final" or absent, summarize the whole evidence span in
+  steps.
 - Synthesize related routine steps into natural language when producing a final
   report; do not recite each internal motion or execution result as a separate
   ledger sentence.
@@ -210,6 +210,9 @@ class TurnExecutionResult:
 
 
 _MAX_VERBAL_ACK_CHARS = 900
+_UNCLEAR_RESPONSE_ACK = 'I could not understand the request clearly enough. Could you rephrase it?'
+_DIALOGUE_ROUTE_FALLBACK_ACK = 'I can talk about that without starting a robot action.'
+_KNOWLEDGE_QUERY_ROUTE_FALLBACK_ACK = 'I will answer from the current grounded context.'
 
 
 # ---------------------------------------------------------------------------
@@ -530,6 +533,7 @@ class DialogueTurnEngine:
             resolved_intent=resolved_intent,
             user_intent=user_intent,
             intent_source=intent_source,
+            intent_confidence=intent_confidence,
         )
         self._trace(
             trace,
@@ -557,13 +561,12 @@ class DialogueTurnEngine:
         )
         verbal_ack = str(response_payload.get('verbal_ack', '')).strip()
         if not verbal_ack:
-            verbal_ack = (
-                'Okay, I will try that now.'
-                if route == _EXECUTION_ROUTE
-                else self._config.fallback_response
-            )
-        if route == _EXECUTION_ROUTE:
-            verbal_ack = _sanitize_execution_ack(verbal_ack)
+            verbal_ack = _route_safe_fallback_ack(route)
+        verbal_ack = _sanitize_locked_route_ack(
+            route=route,
+            user_text=user_text,
+            verbal_ack=verbal_ack,
+        )
 
         updated_history = messages_to_history(
             history_messages
@@ -592,6 +595,7 @@ class DialogueTurnEngine:
         resolved_intent: str,
         user_intent: dict,
         intent_source: str,
+        intent_confidence: float,
     ) -> tuple[str, str, dict, str]:
         if (
             _is_reflective_execution_question(user_text)
@@ -605,6 +609,25 @@ class DialogueTurnEngine:
                 intent_source + '_route_lock'
             )
 
+        locked_intent_route = self._route_for_intent(str(user_intent.get('type', '')).strip())
+        if _looks_like_execution_text(user_text) and locked_intent_route == _KNOWLEDGE_QUERY_ROUTE:
+            fallback_intent = _execution_intent_from_text(user_text)
+            if (
+                fallback_intent
+                and fallback_intent != 'fallback'
+                and is_execution_intent_label(fallback_intent)
+                and _rules_execution_intent_allowed(user_text)
+            ):
+                locked_user_intent = dict(user_intent)
+                locked_user_intent['type'] = fallback_intent
+                locked_user_intent['goal'] = str(user_text or '').strip()
+                locked_user_intent['goal_text'] = str(user_text or '').strip()
+                return (
+                    _EXECUTION_ROUTE,
+                    fallback_intent,
+                    locked_user_intent,
+                    intent_source + '_route_lock',
+                )
         kb_query_intent = _infer_kb_query_intent_from_text(user_text)
         if kb_query_intent:
             locked_intent = kb_query_intent
@@ -617,9 +640,7 @@ class DialogueTurnEngine:
                 intent_source + '_route_lock',
             )
 
-        route = self._route_for_intent(
-            str(user_intent.get('type', '')).strip() or resolved_intent
-        )
+        route = self._route_for_intent(str(user_intent.get('type', '')).strip() or resolved_intent)
         if route == _EXECUTION_ROUTE and not _rules_execution_intent_allowed(user_text):
             return _DIALOGUE_ROUTE, '', _dialogue_user_intent(user_intent), (
                 intent_source + '_route_lock'
@@ -737,6 +758,11 @@ class DialogueTurnEngine:
             resolved_intent = ''
             user_intent = {}
             route_repaired = explicit_route == _EXECUTION_ROUTE
+        if _is_information_only_action_word_question(user_text):
+            inferred_route = _DIALOGUE_ROUTE
+            resolved_intent = ''
+            user_intent = _dialogue_user_intent(user_intent)
+            route_repaired = explicit_route == _EXECUTION_ROUTE
         if (
             inferred_route == _DIALOGUE_ROUTE
             and explicit_route == _DIALOGUE_ROUTE
@@ -754,7 +780,9 @@ class DialogueTurnEngine:
             and not explicit_route
             and not _is_social_turn(user_text)
             and not _is_capability_query(user_text)
+            and not _is_advice_or_idea_request(user_text)
             and not _is_reflective_execution_question(user_text)
+            and not _is_information_only_action_word_question(user_text)
             and _ack_implies_execution(verbal_ack)
         ):
             inferred_route = _EXECUTION_ROUTE
@@ -769,6 +797,8 @@ class DialogueTurnEngine:
             inferred_route == _DIALOGUE_ROUTE
             and not explicit_route
             and not _is_reflective_execution_question(user_text)
+            and not _is_advice_or_idea_request(user_text)
+            and not _is_information_only_action_word_question(user_text)
         ):
             fb_intent = normalize_intent(detect_intent(user_text), default='')
             if (
@@ -862,7 +892,10 @@ class DialogueTurnEngine:
 
         kb_query_intent = (
             ''
-            if _is_personal_preference_question(user_text)
+            if (
+                _is_personal_preference_question(user_text)
+                or _is_information_only_action_word_question(user_text)
+            )
             else _infer_kb_query_intent_from_text(user_text)
         )
         if kb_query_intent and not route_repaired:
@@ -1192,7 +1225,11 @@ class DialogueTurnEngine:
             return {'verbal_ack': ack_text, '_route_missing': True}
         if _looks_like_json_payload(raw_response):
             _warn(self._logger, 'Response JSON did not include a safe verbal acknowledgement')
-            return {'verbal_ack': self._config.fallback_response, '_route_missing': True}
+            return {
+                'verbal_ack': _UNCLEAR_RESPONSE_ACK,
+                '_route_missing': True,
+                '_invalid_response_payload': True,
+            }
         return {'verbal_ack': str(raw_response).strip(), '_route_missing': True}
 
     def _query_intent(
@@ -1753,6 +1790,16 @@ def _rules_execution_intent_allowed(user_text: str) -> bool:
     )
 
 
+def _execution_intent_from_text(user_text: str) -> str:
+    intent = normalize_intent(detect_intent(user_text), default='')
+    if intent and intent != 'fallback' and is_execution_intent_label(intent):
+        return intent
+    clean = ' %s ' % ' '.join(str(user_text or '').strip().lower().split())
+    if ' look at ' in clean:
+        return 'look_at'
+    return ''
+
+
 def _is_repeat_action_request(user_text: str) -> bool:
     clean = ' '.join(str(user_text or '').strip().lower().split())
     if not clean:
@@ -1819,9 +1866,7 @@ def _route_is_contradictory(*, user_text: str, verbal_ack: str, route: str) -> b
         return _is_non_immediate_action_discussion(user_text)
     if route in {_DIALOGUE_ROUTE, _KNOWLEDGE_QUERY_ROUTE}:
         return (
-            _looks_like_execution_text(user_text)
-            and _ack_implies_execution(verbal_ack)
-            and not _is_non_immediate_action_discussion(user_text)
+            _ack_implies_execution(verbal_ack)
             and not _is_reflective_execution_question(user_text)
             and not _is_capability_query(user_text)
         )
@@ -1834,6 +1879,8 @@ def _repair_response_route(*, user_text: str, verbal_ack: str, route: str) -> st
     if _is_capability_query(user_text):
         return _DIALOGUE_ROUTE
     if _is_personal_preference_question(user_text):
+        return _DIALOGUE_ROUTE
+    if _is_advice_or_idea_request(user_text):
         return _DIALOGUE_ROUTE
     if _is_social_turn(user_text) and not _looks_like_execution_text(user_text):
         return _DIALOGUE_ROUTE
@@ -1923,6 +1970,33 @@ def _is_personal_preference_question(user_text: str) -> bool:
         'your opinion',
     )
     return any(marker in normalized for marker in preference_markers)
+
+
+def _is_advice_or_idea_request(user_text: str) -> bool:
+    """Return whether the user is asking for suggestions, not robot execution."""
+    clean = ' '.join(str(user_text or '').strip().lower().split())
+    if not clean:
+        return False
+    normalized = ''.join(ch if ch.isalnum() or ch.isspace() else ' ' for ch in clean)
+    normalized = ' '.join(normalized.split())
+    if '?' not in clean and not normalized.startswith(
+        ('any ', 'what ', 'which ', 'can you suggest', 'could you suggest')
+    ):
+        return False
+    return any(
+        marker in normalized
+        for marker in (
+            'any ideas',
+            'ideas for',
+            'plans this weekend',
+            'things to do',
+            'what should i do',
+            'what can i do',
+            'can you suggest',
+            'could you suggest',
+            'recommend',
+        )
+    )
 
 
 def _is_reflective_execution_question(user_text: str) -> bool:
@@ -2129,6 +2203,31 @@ def _sanitize_execution_ack(verbal_ack: str) -> str:
     if clean_ack[-1] not in '.!?':
         clean_ack += '.'
     return clean_ack
+
+
+def _route_safe_fallback_ack(route: str) -> str:
+    if route == _EXECUTION_ROUTE:
+        return 'Okay, I will try that now.'
+    if route == _KNOWLEDGE_QUERY_ROUTE:
+        return _KNOWLEDGE_QUERY_ROUTE_FALLBACK_ACK
+    return _DIALOGUE_ROUTE_FALLBACK_ACK
+
+
+def _sanitize_locked_route_ack(
+    *,
+    route: str,
+    user_text: str,
+    verbal_ack: str,
+) -> str:
+    if route == _EXECUTION_ROUTE:
+        return _sanitize_execution_ack(verbal_ack)
+    if not _route_is_contradictory(
+        user_text=user_text,
+        verbal_ack=verbal_ack,
+        route=route,
+    ):
+        return str(verbal_ack or '').strip()
+    return _route_safe_fallback_ack(route)
 
 
 def _extract_planner_completion_context(payload: str) -> dict:

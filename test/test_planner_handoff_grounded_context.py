@@ -170,3 +170,18 @@ def test_handoff_grounded_context_forwards_knowledge_rows() -> None:
             'relations': [{'predicate': 'oro:isOn', 'object': 'table_1'}],
         }
     ]
+    assert compact['locations'] == [
+        {
+            'id': 'table_1',
+            'label': 'table_1',
+            'contains': [
+                {
+                    'id': 'cup_1',
+                    'label': 'cup_1',
+                    'kind': 'object',
+                    'class': 'Cup',
+                    'relation': 'oro:isOn',
+                }
+            ],
+        }
+    ]

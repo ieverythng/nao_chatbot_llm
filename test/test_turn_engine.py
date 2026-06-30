@@ -24,6 +24,7 @@ def make_config(
     turn_pipeline_mode: str = 'response_first',
     response_prompt_addendum: str = 'Respond briefly.',
     intent_prompt_addendum: str = 'Infer intent.',
+    fallback_response: str = 'fallback',
 ) -> ChatbotConfig:
     return ChatbotConfig(
         server_url='http://localhost:11434/api/chat',
@@ -47,7 +48,7 @@ def make_config(
         preflight_attempts=1,
         preflight_realistic_enabled=False,
         preflight_keepalive_interval_sec=0.0,
-        fallback_response='fallback',
+        fallback_response=fallback_response,
         max_history_messages=20,
         scene_memory_turns=4,
         robot_name='NAO',
@@ -470,7 +471,7 @@ def test_turn_engine_intent_first_locks_scene_question_to_knowledge_query():
     assert '"route":"knowledge_query"' in transport.calls[1]['messages'][0]['content']
 
 
-def test_turn_engine_intent_first_rejects_low_confidence_kb_route_for_action_request():
+def test_turn_engine_intent_first_repairs_low_confidence_kb_route_with_concrete_action():
     transport = FakeTransport(
         [
             (
@@ -502,9 +503,9 @@ def test_turn_engine_intent_first_rejects_low_confidence_kb_route_for_action_req
     )
 
     assert result.route == 'execution'
-    assert result.intent == 'fallback'
+    assert result.intent == 'look_at'
+    assert result.user_intent['type'] == 'look_at'
     assert result.user_intent['goal_text'] == 'Look at the probe cup and tell me what you did.'
-    assert result.user_intent['route_conflict']['rejected_type'] == 'kb_query_visible_objects'
     assert '"route":"execution"' in transport.calls[1]['messages'][0]['content']
 
 
@@ -544,6 +545,7 @@ def test_turn_engine_intent_first_repairs_kb_mutation_mislabeled_as_query():
 
 
 def test_turn_engine_intent_first_rejects_dialogue_route_action_promise():
+    backend_outage_text = 'I am having trouble reaching my language model right now.'
     transport = FakeTransport(
         [
             (
@@ -561,6 +563,7 @@ def test_turn_engine_intent_first_rejects_dialogue_route_action_promise():
             intent_mode='llm',
             planner_mode_enabled=True,
             turn_pipeline_mode='intent_first',
+            fallback_response=backend_outage_text,
         ),
         transport=transport,
         logger=None,
@@ -575,10 +578,12 @@ def test_turn_engine_intent_first_rejects_dialogue_route_action_promise():
 
     assert result.route == 'dialogue'
     assert result.intent == ''
+    assert result.verbal_ack != backend_outage_text
     assert result.verbal_ack == 'I can talk about that without starting a robot action.'
 
 
 def test_turn_engine_intent_first_rejects_knowledge_query_action_promise():
+    backend_outage_text = 'I am having trouble reaching my language model right now.'
     transport = FakeTransport(
         [
             (
@@ -596,6 +601,7 @@ def test_turn_engine_intent_first_rejects_knowledge_query_action_promise():
             intent_mode='llm',
             planner_mode_enabled=True,
             turn_pipeline_mode='intent_first',
+            fallback_response=backend_outage_text,
         ),
         transport=transport,
         logger=None,
@@ -611,6 +617,7 @@ def test_turn_engine_intent_first_rejects_knowledge_query_action_promise():
 
     assert result.route == 'knowledge_query'
     assert result.intent == 'kb_query_visible_objects'
+    assert result.verbal_ack != backend_outage_text
     assert result.verbal_ack == 'I will answer from the current grounded context.'
 
 
@@ -1047,7 +1054,6 @@ def test_turn_engine_execution_report_prompt_distinguishes_intermediate_role():
         user_text=(
             '{"execution_report":{"goal_text":"walk to every object and report each stop",'
             '"report_role":"intermediate",'
-            '"report_scope":"direct_dependencies",'
             '"latest_result_summary":"I completed destination navigation to codex_probe_apple.",'
             '"steps":[{"name":"navigate_to","status":"succeeded",'
             '"result_summary":"I completed destination navigation to codex_probe_apple."}],'
@@ -1063,9 +1069,7 @@ def test_turn_engine_execution_report_prompt_distinguishes_intermediate_role():
     assert result.intent_source == 'execution_report'
     assert result.verbal_ack == 'I have navigated to the apple.'
     assert 'If report_role is "intermediate"' in prompt
-    assert 'First decide the report span from report_scope' in prompt
     assert '"report_role":"intermediate"' in payload
-    assert '"report_scope":"direct_dependencies"' in payload
     assert 'future_steps' in payload
 
 
@@ -1092,39 +1096,6 @@ def test_turn_engine_execution_report_rejects_next_object_without_future_navigat
             '"steps":[{"name":"navigate_to","status":"succeeded",'
             '"result_summary":"I arrived at the phone."}],'
             '"future_steps":[{"name":"wave_greet","args":{}}]}}'
-        ),
-        history=[],
-        user_id='__system__',
-    )
-
-    assert result.intent_source == 'execution_report'
-    assert result.verbal_ack == 'I completed destination navigation to codex_probe_phone.'
-
-
-def test_turn_engine_execution_report_direct_scope_rejects_global_recap():
-    engine = DialogueTurnEngine(
-        config=make_config(intent_mode='rules'),
-        transport=FakeTransport(
-            [
-                (
-                    '{"verbal_ack":"I have walked to each object one by one. '
-                    'I arrived at the apple, then the book, and finally the phone."}'
-                )
-            ]
-        ),
-        logger=None,
-        skill_catalog_text='',
-    )
-
-    result = engine.execute_turn(
-        user_text=(
-            '{"execution_report":{"goal_text":"walk to every object and report each stop",'
-            '"report_role":"final",'
-            '"report_scope":"direct_dependencies",'
-            '"latest_result_summary":"I completed destination navigation to codex_probe_phone.",'
-            '"steps":[{"name":"navigate_to","status":"succeeded",'
-            '"args":{"target":"codex_probe_phone"},'
-            '"result_summary":"I completed destination navigation to codex_probe_phone."}]}}'
         ),
         history=[],
         user_id='__system__',
@@ -1698,7 +1669,7 @@ def test_turn_engine_preserves_intent_sequence_metadata():
     }
 
 
-def test_turn_engine_falls_back_when_json_has_no_safe_ack():
+def test_turn_engine_uses_route_safe_ack_when_json_has_no_safe_ack():
     transport = FakeTransport(
         [
             '{"route":"execution","user_intent":{"type":"posture_stand"}}',
@@ -1717,8 +1688,58 @@ def test_turn_engine_falls_back_when_json_has_no_safe_ack():
         user_id='user1',
     )
 
-    assert result.verbal_ack == 'fallback'
-    assert result.updated_history == ['user:stand up', 'assistant:fallback']
+    assert result.verbal_ack == 'Okay, I will try that now.'
+    assert result.updated_history == ['user:stand up', 'assistant:Okay, I will try that now.']
+
+
+def test_turn_engine_json_without_ack_does_not_claim_backend_outage():
+    backend_outage_text = 'I am having trouble reaching my language model right now.'
+    transport = FakeTransport(
+        [
+            '{"route":"dialogue","user_intent":{"type":"help"}}',
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(
+            intent_mode='llm',
+            planner_mode_enabled=True,
+            fallback_response=backend_outage_text,
+        ),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='What is your favourite movie?',
+        history=[],
+        user_id='user1',
+    )
+
+    assert result.verbal_ack != backend_outage_text
+    assert result.verbal_ack == 'I could not understand the request clearly enough. Could you rephrase it?'
+
+
+def test_turn_engine_empty_transport_response_keeps_backend_outage_wording():
+    backend_outage_text = 'I am having trouble reaching my language model right now.'
+    engine = DialogueTurnEngine(
+        config=make_config(
+            intent_mode='llm',
+            planner_mode_enabled=True,
+            fallback_response=backend_outage_text,
+        ),
+        transport=FakeTransport(['']),
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='What is your favourite movie?',
+        history=[],
+        user_id='user1',
+    )
+
+    assert result.verbal_ack == backend_outage_text
 
 
 def test_turn_engine_repairs_dialogue_route_when_ack_promises_execution():
@@ -2072,6 +2093,35 @@ def test_turn_engine_keeps_personal_preference_question_dialogue_only() -> None:
     assert result.route == 'dialogue'
     assert result.intent == ''
     assert result.user_intent == {}
+
+
+def test_turn_engine_keeps_advice_request_dialogue_despite_action_words_in_answer() -> None:
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"I can suggest a few plans: go to a park, visit a museum, '
+                'or meet friends for coffee.",'
+                '"route":"dialogue","user_intent":{"type":"help"},"confidence":0.82}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm_with_rules_fallback', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='Any ideas for plans this weekend?',
+        history=['assistant:I can help with planning.'],
+        user_id='user1',
+    )
+
+    assert result.route == 'dialogue'
+    assert result.intent == 'help'
+    assert result.intent_source == 'llm_response_route'
+    assert result.user_intent.get('type') == 'help'
 
 
 def test_turn_engine_clamps_long_dialogue_response_for_speech_transport() -> None:

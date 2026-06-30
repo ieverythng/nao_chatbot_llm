@@ -357,6 +357,200 @@ def test_build_scene_digest_includes_stable_name_before_color_and_support():
     assert 'cup x1 [named TITAS, gold, on codex probe table]' in digest
 
 
+def test_build_scene_digest_renders_location_groups_from_compact_context():
+    digest = build_scene_digest(
+        {
+            'entities': [
+                {
+                    'id': 'codex_kitchen',
+                    'label': 'kitchen',
+                    'kind': 'object',
+                    'class': 'Room',
+                    'visible': True,
+                },
+                {
+                    'id': 'codex_kitchen_cup',
+                    'label': 'cup',
+                    'kind': 'object',
+                    'class': 'Cup',
+                    'visible': True,
+                    'relations': [
+                        {'predicate': 'dbp:name', 'object': 'TITAS'},
+                        {'predicate': 'oro:isIn', 'object': 'codex_kitchen'},
+                    ],
+                },
+            ],
+            'locations': [
+                {
+                    'id': 'codex_kitchen',
+                    'label': 'kitchen',
+                    'contains': [
+                        {
+                            'id': 'codex_kitchen_cup',
+                            'label': 'cup',
+                            'kind': 'object',
+                            'class': 'Cup',
+                            'relation': 'oro:isIn',
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert 'Objects (1):' in digest
+    assert 'cup x1 [named TITAS, in codex kitchen]' in digest
+    assert 'Locations: kitchen contains cup' in digest
+    assert 'room' not in digest.lower()
+
+
+def test_build_scene_digest_filters_meta_support_and_people_from_location_members():
+    digest = build_scene_digest(
+        {
+            'entities': [
+                {
+                    'id': 'codex_work_table',
+                    'label': 'work table',
+                    'kind': 'object',
+                    'class': 'Table',
+                    'visible': True,
+                },
+                {
+                    'id': 'localized_marker',
+                    'label': 'localized marker',
+                    'kind': 'object',
+                    'class': 'cyc:SpatialThing-Localized',
+                    'visible': True,
+                    'relations': [
+                        {'predicate': 'rdf:type', 'object': 'owl:Thing'},
+                        {'predicate': 'oro:isOn', 'object': 'codex_work_table'},
+                    ],
+                },
+                {
+                    'id': 'codex_manual',
+                    'label': 'manual',
+                    'kind': 'object',
+                    'class': 'Book',
+                    'visible': True,
+                    'relations': [
+                        {'predicate': 'oro:isOn', 'object': 'codex_work_table'},
+                    ],
+                },
+                {
+                    'id': 'codex_recipient_person',
+                    'label': 'ALEX',
+                    'kind': 'person',
+                    'class': 'Human',
+                    'visible': True,
+                    'relations': [
+                        {'predicate': 'oro:isAt', 'object': 'codex_work_table'},
+                    ],
+                },
+            ],
+        }
+    )
+
+    assert 'Objects (1): book x1 [on codex work table]' in digest
+    assert 'Locations: work table contains manual' in digest
+    assert 'spatial thing localized' not in digest.lower()
+    assert 'localized marker' not in digest
+    assert 'work table x' not in digest.lower()
+    assert 'contains ALEX' not in digest
+
+
+def test_build_scene_digest_filters_compact_location_members():
+    digest = build_scene_digest(
+        {
+            'entities': [
+                {
+                    'id': 'codex_kitchen_cup',
+                    'label': 'cup',
+                    'kind': 'object',
+                    'class': 'Cup',
+                    'visible': True,
+                }
+            ],
+            'locations': [
+                {
+                    'id': 'codex_kitchen',
+                    'label': 'kitchen',
+                    'contains': [
+                        {
+                            'id': 'codex_kitchen',
+                            'label': 'kitchen',
+                            'kind': 'object',
+                            'class': 'Room',
+                        },
+                        {
+                            'id': 'codex_kitchen_table',
+                            'label': 'kitchen table',
+                            'kind': 'object',
+                            'class': 'Table',
+                        },
+                        {
+                            'id': 'codex_recipient_person',
+                            'label': 'ALEX',
+                            'kind': 'person',
+                            'class': 'Human',
+                        },
+                        {
+                            'id': 'codex_kitchen_cup',
+                            'label': 'cup',
+                            'kind': 'object',
+                            'class': 'Cup',
+                        },
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert 'Objects (1): cup x1' in digest
+    assert 'Locations: kitchen contains cup' in digest
+    assert 'kitchen table' not in digest
+    assert 'ALEX' not in digest
+
+
+def test_build_scene_digest_deduplicates_entity_ids_and_merges_relations():
+    digest = build_scene_digest(
+        {
+            'entities': [
+                {
+                    'id': 'codex_probe_cup',
+                    'label': 'cup',
+                    'kind': 'object',
+                    'class': 'Cup',
+                    'visible': True,
+                    'relations': [{'predicate': 'dbp:name', 'object': 'TITAS'}],
+                },
+                {
+                    'id': 'codex_probe_cup',
+                    'label': '',
+                    'kind': 'object',
+                    'class': 'Cup',
+                    'visible': True,
+                    'relations': [
+                        {'predicate': 'dbp:color', 'object': 'gold'},
+                        {'predicate': 'oro:isOn', 'object': 'codex_probe_table'},
+                    ],
+                },
+                {
+                    'id': 'stale_cup',
+                    'label': 'cup',
+                    'kind': 'object',
+                    'class': 'Cup',
+                    'visible': False,
+                    'relations': [{'predicate': 'dbp:color', 'object': 'red'}],
+                },
+            ],
+        }
+    )
+
+    assert 'Objects (1): cup x1 [named TITAS, gold, on codex probe table]' in digest
+    assert 'stale' not in digest
+    assert 'red' not in digest
+
+
 def test_build_scene_digest_empty_for_no_entities():
     assert build_scene_digest({}) == ''
     assert build_scene_digest({'entities': []}) == ''

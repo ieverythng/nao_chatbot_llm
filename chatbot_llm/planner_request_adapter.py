@@ -282,6 +282,7 @@ def _normalized_intents(intent_name: str) -> list[str]:
 def _normalized_intents_for_turn(turn_result) -> list[str]:
     user_intent = _turn_user_intent(turn_result)
     candidates = [
+        *_coerce_str_list(user_intent.get('intent_sequence')),
         user_intent.get('type', ''),
         getattr(turn_result, 'intent', ''),
     ]
