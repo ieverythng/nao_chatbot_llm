@@ -274,11 +274,6 @@ def _extract_assistant_ack_text(payload: str, *, _depth: int = 0) -> str:
     return ''
 
 
-def _normalized_intents(intent_name: str) -> list[str]:
-    clean_intent = _normalize_token(intent_name)
-    return [clean_intent] if clean_intent else []
-
-
 def _normalized_intents_for_turn(turn_result) -> list[str]:
     user_intent = _turn_user_intent(turn_result)
     candidates = [

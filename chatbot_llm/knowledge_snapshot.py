@@ -613,14 +613,6 @@ def extract_scene_memory_entry(snapshot: str) -> str:
     return ''
 
 
-def _first_non_empty_value(payload: dict, *keys: str, fallback: str = '') -> str:
-    for key in keys:
-        value = str(payload.get(key, '')).strip()
-        if value:
-            return value
-    return str(fallback or '').strip()
-
-
 # ---------------------------------------------------------------------------
 # Query row formatting helpers
 # ---------------------------------------------------------------------------

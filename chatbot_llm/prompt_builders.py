@@ -161,10 +161,7 @@ def _knowledge_snapshot_block(snapshot: str) -> str:
     clean_snapshot = str(snapshot or '').strip()
     if not clean_snapshot:
         return ''
-    return (
-        'Grounded context for this turn:\n'
-        'Grounded context:\n%s' % clean_snapshot
-    )
+    return 'Grounded context for this turn:\n%s' % clean_snapshot
 
 
 def _warn(logger, message: str) -> None:

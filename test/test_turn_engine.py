@@ -177,10 +177,10 @@ def test_turn_engine_includes_grounded_context_in_both_llm_stages():
 
     assert result.success is True
     assert len(transport.calls) == 2
-    assert 'Grounded context for this turn:' in transport.calls[0]['messages'][0]['content']
-    assert 'Grounded context:\nGrounded context JSON:' in transport.calls[0]['messages'][0]['content']
-    assert 'Grounded context for this turn:' in transport.calls[1]['messages'][0]['content']
-    assert 'Grounded context:\nGrounded context JSON:' in transport.calls[1]['messages'][0]['content']
+    assert 'Grounded context for this turn:\nGrounded context JSON:' in transport.calls[0]['messages'][0]['content']
+    assert 'Grounded context:\n' not in transport.calls[0]['messages'][0]['content']
+    assert 'Grounded context for this turn:\nGrounded context JSON:' in transport.calls[1]['messages'][0]['content']
+    assert 'Grounded context:\n' not in transport.calls[1]['messages'][0]['content']
 
 
 def test_turn_engine_prompt_exposes_updated_grounded_relation_for_followups():
@@ -349,7 +349,7 @@ def test_turn_engine_planner_mode_uses_single_response_stage_for_execution():
     )
     assert 'executable plans after this response' in transport.calls[0]['messages'][0]['content']
     assert 'Route policy, response style, and examples' in transport.calls[0]['messages'][0]['content']
-    assert 'Grounded context:\nperson_1 rdf:type Person' in transport.calls[0]['messages'][0]['content']
+    assert 'Grounded context for this turn:\nperson_1 rdf:type Person' in transport.calls[0]['messages'][0]['content']
 
 
 def test_turn_engine_intent_first_locks_route_before_response_wording():
@@ -1956,6 +1956,86 @@ def test_turn_engine_fills_missing_bring_intent_for_planner_mode() -> None:
     assert result.route == 'execution'
     assert result.intent == 'bring_object'
     assert result.user_intent['type'] == 'bring_object'
+
+
+def test_turn_engine_blocks_execution_for_absent_named_person_target() -> None:
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"I understand. I will bring every object from the work table '
+                'to the person named BLAKE and report back.",'
+                '"route":"execution",'
+                '"user_intent":{"type":"bring_object",'
+                '"goal":"Bring every object from the work table to the person named BLAKE.",'
+                '"scene_targets":["codex_lab_table_section","BLAKE"]},'
+                '"confidence":0.9}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='Bring every object from the work table to the person named BLAKE.',
+        history=[],
+        user_id='user1',
+        knowledge_snapshot=(
+            'Grounded context JSON:\n```json\n'
+            '{"entities":[{"id":"person_alex","kind":"person",'
+            '"relations":[{"predicate":"dbp:name","object":"ALEX"}]}],'
+            '"locations":[{"id":"codex_lab_table_section","kind":"location_group",'
+            '"contains":[{"id":"codex_lab_cup","kind":"object"}]}]}'
+            '\n```'
+        ),
+    )
+
+    assert result.route == 'dialogue'
+    assert result.intent == ''
+    assert result.user_intent['type'] == 'fallback'
+    assert result.user_intent['route_conflict'] == {
+        'requested_person': 'BLAKE',
+        'reason': 'missing_named_person_in_grounded_context',
+    }
+    assert 'cannot confirm that person' in result.verbal_ack.lower()
+    assert 'bring every object' not in result.verbal_ack.lower()
+
+
+def test_turn_engine_allows_execution_for_present_named_person_target() -> None:
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"Sure, I will bring the apple to ALEX.",'
+                '"route":"execution",'
+                '"user_intent":{"type":"bring_object","object":"apple","recipient":"ALEX"},'
+                '"confidence":0.9}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='Bring the apple to the person named ALEX.',
+        history=[],
+        user_id='user1',
+        knowledge_snapshot=(
+            'Grounded context JSON:\n```json\n'
+            '{"entities":[{"id":"person_alex","kind":"person",'
+            '"relations":[{"predicate":"dbp:name","object":"ALEX"}]}]}'
+            '\n```'
+        ),
+    )
+
+    assert result.route == 'execution'
+    assert result.intent == 'bring_object'
 
 
 def test_turn_engine_repairs_dialogue_route_over_execution_skill_intent() -> None:

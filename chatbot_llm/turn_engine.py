@@ -18,177 +18,53 @@ from chatbot_llm.intent_rules import normalize_intent
 from chatbot_llm.prompt_builders import build_intent_prompt
 from chatbot_llm.prompt_builders import build_response_prompt
 from chatbot_llm.prompt_builders import load_persona_prompt
-from kb_skills.intent_labels import KB_QUERY_INTENTS, KB_QUERY_VISIBLE_OBJECTS
-
-
-_DIALOGUE_ROUTE = 'dialogue'
-_KNOWLEDGE_QUERY_ROUTE = 'knowledge_query'
-_EXECUTION_ROUTE = 'execution'
-_SUPPORTED_ROUTES = {
-    _DIALOGUE_ROUTE,
-    _KNOWLEDGE_QUERY_ROUTE,
-    _EXECUTION_ROUTE,
-}
-_DIALOGUE_INTENTS = {'greet', 'identity', 'wellbeing', 'help'}
-_EXECUTION_HINT_MARKERS = (
-    ' and then ',
-    ' then ',
-    ' after that ',
-    ' before that ',
-    ' while also ',
-    ' also ',
-    ' stand',
-    ' sit',
-    ' kneel',
-    ' look ',
-    ' move ',
-    ' scan ',
-    ' search ',
-    ' find ',
-    ' locate ',
-    ' detect ',
-    ' turn ',
-    ' head ',
-    ' bring ',
-    ' grab ',
-    ' pick ',
-    ' place ',
-    ' guide ',
-    ' navigate ',
-    ' walk ',
-    ' wave ',
-    ' add ',
-    ' remember ',
-    ' store ',
-    ' save ',
-    ' revise ',
-    ' update ',
-    ' change ',
-    ' correct ',
-    ' remove ',
-    ' delete ',
-    ' forget ',
-    ' knowledge base',
-    ' kb ',
-    ' rdf:type',
-    ' dbp:',
-    ' oro:',
-)
-_REFLECTIVE_EXECUTION_QUESTION_MARKERS = (
-    'what did you',
-    'what have you',
-    'what were you able to',
-    'how many',
-    'which direction',
-    'which directions',
-    'did you',
-    'have you',
-)
-_SOCIAL_TURN_MARKERS = {
-    'hi',
-    'hello',
-    'hey',
-    'hey there',
-    'good morning',
-    'good afternoon',
-    'good evening',
-    'how are you',
-    'thanks',
-    'thank you',
-}
-
-
-_PLANNER_COMPLETION_KEYS = (
-    'goal_text',
-    'result_summary',
-    'text_hint',
-    'requested_intents',
-    'result_payload',
-)
-_PLANNER_DIALOGUE_KEYS = (
-    'act',
-    'reason',
-    'text_hint',
-    'slots_needed',
-    'context',
-    'completion_context',
-)
-_EXECUTION_REPORT_KEYS = (
-    'goal_text',
-    'requested_intents',
-    'dialogue_context',
-    'scene_targets',
-    'grounded_context',
-    'requested_summary',
-    'report_role',
-    'future_steps',
-    'steps',
-    'latest_result_summary',
-    'latest_result_payload',
-)
-_SYSTEM_TASK_RESPONSE_MODE_ADDENDUM = """
-System wording mode:
-- This turn is a closed internal wording task, not a new user request.
-- Keep the spoken answer short, natural for text-to-speech, and consistent with
-  the configured robot identity.
-- Do not apply route admission, planner handoff, or execution-acknowledgement
-  policy here. This prompt exists only to word an already-classified system
-  payload.
-""".strip()
-_PLANNER_COMPLETION_RESPONSE_ADDENDUM = """
-Planner completion wording task:
-- You are wording one spoken completion sentence after robot task execution.
-- Use only facts from the planner_completion JSON payload.
-- If facts are missing, briefly say no confirmed result was available.
-- Return only the normal response JSON with verbal_ack as the TTS-ready sentence.
-- Do not mention JSON, planner internals, routes, or policies.
-""".strip()
-_PLANNER_DIALOGUE_RESPONSE_ADDENDUM = """
-Planner dialogue wording task:
-- You are wording one spoken robot sentence for a planner dialogue act.
-- Use only facts from the planner_dialogue JSON payload.
-- Keep it concise and first-person as the robot.
-- Return only the normal response JSON with verbal_ack as the TTS-ready sentence.
-- Do not mention JSON, planner internals, routes, or policies.
-""".strip()
-_EXECUTION_REPORT_RESPONSE_ADDENDUM = """
-Execution report wording task:
-- You are wording a spoken report for robot task execution.
-- Use only facts from the execution_report JSON payload.
-- If report_role is "intermediate", report only the latest completed action or
-  observation needed at this point. Do not summarize future or not-yet-executed
-  steps, and do not claim the whole goal is finished.
-- For intermediate reports, use latest_result_summary and latest_result_payload
-  as the primary evidence. Older steps are context only and must not replace the
-  latest completed action.
-- Intermediate reports must not preview the next movement. Do not say "next
-  object", "another object", "I am now walking", or equivalent continuation
-  wording. Report only the arrival or observation that just completed.
-- If report_role is "final" or absent, summarize the whole evidence span in
-  steps.
-- Synthesize related routine steps into natural language when producing a final
-  report; do not recite each internal motion or execution result as a separate
-  ledger sentence.
-- Use goal_text and dialogue_context to produce a coherent continuation and to
-  decide which outcomes matter to the user.
-- Do not answer with "I finished:" followed by the user's request. Synthesize
-  what was actually done from steps, latest_result_summary, and grounded_context.
-- Use grounded_context to translate entity handles into meaningful user-facing
-  labels and relations when the facts are present.
-- When a place_object or bring_object result uses a person or Human as the
-  destination, describe it as delivering or handing the object to that person,
-  not placing the object on that person. Keep "on" only for support surfaces
-  such as tables, shelves, counters, or named places.
-- Treat requested_summary as evidence or a wording hint, not as text that must
-  be repeated verbatim.
-- Use step results as the authority for factual execution claims, respecting
-  success or failure flags and the status of the previous steps in the chain.
-- Mention relevant observations from scan/perception results.
-- Use one report for this report_result call. Preserve useful dialogue context,
-  avoid repeated information, and match the report_role.
-- Return only the normal response JSON with verbal_ack as the TTS-ready report.
-- Do not mention JSON, planner internals, report_result, routes, or policies.
-""".strip()
+from chatbot_llm.response_fallbacks import _ack_from_parsed_response
+from chatbot_llm.response_fallbacks import _coerce_user_intent
+from chatbot_llm.response_fallbacks import _extract_ack_text
+from chatbot_llm.response_fallbacks import _extract_json_object
+from chatbot_llm.response_fallbacks import _fallback_execution_report_ack
+from chatbot_llm.response_fallbacks import _fallback_planner_completion_ack
+from chatbot_llm.response_fallbacks import _fallback_planner_dialogue_ack
+from chatbot_llm.response_fallbacks import _limit_verbal_ack
+from chatbot_llm.response_fallbacks import _looks_like_json_payload
+from chatbot_llm.response_fallbacks import _postprocess_execution_report_ack
+from chatbot_llm.response_fallbacks import _route_safe_fallback_ack
+from chatbot_llm.response_fallbacks import _sanitize_execution_ack
+from chatbot_llm.response_fallbacks import _sanitize_locked_route_ack
+from chatbot_llm.route_heuristics import _ack_implies_execution
+from chatbot_llm.route_heuristics import _dialogue_user_intent
+from chatbot_llm.route_heuristics import _DIALOGUE_INTENTS
+from chatbot_llm.route_heuristics import _DIALOGUE_ROUTE
+from chatbot_llm.route_heuristics import _execution_intent_from_text
+from chatbot_llm.route_heuristics import _EXECUTION_ROUTE
+from chatbot_llm.route_heuristics import _has_explicit_perception_action_request
+from chatbot_llm.route_heuristics import _infer_kb_query_intent_from_text
+from chatbot_llm.route_heuristics import _is_advice_or_idea_request
+from chatbot_llm.route_heuristics import _is_capability_query
+from chatbot_llm.route_heuristics import _is_greeting_intent
+from chatbot_llm.route_heuristics import _is_information_only_action_word_question
+from chatbot_llm.route_heuristics import _is_non_immediate_action_discussion
+from chatbot_llm.route_heuristics import _is_personal_preference_question
+from chatbot_llm.route_heuristics import _is_reflective_execution_question
+from chatbot_llm.route_heuristics import _is_repeat_action_request
+from chatbot_llm.route_heuristics import _is_social_turn
+from chatbot_llm.route_heuristics import _KNOWLEDGE_QUERY_ROUTE
+from chatbot_llm.route_heuristics import _looks_like_execution_text
+from chatbot_llm.route_heuristics import _looks_like_non_mutating_kb_question
+from chatbot_llm.route_heuristics import _normalize_route
+from chatbot_llm.route_heuristics import _repair_response_route
+from chatbot_llm.route_heuristics import _route_is_contradictory
+from chatbot_llm.route_heuristics import _rules_execution_intent_allowed
+from chatbot_llm.system_turn import _EXECUTION_REPORT_RESPONSE_ADDENDUM
+from chatbot_llm.system_turn import _extract_execution_report_context
+from chatbot_llm.system_turn import _extract_planner_completion_context
+from chatbot_llm.system_turn import _extract_planner_dialogue_context
+from chatbot_llm.system_turn import _join_prompt_addenda
+from chatbot_llm.system_turn import _locked_route_prompt_block
+from chatbot_llm.system_turn import _PLANNER_COMPLETION_RESPONSE_ADDENDUM
+from chatbot_llm.system_turn import _PLANNER_DIALOGUE_RESPONSE_ADDENDUM
+from chatbot_llm.system_turn import _system_task_response_addendum
+from kb_skills.intent_labels import KB_QUERY_INTENTS
 
 
 # ---------------------------------------------------------------------------
@@ -209,10 +85,130 @@ class TurnExecutionResult:
     route: str
 
 
-_MAX_VERBAL_ACK_CHARS = 900
 _UNCLEAR_RESPONSE_ACK = 'I could not understand the request clearly enough. Could you rephrase it?'
-_DIALOGUE_ROUTE_FALLBACK_ACK = 'I can talk about that without starting a robot action.'
-_KNOWLEDGE_QUERY_ROUTE_FALLBACK_ACK = 'I will answer from the current grounded context.'
+_MISSING_NAMED_PERSON_ACK = (
+    'I cannot confirm that person in the current grounded context. '
+    'Which person should I use for the task?'
+)
+
+
+def _compact_match_text(value: str) -> str:
+    return re.sub(r'[^a-z0-9]+', '', str(value or '').lower())
+
+
+def _iter_context_dicts(value):
+    if isinstance(value, dict):
+        yield value
+        for nested_value in value.values():
+            yield from _iter_context_dicts(nested_value)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _iter_context_dicts(item)
+
+
+def _relation_texts(entity: dict) -> list[str]:
+    texts: list[str] = []
+    relations = entity.get('relations', [])
+    if not isinstance(relations, list):
+        return texts
+    for relation in relations:
+        if not isinstance(relation, dict):
+            continue
+        predicate = str(relation.get('predicate', '')).lower()
+        if 'name' not in predicate and predicate not in {'dbp:name', 'rdfs:label'}:
+            continue
+        for key in ('object', 'value', 'target', 'label'):
+            value = str(relation.get(key, '')).strip()
+            if value:
+                texts.append(value)
+    return texts
+
+
+def _looks_like_person_entity(entity: dict) -> bool:
+    descriptor = ' '.join(
+        str(entity.get(key, ''))
+        for key in ('kind', 'class', 'type', 'entity_class', 'label', 'id')
+    ).lower()
+    if 'location' in descriptor or 'place' in descriptor or 'room' in descriptor:
+        return False
+    return any(marker in descriptor for marker in ('person', 'human', 'recipient'))
+
+
+def _person_name_texts(entity: dict) -> list[str]:
+    texts = []
+    for key in ('id', 'label', 'name', 'display_name'):
+        value = str(entity.get(key, '')).strip()
+        if value:
+            texts.append(value)
+    texts.extend(_relation_texts(entity))
+    return texts
+
+
+def _extract_grounded_context_dict(knowledge_snapshot: str) -> dict:
+    parsed = _extract_json_object(str(knowledge_snapshot or ''))
+    if not isinstance(parsed, dict):
+        return {}
+    if isinstance(parsed.get('grounded_context'), dict):
+        return parsed['grounded_context']
+    if any(key in parsed for key in ('entities', 'relations', 'locations')):
+        return parsed
+    return {}
+
+
+def _grounded_context_has_person_named(
+    *,
+    knowledge_snapshot: str,
+    requested_name: str,
+) -> bool:
+    compact_name = _compact_match_text(requested_name)
+    if not compact_name:
+        return True
+    context = _extract_grounded_context_dict(knowledge_snapshot)
+    for entity in _iter_context_dicts(context):
+        if not _looks_like_person_entity(entity):
+            continue
+        for candidate in _person_name_texts(entity):
+            compact_candidate = _compact_match_text(candidate)
+            if compact_candidate and compact_candidate == compact_name:
+                return True
+    return False
+
+
+def _requested_named_people(user_text: str, user_intent: dict) -> list[str]:
+    candidates: list[str] = []
+    text = str(user_text or '')
+    for pattern in (
+        r'\b(?:person|human|recipient)\s+(?:named|called)\s+([A-Za-z][A-Za-z0-9_-]*)',
+        r'\bto\s+(?:the\s+)?(?:person|human|recipient)\s+(?!named\b|called\b)([A-Za-z][A-Za-z0-9_-]*)',
+    ):
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+            candidates.append(match.group(1))
+
+    for key in ('recipient', 'target_person'):
+        value = str(user_intent.get(key, '')).strip()
+        if value:
+            candidates.append(value)
+
+    if re.search(r'\b(?:person|human|recipient)\b', text, flags=re.IGNORECASE):
+        scene_targets = user_intent.get('scene_targets', [])
+        if isinstance(scene_targets, str):
+            scene_targets = [scene_targets]
+        if isinstance(scene_targets, (list, tuple)):
+            for target in scene_targets:
+                value = str(target or '').strip()
+                if value and not value.lower().startswith('codex_'):
+                    candidates.append(value)
+
+    unique: list[str] = []
+    seen = set()
+    for candidate in candidates:
+        clean = str(candidate or '').strip(' ,.;:!?')
+        compact = _compact_match_text(clean)
+        if not compact or compact in seen:
+            continue
+        seen.add(compact)
+        unique.append(clean)
+    return unique
 
 
 # ---------------------------------------------------------------------------
@@ -377,6 +373,7 @@ class DialogueTurnEngine:
             return result
 
         if self._config.planner_mode_enabled:
+            llm_route = _normalize_route(response_payload.get('route', ''))
             (
                 route,
                 resolved_intent,
@@ -387,15 +384,29 @@ class DialogueTurnEngine:
                 user_text=user_text,
                 verbal_ack=verbal_ack,
                 response_payload=response_payload,
+                knowledge_snapshot=knowledge_snapshot,
             )
             if route == _EXECUTION_ROUTE:
                 verbal_ack = _sanitize_execution_ack(verbal_ack)
+            elif (
+                isinstance(user_intent.get('route_conflict'), dict)
+                and user_intent['route_conflict'].get('reason')
+                == 'missing_named_person_in_grounded_context'
+            ):
+                verbal_ack = _MISSING_NAMED_PERSON_ACK
             self._trace(
                 trace,
                 turn_id,
                 'ROUTE_RESOLVED',
                 'route=%s intent=%s source=%s confidence=%.2f'
                 % (route, resolved_intent or '-', intent_source, intent_confidence),
+            )
+            self._trace_route_decision(
+                trace,
+                turn_id,
+                llm_route=llm_route,
+                final_route=route,
+                intent_source=intent_source,
             )
 
             updated_history = messages_to_history(
@@ -528,6 +539,9 @@ class DialogueTurnEngine:
             verbal_ack='',
             intent_payload=intent_payload,
         )
+        llm_route = self._route_for_intent(
+            str(user_intent.get('type', '')).strip() or resolved_intent
+        )
         route, resolved_intent, user_intent, intent_source = self._lock_intent_first_route(
             user_text=user_text,
             resolved_intent=resolved_intent,
@@ -541,6 +555,13 @@ class DialogueTurnEngine:
             'ROUTE_LOCKED',
             'mode=intent_first route=%s intent=%s source=%s confidence=%.2f'
             % (route, resolved_intent or '-', intent_source, intent_confidence),
+        )
+        self._trace_route_decision(
+            trace,
+            turn_id,
+            llm_route=llm_route,
+            final_route=route,
+            intent_source=intent_source,
         )
 
         self._publish_progress(progress_callback, 'generating_response', 0.65)
@@ -724,7 +745,28 @@ class DialogueTurnEngine:
         user_text: str,
         verbal_ack: str,
         response_payload: dict,
+        knowledge_snapshot: str = '',
     ) -> tuple[str, str, str, float, dict]:
+        """Resolve the final route for a response-first planner-mode turn.
+
+        This is an ordered route policy applied on top of the LLM-provided
+        ``route``/``user_intent``. The phases run in this fixed order and may
+        each rewrite the in-progress ``inferred_route``/``resolved_intent``/
+        ``user_intent``:
+
+        1. seed from the LLM route plus a rules-based inference;
+        2. dialogue-first guards (reflective/greeting/social/capability/
+           preference/information-only questions stay conversational);
+        3. execution-repair guards (repeat-action and ack-implied execution);
+        4. contradiction repair when the route fights the acknowledgement;
+        5. rules-fallback intent backfill;
+        6. knowledge-query guard;
+        7. non-immediate action discussion guard;
+        8. intent-source labelling.
+
+        Phase 2 (SkillOpt-gated) is where these guards are reduced toward
+        "LLM leads, fallbacks only nudge"; here they stay behaviour-preserving.
+        """
         user_intent = _coerce_user_intent(response_payload.get('user_intent', {}))
         explicit_route = _normalize_route(response_payload.get('route', ''))
         resolved_intent = self._resolve_user_intent_label(
@@ -743,15 +785,18 @@ class DialogueTurnEngine:
             inferred_route = _DIALOGUE_ROUTE
             resolved_intent = ''
             user_intent = _dialogue_user_intent(user_intent)
-        # Keep greeting-like turns dialogue-first unless the user clearly asked
-        # for an execution action. This avoids planner handoff on short social openers.
-        if _is_greeting_intent(resolved_intent, user_intent) and not _looks_like_execution_text(
-            user_text
+        # Keep greeting-like, short-social, and capability-question turns
+        # dialogue-first unless the user clearly asked for an execution action.
+        # These three guards each only force the dialogue route with no other
+        # side effect, so they collapse into one ordered check.
+        if (
+            (
+                _is_greeting_intent(resolved_intent, user_intent)
+                and not _looks_like_execution_text(user_text)
+            )
+            or (_is_social_turn(user_text) and not _looks_like_execution_text(user_text))
+            or _is_capability_query(user_text)
         ):
-            inferred_route = _DIALOGUE_ROUTE
-        if _is_social_turn(user_text) and not _looks_like_execution_text(user_text):
-            inferred_route = _DIALOGUE_ROUTE
-        if _is_capability_query(user_text):
             inferred_route = _DIALOGUE_ROUTE
         if _is_personal_preference_question(user_text):
             inferred_route = _DIALOGUE_ROUTE
@@ -922,6 +967,26 @@ class DialogueTurnEngine:
             resolved_intent = ''
             user_intent = _dialogue_user_intent(user_intent)
             route_repaired = True
+
+        if inferred_route == _EXECUTION_ROUTE:
+            missing_people = [
+                name
+                for name in _requested_named_people(user_text, user_intent)
+                if not _grounded_context_has_person_named(
+                    knowledge_snapshot=knowledge_snapshot,
+                    requested_name=name,
+                )
+            ]
+            if missing_people:
+                user_intent = dict(user_intent)
+                user_intent['route_conflict'] = {
+                    'requested_person': missing_people[0],
+                    'reason': 'missing_named_person_in_grounded_context',
+                }
+                user_intent = _dialogue_user_intent(user_intent)
+                inferred_route = _DIALOGUE_ROUTE
+                resolved_intent = ''
+                route_repaired = True
 
         if inferred_route == _DIALOGUE_ROUTE and not resolved_intent and not user_intent:
             intent_source = 'llm_response_route'
@@ -1495,6 +1560,30 @@ class DialogueTurnEngine:
             trace(turn_id, stage, message)
 
     @staticmethod
+    def _trace_route_decision(
+        trace,
+        turn_id: str,
+        *,
+        llm_route: str,
+        final_route: str,
+        intent_source: str,
+    ) -> None:
+        """Emit an observability-only record of LLM route vs final route.
+
+        This does not change any routing decision; it makes the override rate
+        between the model's own route and the deterministically resolved route
+        measurable from the turn trace.
+        """
+        overridden = bool(llm_route) and llm_route != final_route
+        DialogueTurnEngine._trace(
+            trace,
+            turn_id,
+            'ROUTE_DECISION',
+            'llm_route=%s final_route=%s overridden=%s reason=%s'
+            % (llm_route or '-', final_route, str(overridden).lower(), intent_source),
+        )
+
+    @staticmethod
     def _preview_text(text: str, max_len: int = 72) -> str:
         clean = ' '.join(str(text).split())
         if len(clean) <= max_len:
@@ -1503,1270 +1592,10 @@ class DialogueTurnEngine:
 
 
 # ---------------------------------------------------------------------------
-# Module-local JSON coercion helpers
+# Module-local logging helper
 # ---------------------------------------------------------------------------
-
-def _join_prompt_addenda(*parts: str) -> str:
-    return '\n\n'.join(str(part).strip() for part in parts if str(part).strip())
-
-
-def _system_task_response_addendum(base_addendum: str, task_addendum: str) -> str:
-    return _join_prompt_addenda(
-        _SYSTEM_TASK_RESPONSE_MODE_ADDENDUM,
-        _extract_system_task_response_rules(base_addendum),
-        task_addendum,
-    )
-
-
-def _locked_route_prompt_block(context: dict) -> str:
-    route = _normalize_route(context.get('route', '')) or _DIALOGUE_ROUTE
-    payload = {
-        'route': route,
-        'resolved_intent': str(context.get('resolved_intent', '')).strip(),
-        'user_intent': _coerce_user_intent(context.get('user_intent', {})),
-    }
-    return _join_prompt_addenda(
-        'Locked route context:',
-        json.dumps(payload, ensure_ascii=True, sort_keys=True, separators=(',', ':')),
-        (
-            'The route above was selected by the intent stage before this wording '
-            'request. Do not change it. Return the same route in the response JSON. '
-            'If route is dialogue or knowledge_query, do not promise physical action. '
-            'If route is execution, acknowledge the request in future tense only and '
-            'do not claim completion or observations.'
-        ),
-    )
-
-
-def _extract_system_task_response_rules(base_addendum: str) -> str:
-    sections = _response_addendum_sections(base_addendum)
-    parts: list[str] = []
-
-    intro_lines = [
-        line.strip()
-        for line in sections.get('__intro__', '').splitlines()
-        if 'text-to-speech' in line.lower()
-    ]
-    if intro_lines:
-        parts.append('\n'.join(intro_lines))
-
-    perception = sections.get('Perception and knowledge policy', '').strip()
-    if perception:
-        parts.append('Perception and knowledge policy:\n%s' % perception)
-
-    shared_style = _shared_response_style_rules(sections.get('Response style', ''))
-    if shared_style:
-        parts.append('Response style:\n%s' % shared_style)
-
-    extracted = _join_prompt_addenda(*parts)
-    if extracted:
-        return extracted
-    return str(base_addendum or '').strip()
-
-
-def _response_addendum_sections(text: str) -> dict[str, str]:
-    sections: dict[str, list[str]] = {'__intro__': []}
-    current = '__intro__'
-    for raw_line in str(text or '').splitlines():
-        stripped = raw_line.strip()
-        if stripped.endswith(':') and stripped and not stripped.startswith('- '):
-            current = stripped[:-1]
-            sections.setdefault(current, [])
-            continue
-        sections.setdefault(current, []).append(raw_line.rstrip())
-    return {
-        key: '\n'.join(value).strip()
-        for key, value in sections.items()
-        if any(line.strip() for line in value)
-    }
-
-
-def _shared_response_style_rules(section_text: str) -> str:
-    shared_lines: list[str] = []
-    skip_route_block = False
-    for raw_line in str(section_text or '').splitlines():
-        stripped = raw_line.strip()
-        if not stripped:
-            if not skip_route_block:
-                shared_lines.append('')
-            continue
-        if stripped.startswith('- If route="'):
-            skip_route_block = True
-            continue
-        if skip_route_block:
-            if stripped.startswith('- ') and not raw_line.startswith('  '):
-                skip_route_block = False
-            else:
-                continue
-        if not skip_route_block:
-            shared_lines.append(raw_line.rstrip())
-    return '\n'.join(shared_lines).strip()
-
-
-def _parse_json_dict(payload: str) -> dict:
-    if not payload:
-        return {}
-    try:
-        parsed = json.loads(payload)
-    except json.JSONDecodeError:
-        return {}
-    if isinstance(parsed, str):
-        return _parse_json_dict(parsed)
-    if not isinstance(parsed, dict):
-        return {}
-    return parsed
-
-
-def _extract_json_object(payload: str) -> dict:
-    parsed = _parse_json_dict(payload)
-    if parsed:
-        return parsed
-
-    decoder = json.JSONDecoder()
-    for start in range(len(payload)):
-        if payload[start] != '{':
-            continue
-        try:
-            maybe_obj, _ = decoder.raw_decode(payload[start:])
-        except json.JSONDecodeError:
-            continue
-        if isinstance(maybe_obj, dict):
-            return maybe_obj
-    return {}
-
-
-def _extract_ack_text(payload: str, _depth: int = 0) -> str:
-    if _depth > 3:
-        return ''
-    parsed = _extract_json_object(payload)
-    if parsed:
-        for key in ('verbal_ack', 'ack_text'):
-            text = str(parsed.get(key, '')).strip()
-            if text:
-                return text
-        for value in parsed.values():
-            if isinstance(value, dict):
-                nested_text = _extract_ack_text(json.dumps(value), _depth + 1)
-                if nested_text:
-                    return nested_text
-            elif isinstance(value, str):
-                nested_text = _extract_ack_text(value, _depth + 1)
-                if nested_text:
-                    return nested_text
-        response_text = str(parsed.get('response', '')).strip()
-        if response_text:
-            nested_text = _extract_ack_text(response_text, _depth + 1)
-            if nested_text:
-                return nested_text
-            return response_text
-        return ''
-
-    # Be permissive when the model drifts into "almost JSON" formatting.
-    for key in ('verbal_ack', 'ack_text', 'response'):
-        patterns = (
-            rf'"{key}"\s*:\s*"((?:[^"\\]|\\.)*)"',
-            rf"'{key}'\s*:\s*'((?:[^'\\]|\\.)*)'",
-            rf'\b{key}\b\s*:\s*"((?:[^"\\]|\\.)*)"',
-            rf"\b{key}\b\s*:\s*'((?:[^'\\]|\\.)*)'",
-        )
-        for pattern in patterns:
-            match = re.search(pattern, payload, re.DOTALL)
-            if not match:
-                continue
-            text = bytes(match.group(1), 'utf-8').decode('unicode_escape').strip()
-            if not text:
-                continue
-            if key == 'response':
-                nested_text = _extract_ack_text(text, _depth + 1)
-                if nested_text:
-                    return nested_text
-            return text
-    return ''
-
-
-def _ack_from_parsed_response(parsed: dict) -> str:
-    for key in ('verbal_ack', 'ack_text'):
-        text = str(parsed.get(key, '')).strip()
-        if text:
-            return text
-    response_text = str(parsed.get('response', '')).strip()
-    if response_text:
-        nested_text = _extract_ack_text(response_text)
-        return nested_text or response_text
-    return ''
-
-
-def _limit_verbal_ack(verbal_ack: str) -> str:
-    text = ' '.join(str(verbal_ack or '').strip().split())
-    if len(text) <= _MAX_VERBAL_ACK_CHARS:
-        return text
-    boundary = max(text.rfind('.', 0, _MAX_VERBAL_ACK_CHARS), text.rfind('?', 0, _MAX_VERBAL_ACK_CHARS))
-    if boundary < int(_MAX_VERBAL_ACK_CHARS * 0.55):
-        boundary = text.rfind(' ', 0, _MAX_VERBAL_ACK_CHARS)
-    if boundary < int(_MAX_VERBAL_ACK_CHARS * 0.55):
-        boundary = _MAX_VERBAL_ACK_CHARS
-    summary = text[:boundary].strip(' ,;:.')
-    return '%s. I can continue if you want more detail.' % summary
-
-
-def _looks_like_json_payload(payload: str) -> bool:
-    clean_payload = str(payload or '').strip()
-    return clean_payload.startswith(('{', '"{', '```json', '```'))
 
 
 def _warn(logger, message: str) -> None:
     if logger is not None:
         logger.warn(message)
-
-
-def _coerce_user_intent(user_intent) -> dict:
-    if isinstance(user_intent, dict):
-        cleaned = {}
-        for key in (
-            'type',
-            'object',
-            'recipient',
-            'input',
-            'goal',
-            'goal_text',
-            'task',
-            'ack_text',
-            'request_kind',
-            'goal_id',
-            'parent_goal_id',
-            'supersedes_goal_id',
-            'dialogue_turn_id',
-        ):
-            value = str(user_intent.get(key, '')).strip()
-            if value:
-                cleaned[key] = value
-        scene_targets = user_intent.get('scene_targets')
-        if isinstance(scene_targets, str):
-            parsed_targets = [item.strip() for item in scene_targets.split(',') if item.strip()]
-            if parsed_targets:
-                cleaned['scene_targets'] = parsed_targets
-        elif isinstance(scene_targets, (list, tuple)):
-            parsed_targets = [str(item).strip() for item in scene_targets if str(item).strip()]
-            if parsed_targets:
-                cleaned['scene_targets'] = parsed_targets
-
-        intent_sequence = user_intent.get('intent_sequence')
-        if isinstance(intent_sequence, str):
-            parsed_intents = [
-                item.strip() for item in intent_sequence.split(',') if item.strip()
-            ]
-            if parsed_intents:
-                cleaned['intent_sequence'] = parsed_intents
-        elif isinstance(intent_sequence, (list, tuple)):
-            parsed_intents = [
-                str(item).strip() for item in intent_sequence if str(item).strip()
-            ]
-            if parsed_intents:
-                cleaned['intent_sequence'] = parsed_intents
-
-        return cleaned
-    if isinstance(user_intent, str) and user_intent.strip():
-        return {'type': user_intent.strip()}
-    return {}
-
-
-def _normalize_route(value) -> str:
-    clean_value = str(value or '').strip().lower()
-    if clean_value in _SUPPORTED_ROUTES:
-        return clean_value
-    return ''
-
-
-def _looks_like_execution_text(user_text: str) -> bool:
-    if _is_information_only_action_word_question(user_text):
-        return False
-    lowered = ' %s ' % ' '.join(str(user_text or '').strip().lower().split())
-    return any(marker in lowered for marker in _EXECUTION_HINT_MARKERS)
-
-
-def _rules_execution_intent_allowed(user_text: str) -> bool:
-    return _looks_like_execution_text(user_text) and not _is_information_only_action_word_question(
-        user_text
-    )
-
-
-def _execution_intent_from_text(user_text: str) -> str:
-    intent = normalize_intent(detect_intent(user_text), default='')
-    if intent and intent != 'fallback' and is_execution_intent_label(intent):
-        return intent
-    clean = ' %s ' % ' '.join(str(user_text or '').strip().lower().split())
-    if ' look at ' in clean:
-        return 'look_at'
-    return ''
-
-
-def _is_repeat_action_request(user_text: str) -> bool:
-    clean = ' '.join(str(user_text or '').strip().lower().split())
-    if not clean:
-        return False
-    normalized = ''.join(ch if ch.isalnum() or ch.isspace() else ' ' for ch in clean)
-    normalized = ' '.join(normalized.split())
-    return normalized in {
-        'again',
-        'do it again',
-        'do that again',
-        'repeat it',
-        'repeat that',
-        'repeat the action',
-        'one more time',
-    }
-
-
-def _is_information_only_action_word_question(user_text: str) -> bool:
-    clean = ' '.join(str(user_text or '').strip().lower().split())
-    if not clean:
-        return False
-    normalized = ''.join(ch if ch.isalnum() or ch.isspace() else ' ' for ch in clean)
-    normalized = ' '.join(normalized.split())
-    asks_information = (
-        '?' in clean
-        or normalized.startswith(('what ', 'how ', 'why ', 'explain ', 'define '))
-        or normalized.startswith('tell me about ')
-    )
-    if not asks_information:
-        return False
-    if any(
-        marker in clean
-        for marker in (
-            'wave at',
-            'wave to',
-            'please wave',
-            'can you wave',
-            'could you wave',
-            'will you wave',
-            'would you wave',
-            'look at',
-            'navigate to',
-            'walk to',
-            'move to',
-            'go to',
-        )
-    ):
-        return False
-    return any(
-        marker in normalized
-        for marker in (
-            'wave particle',
-            'wave equation',
-            'particle equation',
-            'wave duality',
-            'physics',
-            'wavelength',
-        )
-    ) or normalized.startswith(('what is wave', 'what are waves', 'explain wave'))
-
-
-def _route_is_contradictory(*, user_text: str, verbal_ack: str, route: str) -> bool:
-    if route == _EXECUTION_ROUTE:
-        return _is_non_immediate_action_discussion(user_text)
-    if route in {_DIALOGUE_ROUTE, _KNOWLEDGE_QUERY_ROUTE}:
-        return (
-            _ack_implies_execution(verbal_ack)
-            and not _is_reflective_execution_question(user_text)
-            and not _is_capability_query(user_text)
-        )
-    return False
-
-
-def _repair_response_route(*, user_text: str, verbal_ack: str, route: str) -> str:
-    if _is_reflective_execution_question(user_text):
-        return _DIALOGUE_ROUTE
-    if _is_capability_query(user_text):
-        return _DIALOGUE_ROUTE
-    if _is_personal_preference_question(user_text):
-        return _DIALOGUE_ROUTE
-    if _is_advice_or_idea_request(user_text):
-        return _DIALOGUE_ROUTE
-    if _is_social_turn(user_text) and not _looks_like_execution_text(user_text):
-        return _DIALOGUE_ROUTE
-    if _is_non_immediate_action_discussion(user_text):
-        return _DIALOGUE_ROUTE
-    if _looks_like_execution_text(user_text) and _ack_implies_execution(verbal_ack):
-        return _EXECUTION_ROUTE
-    if route in _SUPPORTED_ROUTES:
-        return route
-    return _DIALOGUE_ROUTE
-
-
-def _is_non_immediate_action_discussion(user_text: str) -> bool:
-    clean = ' '.join(str(user_text or '').strip().lower().split())
-    if not clean or not _looks_like_execution_text(clean):
-        return False
-    if not any(marker in clean for marker in ('could', 'would', 'can we', 'could we')):
-        return False
-    return any(
-        marker in clean
-        for marker in (
-            'later',
-            'some other time',
-            'at some point',
-            'afterwards',
-            'eventually',
-        )
-    )
-
-
-def _is_social_turn(user_text: str) -> bool:
-    clean = ' '.join(str(user_text or '').strip().lower().split())
-    if not clean:
-        return False
-    normalized = ''.join(ch for ch in clean if ch.isalnum() or ch.isspace()).strip()
-    if normalized in _SOCIAL_TURN_MARKERS:
-        return True
-    token_count = len([token for token in normalized.split(' ') if token])
-    if token_count <= 2 and normalized in {'hi', 'hello', 'hey', 'thanks'}:
-        return True
-    return False
-
-
-def _is_capability_query(user_text: str) -> bool:
-    """Return whether the user is asking what the robot can do, not requesting it."""
-    clean = ' '.join(str(user_text or '').strip().lower().split())
-    if not clean:
-        return False
-    normalized = ''.join(ch for ch in clean if ch.isalnum() or ch.isspace()).strip()
-    capability_markers = (
-        'what can you do',
-        'what are you able to do',
-        'what capabilities do you have',
-        'what are your capabilities',
-        'tell me what you can do',
-        'what skills do you have',
-        'which skills do you have',
-        'what fake skills do you have',
-        'do you have fake skills',
-        'do you have any fake skills',
-        'tell me about your skills',
-    )
-    return any(marker in normalized for marker in capability_markers)
-
-
-def _is_personal_preference_question(user_text: str) -> bool:
-    """Return whether the user is asking for conversation, not robot execution."""
-    clean = ' '.join(str(user_text or '').strip().lower().split())
-    if not clean:
-        return False
-    normalized = ''.join(ch if ch.isalnum() or ch.isspace() else ' ' for ch in clean)
-    normalized = ' '.join(normalized.split())
-    if not (
-        '?' in clean
-        or normalized.startswith(('what ', 'which ', 'who ', 'do you ', 'tell me '))
-    ):
-        return False
-    preference_markers = (
-        'your favorite',
-        'your favourite',
-        'do you like',
-        'what do you like',
-        'which do you like',
-        'what do you prefer',
-        'which do you prefer',
-        'your preference',
-        'your opinion',
-    )
-    return any(marker in normalized for marker in preference_markers)
-
-
-def _is_advice_or_idea_request(user_text: str) -> bool:
-    """Return whether the user is asking for suggestions, not robot execution."""
-    clean = ' '.join(str(user_text or '').strip().lower().split())
-    if not clean:
-        return False
-    normalized = ''.join(ch if ch.isalnum() or ch.isspace() else ' ' for ch in clean)
-    normalized = ' '.join(normalized.split())
-    if '?' not in clean and not normalized.startswith(
-        ('any ', 'what ', 'which ', 'can you suggest', 'could you suggest')
-    ):
-        return False
-    return any(
-        marker in normalized
-        for marker in (
-            'any ideas',
-            'ideas for',
-            'plans this weekend',
-            'things to do',
-            'what should i do',
-            'what can i do',
-            'can you suggest',
-            'could you suggest',
-            'recommend',
-        )
-    )
-
-
-def _is_reflective_execution_question(user_text: str) -> bool:
-    """Return whether the user is asking about prior execution evidence."""
-    clean = ' '.join(str(user_text or '').strip().lower().split())
-    if not clean:
-        return False
-    if not any(marker in clean for marker in _REFLECTIVE_EXECUTION_QUESTION_MARKERS):
-        return False
-    return _looks_like_execution_text(clean)
-
-
-def _dialogue_user_intent(user_intent: dict) -> dict:
-    if not user_intent:
-        return {}
-    normalized = dict(user_intent)
-    normalized['type'] = 'fallback'
-    for key in ('goal', 'goal_text', 'intent_sequence'):
-        normalized.pop(key, None)
-    return normalized
-
-
-def _ack_implies_execution(verbal_ack: str) -> bool:
-    clean_ack = ' %s ' % ' '.join(str(verbal_ack or '').strip().lower().split())
-    if not clean_ack.strip():
-        return False
-    commitment_markers = (
-        " i will ",
-        " i'll ",
-        ' let me ',
-        ' i can ',
-    )
-    if not any(marker in clean_ack for marker in commitment_markers):
-        return False
-    return _looks_like_execution_text(clean_ack)
-
-
-def _infer_kb_query_intent_from_text(user_text: str) -> str:
-    inferred = normalize_intent(detect_intent(user_text), default='')
-    if inferred in KB_QUERY_INTENTS:
-        return inferred
-    if _looks_like_visible_scene_question(user_text):
-        return KB_QUERY_VISIBLE_OBJECTS
-    if _looks_like_non_mutating_kb_question(user_text):
-        return KB_QUERY_VISIBLE_OBJECTS
-    # Catch specific-object attribute queries like "What is the name/color of X?"
-    # These are KB lookups even when detect_intent returns 'fallback'.
-    if _looks_like_object_attribute_query(user_text):
-        return KB_QUERY_VISIBLE_OBJECTS
-    return ''
-
-
-def _looks_like_visible_scene_question(user_text: str) -> bool:
-    clean = ' '.join(str(user_text or '').strip().lower().split())
-    if not clean:
-        return False
-    normalized = ''.join(ch if ch.isalnum() or ch.isspace() else ' ' for ch in clean)
-    normalized = ' '.join(normalized.split())
-    return normalized.startswith(
-        (
-            'what can you see',
-            'what do you see',
-            'what are you seeing',
-            'who can you see',
-            'who do you see',
-            'what objects can you see',
-            'what objects do you see',
-            'how many objects can you see',
-            'how many objects do you see',
-        )
-    )
-
-
-def _looks_like_non_mutating_kb_question(user_text: str) -> bool:
-    clean = ' '.join(str(user_text or '').strip().lower().split())
-    if not clean:
-        return False
-    normalized = ''.join(ch if ch.isalnum() or ch.isspace() else ' ' for ch in clean)
-    normalized = ' '.join(normalized.split())
-    return normalized.startswith(
-        (
-            'what do you remember',
-            'what can you remember',
-            'do you remember',
-            'what do you know',
-            'what is',
-            'what are',
-            'which facts',
-            'tell me what',
-        )
-    )
-
-
-def _looks_like_object_attribute_query(user_text: str) -> bool:
-    """Detect queries about object attributes: name, color, type, position."""
-    clean = ' '.join(str(user_text or '').strip().lower().split())
-    if not clean:
-        return False
-    # Must ask about an attribute
-    attr_markers = ('name', 'color', 'type', 'position', 'location', 'id')
-    has_attr = any(m in clean for m in attr_markers)
-    # Must reference a specific object (not general "what do you see")
-    obj_patterns = [
-        r'of\s+\w+',           # "of the cup", "of X"
-        r'the\s+\w+',          # "the probe cup"
-        r'is\s+the\s+',        # "is the name"
-    ]
-    has_object = any(re.search(p, clean) for p in obj_patterns)
-    return has_attr and has_object
-
-
-
-
-
-def _is_greeting_intent(resolved_intent: str, user_intent: dict) -> bool:
-    if str(resolved_intent or '').strip().lower() == 'greet':
-        return True
-    return str(user_intent.get('type', '')).strip().lower() == 'greet'
-
-
-def _has_explicit_perception_action_request(user_text: str) -> bool:
-    lowered = ' %s ' % ' '.join(str(user_text or '').strip().lower().split())
-    return any(
-        marker in lowered
-        for marker in (
-            ' scan ',
-            ' look around ',
-            ' inspect the scene ',
-            ' inspect scene ',
-            ' search the area ',
-            ' search around ',
-            ' check the area ',
-            ' perform a scan ',
-        )
-    )
-
-
-def _sanitize_execution_ack(verbal_ack: str) -> str:
-    """Keep execution acknowledgements from claiming the result before execution."""
-    clean_ack = str(verbal_ack or '').strip()
-    if not clean_ack:
-        return 'Okay, I will do that.'
-    if clean_ack == 'fallback':
-        return clean_ack
-
-    clean_ack = re.sub(
-        r'\s*\((?:[^)]*\b(?:perform|performs|performed|move|moves|moved|'
-        r'scan|scans|scanned|look|looks|looked|turn|turns|turned|wave|waves|'
-        r'waved|navigate|navigates|navigated)[^)]*)\)',
-        '',
-        clean_ack,
-        flags=re.IGNORECASE,
-    ).strip()
-
-    lowered = clean_ack.lower()
-    if re.search(
-        r"\b(i cannot|i can't|i could not|i couldn't|i do not have|i don't have|unable to)\b",
-        lowered,
-    ):
-        return 'Okay, I will try that now.'
-
-    result_markers = (
-        'i can currently',
-        'i currently',
-        'i can see',
-        'i see',
-        'i have scanned',
-        'i found',
-        'i have found',
-        'i detected',
-        'i have detected',
-        'i observed',
-        'i have observed',
-        'i am now',
-        "i'm now",
-        'i have arrived',
-        "i've arrived",
-        'i arrived',
-        'i performed',
-        'i have moved',
-        'i have completed',
-        'i completed',
-        'i scanned',
-        'the scan',
-    )
-    split_at = len(clean_ack)
-    for marker in result_markers:
-        match = re.search(
-            r'(^|[.!?]\s+)%s\b' % re.escape(marker.lower()),
-            lowered,
-        )
-        if match:
-            split_at = min(split_at, match.start(1))
-    clean_ack = clean_ack[:split_at].strip()
-    clean_ack = re.sub(
-        r'(?:\s*(?:,|;|:)?\s*\b(?:and|but|so)\b)+$',
-        '',
-        clean_ack,
-        flags=re.IGNORECASE,
-    ).strip()
-
-    if not clean_ack:
-        return 'Okay, I will do that.'
-    if clean_ack[-1] not in '.!?':
-        clean_ack += '.'
-    return clean_ack
-
-
-def _route_safe_fallback_ack(route: str) -> str:
-    if route == _EXECUTION_ROUTE:
-        return 'Okay, I will try that now.'
-    if route == _KNOWLEDGE_QUERY_ROUTE:
-        return _KNOWLEDGE_QUERY_ROUTE_FALLBACK_ACK
-    return _DIALOGUE_ROUTE_FALLBACK_ACK
-
-
-def _sanitize_locked_route_ack(
-    *,
-    route: str,
-    user_text: str,
-    verbal_ack: str,
-) -> str:
-    if route == _EXECUTION_ROUTE:
-        return _sanitize_execution_ack(verbal_ack)
-    if not _route_is_contradictory(
-        user_text=user_text,
-        verbal_ack=verbal_ack,
-        route=route,
-    ):
-        return str(verbal_ack or '').strip()
-    return _route_safe_fallback_ack(route)
-
-
-def _extract_planner_completion_context(payload: str) -> dict:
-    parsed = _extract_json_object(str(payload or '').strip())
-    context = parsed.get('planner_completion', {}) if isinstance(parsed, dict) else {}
-    if not isinstance(context, dict):
-        return {}
-    normalized = {
-        'goal_text': str(context.get('goal_text', '')).strip(),
-        'result_summary': str(context.get('result_summary', '')).strip(),
-        'text_hint': str(context.get('text_hint', '')).strip(),
-        'requested_intents': [
-            str(item).strip()
-            for item in context.get('requested_intents', [])
-            if str(item).strip()
-        ]
-        if isinstance(context.get('requested_intents', []), list)
-        else [],
-        'result_payload': context.get('result_payload', {})
-        if isinstance(context.get('result_payload', {}), dict)
-        else {},
-    }
-    if not any(normalized.get(key) for key in _PLANNER_COMPLETION_KEYS):
-        return {}
-    return normalized
-
-
-def _extract_execution_report_context(payload: str) -> dict:
-    parsed = _extract_json_object(str(payload or '').strip())
-    context = parsed.get('execution_report', {}) if isinstance(parsed, dict) else {}
-    if not isinstance(context, dict):
-        return {}
-    steps = context.get('steps', [])
-    normalized_steps = []
-    if isinstance(steps, list):
-        for step in steps:
-            if not isinstance(step, dict):
-                continue
-            normalized_steps.append(
-                {
-                    'id': str(step.get('id', '')).strip(),
-                    'name': str(step.get('name', '')).strip(),
-                    'type': str(step.get('type', '')).strip(),
-                    'args': step.get('args', {})
-                    if isinstance(step.get('args', {}), dict)
-                    else {},
-                    'status': str(step.get('status', '')).strip(),
-                    'reason': str(step.get('reason', '')).strip(),
-                    'result_summary': str(step.get('result_summary', '')).strip(),
-                    'result_payload': step.get('result_payload', {})
-                    if isinstance(step.get('result_payload', {}), dict)
-                    else {},
-                }
-            )
-    future_steps = context.get('future_steps', [])
-    normalized_future_steps = []
-    if isinstance(future_steps, list):
-        for step in future_steps:
-            if not isinstance(step, dict):
-                continue
-            normalized_future_steps.append(
-                {
-                    'id': str(step.get('id', '')).strip(),
-                    'name': str(step.get('name', '')).strip(),
-                    'type': str(step.get('type', '')).strip(),
-                    'args': step.get('args', {})
-                    if isinstance(step.get('args', {}), dict)
-                    else {},
-                    'requires': [
-                        str(item).strip()
-                        for item in step.get('requires', [])
-                        if str(item).strip()
-                    ]
-                    if isinstance(step.get('requires', []), list)
-                    else [],
-                }
-            )
-    normalized = {
-        'goal_text': str(context.get('goal_text', '')).strip(),
-        'requested_intents': [
-            str(item).strip()
-            for item in context.get('requested_intents', [])
-            if str(item).strip()
-        ]
-        if isinstance(context.get('requested_intents', []), list)
-        else [],
-        'dialogue_context': [
-            str(item).strip()
-            for item in context.get('dialogue_context', [])
-            if str(item).strip()
-        ]
-        if isinstance(context.get('dialogue_context', []), list)
-        else [],
-        'scene_targets': [
-            str(item).strip()
-            for item in context.get('scene_targets', [])
-            if str(item).strip()
-        ]
-        if isinstance(context.get('scene_targets', []), list)
-        else [],
-        'grounded_context': context.get('grounded_context', {})
-        if isinstance(context.get('grounded_context', {}), dict)
-        else {},
-        'requested_summary': str(context.get('requested_summary', '')).strip(),
-        'report_role': str(context.get('report_role', '')).strip(),
-        'future_steps': normalized_future_steps,
-        'steps': normalized_steps,
-        'latest_result_summary': str(context.get('latest_result_summary', '')).strip(),
-        'latest_result_payload': context.get('latest_result_payload', {})
-        if isinstance(context.get('latest_result_payload', {}), dict)
-        else {},
-    }
-    if not any(normalized.get(key) for key in _EXECUTION_REPORT_KEYS):
-        return {}
-    return normalized
-
-
-def _extract_planner_dialogue_context(payload: str) -> dict:
-    parsed = _extract_json_object(str(payload or '').strip())
-    context = parsed.get('planner_dialogue', {}) if isinstance(parsed, dict) else {}
-    if not isinstance(context, dict):
-        return {}
-    normalized = {
-        'act': str(context.get('act', '')).strip().lower(),
-        'goal_id': str(context.get('goal_id', '')).strip(),
-        'plan_id': str(context.get('plan_id', '')).strip(),
-        'plan_version': int(coerce_float(context.get('plan_version', 0))),
-        'reason': str(context.get('reason', '')).strip(),
-        'text_hint': str(context.get('text_hint', '')).strip(),
-        'await_user_response': bool(context.get('await_user_response', False)),
-        'slots_needed': [
-            str(item).strip()
-            for item in context.get('slots_needed', [])
-            if str(item).strip()
-        ]
-        if isinstance(context.get('slots_needed', []), list)
-        else [],
-        'context': context.get('context', {})
-        if isinstance(context.get('context', {}), dict)
-        else {},
-        'completion_context': context.get('completion_context', {})
-        if isinstance(context.get('completion_context', {}), dict)
-        else {},
-    }
-    if not any(normalized.get(key) for key in _PLANNER_DIALOGUE_KEYS):
-        return {}
-    return normalized
-
-
-def _fallback_planner_completion_ack(completion_context: dict) -> str:
-    text_hint = str(completion_context.get('text_hint', '')).strip()
-    if text_hint:
-        return text_hint
-    result_summary = str(completion_context.get('result_summary', '')).strip()
-    if result_summary:
-        return result_summary
-    result_payload = completion_context.get('result_payload', {})
-    if isinstance(result_payload, dict):
-        summary_text = str(result_payload.get('summary_text', '')).strip()
-        if summary_text:
-            return summary_text
-    goal_text = str(completion_context.get('goal_text', '')).strip()
-    if goal_text:
-        return 'I completed the requested task.'
-    return ''
-
-
-def _friendly_step_label(step_name: str) -> str:
-    clean = str(step_name or '').strip().lower()
-    labels = {
-        'look_at': 'looked at the target',
-        'navigate_to': 'navigated to the target',
-        'walk_to': 'walked to the target',
-        'wave_greet': 'waved',
-        'perform_motion': 'performed the motion',
-        'scan': 'looked around',
-        'inspect_scene': 'inspected the scene',
-        'find_object': 'looked for the object',
-        'pick_object': 'picked up the object',
-        'place_object': 'placed the object',
-        'bring_object': 'brought the object',
-    }
-    if clean in labels:
-        return labels[clean]
-    return clean.replace('_', ' ') if clean else 'completed the step'
-
-
-def _fallback_execution_report_ack(report_context: dict) -> str:
-    successful_steps = [
-        step for step in report_context.get('steps', [])
-        if isinstance(step, dict) and str(step.get('status', '')).strip().lower() == 'succeeded'
-    ]
-    latest_summary = str(report_context.get('latest_result_summary', '')).strip()
-    if str(report_context.get('report_role', '')).strip().lower() == 'intermediate':
-        if latest_summary:
-            return latest_summary
-        if successful_steps:
-            latest_step_summary = str(successful_steps[-1].get('result_summary', '')).strip()
-            if latest_step_summary:
-                return latest_step_summary
-
-    if successful_steps:
-        navigation_report = _ordered_navigation_report(successful_steps, report_context)
-        if navigation_report:
-            return navigation_report
-        summaries = [
-            str(step.get('result_summary', '')).strip()
-            for step in successful_steps
-            if str(step.get('result_summary', '')).strip()
-            and not _is_placeholder_report_summary(str(step.get('result_summary', '')).strip())
-        ]
-        if summaries:
-            return ' '.join(summaries[-2:])
-
-    if latest_summary:
-        return latest_summary
-    latest_payload = report_context.get('latest_result_payload', {})
-    if isinstance(latest_payload, dict):
-        summary_text = str(latest_payload.get('summary_text', '')).strip()
-        if summary_text:
-            return summary_text
-    step_names = [
-        _friendly_step_label(str(step.get('name', '')).strip())
-        for step in successful_steps[-2:]
-        if isinstance(step, dict) and str(step.get('name', '')).strip()
-    ]
-    if step_names:
-        if len(step_names) == 1:
-            return 'I %s.' % step_names[0]
-        return 'I %s and then %s.' % (step_names[0], step_names[1])
-    if str(report_context.get('goal_text', '')).strip():
-        return 'I completed the requested task.'
-    return ''
-
-
-def _postprocess_execution_report_ack(candidate: str, report_context: dict) -> str:
-    """Reject report wording that duplicates or promises a future report."""
-    clean = str(candidate or '').strip()
-    if not clean:
-        return ''
-    lowered = clean.lower()
-    if any(
-        marker in lowered
-        for marker in (
-            'i finished:',
-            'will report back',
-            'will report on',
-            'will let you know',
-            'will tell you',
-            'can report the current scene summary',
-            'can report what i observed',
-            'can report what i saw',
-            'can report it',
-            'going to report',
-            "i'll report",
-            "i'll let you know",
-        )
-    ):
-        return ''
-    if _is_placeholder_report_summary(clean):
-        return ''
-    if str(report_context.get('report_role', '')).strip().lower() == 'intermediate' and (
-        'next object' in lowered
-        or 'another object' in lowered
-        or 'i am now walking' in lowered
-        or "i'm now walking" in lowered
-        or 'ready to move' in lowered
-    ):
-        return ''
-    if _uses_stale_intermediate_arrival(clean, report_context):
-        return ''
-    clean = _rewrite_person_delivery_surface_phrase(clean, report_context)
-
-    sentences = _split_sentences(clean)
-    if len(sentences) <= 1:
-        return clean
-    successful_steps = _successful_non_report_steps(report_context)
-    if len(successful_steps) == 1 and any(_is_generic_completion_sentence(item) for item in sentences):
-        return ''
-    return clean
-
-
-def _uses_stale_intermediate_arrival(candidate: str, report_context: dict) -> bool:
-    if str(report_context.get('report_role', '')).strip().lower() != 'intermediate':
-        return False
-    lowered = str(candidate or '').strip().lower()
-    if 'arrived at' not in lowered and 'arrived to' not in lowered:
-        return False
-    navigation_steps = [
-        step for step in _successful_non_report_steps(report_context)
-        if str(step.get('name', '')).strip().lower() in {'navigate_to', 'walk_to'}
-    ]
-    if len(navigation_steps) <= 1:
-        return False
-    if 'first object' in lowered:
-        return True
-    latest_target = _latest_step_target(navigation_steps[-1], report_context)
-    if not latest_target:
-        return False
-    for step in navigation_steps[:-1]:
-        target = _latest_step_target(step, report_context)
-        if target and target != latest_target and target.lower() in lowered:
-            return True
-    return False
-
-
-def _rewrite_person_delivery_surface_phrase(candidate: str, report_context: dict) -> str:
-    person_labels = _person_delivery_destination_labels(report_context)
-    if not person_labels:
-        return candidate
-    rewritten = str(candidate or '').strip()
-    for label in sorted(person_labels, key=len, reverse=True):
-        escaped = re.escape(label)
-        rewritten = re.sub(
-            r'\b(?:placed|put)\s+(?P<object>[^.?!;]+?)\s+(?:on|onto)\s+(?P<label>%s)\b'
-            % escaped,
-            lambda match: (
-                'delivered %s to %s'
-                % (match.group('object').strip(), match.group('label').strip())
-            ),
-            rewritten,
-            flags=re.IGNORECASE,
-        )
-    return rewritten
-
-
-def _person_delivery_destination_labels(report_context: dict) -> set[str]:
-    entity_labels = _grounded_person_labels_by_id(report_context)
-    labels: set[str] = set()
-    for step in _successful_non_report_steps(report_context):
-        if str(step.get('name', '')).strip().lower() != 'place_object':
-            continue
-        destination_id = _step_destination_id(step)
-        if not destination_id:
-            continue
-        for label in entity_labels.get(destination_id, ()):
-            clean = str(label or '').strip()
-            if clean:
-                labels.add(clean)
-    return labels
-
-
-def _grounded_person_labels_by_id(report_context: dict) -> dict[str, set[str]]:
-    grounded_context = report_context.get('grounded_context', {})
-    if not isinstance(grounded_context, dict):
-        return {}
-    labels_by_id: dict[str, set[str]] = {}
-    for entity in grounded_context.get('entities', []):
-        if not isinstance(entity, dict):
-            continue
-        entity_id = str(entity.get('id', '')).strip()
-        if not entity_id or not _grounded_entity_is_person(entity):
-            continue
-        labels = {entity_id}
-        for key in ('label', 'name', 'display_name'):
-            value = str(entity.get(key, '')).strip()
-            if value:
-                labels.add(value)
-        for relation in entity.get('relations', []):
-            if not isinstance(relation, dict):
-                continue
-            predicate = str(relation.get('predicate', '')).strip().lower()
-            if predicate.endswith('name') or predicate in {'name', 'label'}:
-                value = str(relation.get('object', '')).strip()
-                if value:
-                    labels.add(value)
-        labels_by_id[entity_id] = labels
-    return labels_by_id
-
-
-def _grounded_entity_is_person(entity: dict) -> bool:
-    kind = str(entity.get('kind', '')).strip().lower()
-    entity_class = str(entity.get('class', '')).strip().lower()
-    if kind in {'person', 'human'} or entity_class in {'person', 'human'}:
-        return True
-    for relation in entity.get('relations', []):
-        if not isinstance(relation, dict):
-            continue
-        predicate = str(relation.get('predicate', '')).strip().lower()
-        value = str(relation.get('object', '')).strip().lower()
-        if predicate.endswith('type') and value in {'person', 'human', 'foaf:person'}:
-            return True
-    return False
-
-
-def _step_destination_id(step: dict) -> str:
-    for source in (step.get('args', {}), step.get('result_payload', {})):
-        if not isinstance(source, dict):
-            continue
-        destination = str(
-            source.get('destination')
-            or source.get('recipient')
-            or source.get('recipient_id')
-            or source.get('destination_id')
-            or ''
-        ).strip()
-        if destination:
-            return destination
-    return ''
-
-
-def _latest_step_target(step: dict, report_context: dict) -> str:
-    payload = step.get('result_payload', {})
-    if isinstance(payload, dict):
-        target = str(
-            payload.get('target')
-            or payload.get('object')
-            or payload.get('location')
-            or payload.get('target_frame')
-            or ''
-        ).strip()
-        if target:
-            return target
-    args = step.get('args', {})
-    if isinstance(args, dict):
-        target = str(
-            args.get('target')
-            or args.get('object')
-            or args.get('location')
-            or args.get('target_frame')
-            or ''
-        ).strip()
-        if target:
-            return target
-    latest_payload = report_context.get('latest_result_payload', {})
-    if isinstance(latest_payload, dict):
-        return str(
-            latest_payload.get('target')
-            or latest_payload.get('object')
-            or latest_payload.get('location')
-            or latest_payload.get('target_frame')
-            or ''
-        ).strip()
-    return ''
-
-
-def _successful_non_report_steps(report_context: dict) -> list[dict]:
-    return [
-        step
-        for step in report_context.get('steps', [])
-        if isinstance(step, dict)
-        and str(step.get('status', '')).strip().lower() == 'succeeded'
-        and str(step.get('name', '')).strip().lower() != 'report_result'
-    ]
-
-
-def _ordered_navigation_report(successful_steps: list[dict], report_context: dict) -> str:
-    goal_text = str(report_context.get('goal_text', '')).strip().lower()
-    if not any(marker in goal_text for marker in ('each object', 'every object', 'all objects')):
-        return ''
-    targets = []
-    for step in successful_steps:
-        if str(step.get('name', '')).strip().lower() not in {'navigate_to', 'walk_to'}:
-            continue
-        target = _latest_step_target(step, report_context)
-        if target and target not in targets:
-            targets.append(target)
-    if len(targets) < 2:
-        return ''
-    labels = [_friendly_target_label(target) for target in targets]
-    return 'I walked to %s and reported each arrival.' % _natural_join(labels)
-
-
-def _friendly_target_label(target: str) -> str:
-    clean = str(target or '').strip()
-    if not clean:
-        return 'the target'
-    lowered = clean.lower()
-    for prefix in ('codex_probe_', 'detected_', 'object_'):
-        if lowered.startswith(prefix):
-            clean = clean[len(prefix):]
-            break
-    return 'the %s' % clean.replace('_', ' ')
-
-
-def _natural_join(items: list[str]) -> str:
-    clean_items = [str(item or '').strip() for item in items if str(item or '').strip()]
-    if not clean_items:
-        return ''
-    if len(clean_items) == 1:
-        return clean_items[0]
-    if len(clean_items) == 2:
-        return '%s and %s' % (clean_items[0], clean_items[1])
-    return '%s, and %s' % (', '.join(clean_items[:-1]), clean_items[-1])
-
-
-def _is_placeholder_report_summary(text: str) -> bool:
-    lowered = str(text or '').strip().lower()
-    return any(
-        marker in lowered
-        for marker in (
-            'can report the current scene summary',
-            'can report current scene summary',
-            'can report what i observed',
-            'can report what i saw',
-            'can report it',
-            'will report back',
-            'will let you know',
-        )
-    )
-
-
-def _split_sentences(text: str) -> list[str]:
-    return [
-        item.strip()
-        for item in re.split(r'(?<=[.!?])\s+', str(text or '').strip())
-        if item.strip()
-    ]
-
-
-def _is_generic_completion_sentence(sentence: str) -> bool:
-    lowered = str(sentence or '').strip().lower()
-    return any(
-        marker in lowered
-        for marker in (
-            'completed the task',
-            'completed this task',
-            'completed the',
-            'have completed',
-            'i finished the task',
-            'i have finished the task',
-        )
-    )
-
-
-def _fallback_planner_dialogue_ack(dialogue_context: dict) -> str:
-    """Return bounded fallback wording without exposing planner/model prose."""
-    completion_context = dialogue_context.get('completion_context', {})
-    if isinstance(completion_context, dict):
-        completion_text = _fallback_planner_completion_ack(completion_context)
-        if completion_text:
-            return completion_text
-
-    act = str(dialogue_context.get('act', '')).strip().lower()
-    return {
-        'progress_update': 'I am working on it now.',
-        'ask_clarification': 'I need a bit more detail before I continue.',
-        'ask_for_help': 'I need help to continue this task.',
-        'explain_failure': 'I could not complete that task.',
-        'notify_completion': 'I finished that task.',
-        'notify_cancellation': 'Okay, I will stop working on that.',
-    }.get(act, '')
