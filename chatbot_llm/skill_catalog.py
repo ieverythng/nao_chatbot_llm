@@ -3,17 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import json
-from pathlib import Path
 
 from planner_common import ExportedSkillManifest
 from planner_common import load_exported_skill_manifests
 
 try:  # pragma: no cover - optional shared registry dependency
-    from skill_common import load_default_ab_registry
     from skill_common import load_default_registry as load_default_skill_registry
 except ImportError:  # pragma: no cover - keep exported-manifest fallback
-    load_default_ab_registry = None
     load_default_skill_registry = None
 
 
@@ -27,18 +23,7 @@ class SkillDescriptor:
     datatype: str
     description: str
     input_names: list[str]
-    required_params: list[str]
-    aliases: list[str]
     functional_domains: list[str]
-
-    def turn_state_entry(self) -> dict:
-        """Project registry metadata needed for deterministic IRR admission."""
-        return {
-            'name': self.skill_id,
-            'aliases': list(self.aliases),
-            'params': list(self.input_names),
-            'required_params': list(self.required_params),
-        }
 
 
 def parse_package_list(value: str) -> list[str]:
@@ -89,10 +74,15 @@ def build_skill_catalog_text(
 def build_skill_catalog_text_from_shared_registry(
     max_entries: int,
     max_chars: int,
-    registry_path: str = '',
 ) -> tuple[str, list[SkillDescriptor]]:
     """Build catalog text from skill_common when available."""
-    skills = _shared_skill_payloads(registry_path)
+    if load_default_skill_registry is None:
+        return '', []
+    try:
+        registry = load_default_skill_registry()
+        skills = list(getattr(registry, 'prompt_manifest', lambda: [])())
+    except Exception:
+        return '', []
 
     descriptors: list[SkillDescriptor] = []
     for item in skills:
@@ -109,8 +99,6 @@ def build_skill_catalog_text_from_shared_registry(
                     180,
                 ),
                 input_names=list(item.get('params', []) or []),
-                required_params=list(item.get('required_params', []) or []),
-                aliases=list(item.get('aliases', []) or []),
                 functional_domains=[str(item.get('category', '')).strip()],
             )
         )
@@ -123,18 +111,16 @@ def build_skill_catalog_text_from_shared_registry(
     lines = ['Available skills (skill_common):']
     for item in descriptors:
         inputs = ', '.join(item.input_names) if item.input_names else 'none'
-        required = ', '.join(item.required_params) if item.required_params else 'none'
         domains = ', '.join(item.functional_domains) if item.functional_domains else 'unspecified'
         description = item.description or 'no description'
         lines.append(
-            '- [{package}] {skill} -> {path} ({datatype}) | domains: {domains} | inputs: {inputs} | required: {required} | {desc}'.format(
+            '- [{package}] {skill} -> {path} ({datatype}) | domains: {domains} | inputs: {inputs} | {desc}'.format(
                 package=item.package,
                 skill=item.skill_id,
                 path=item.interface_path or '<unspecified>',
                 datatype=item.datatype,
                 domains=domains,
                 inputs=inputs,
-                required=required,
                 desc=description,
             )
         )
@@ -142,54 +128,6 @@ def build_skill_catalog_text_from_shared_registry(
     if max_chars > 0 and len(rendered) > max_chars:
         rendered = rendered[: max_chars - 3].rstrip() + '...'
     return rendered, descriptors
-
-
-def build_turn_state_skill_manifest(registry_path: str = '') -> list[dict]:
-    """Return the complete canonical manifest, independent of prompt truncation."""
-    return [
-        {
-            'name': str(item.get('name', '')).strip(),
-            'aliases': list(item.get('aliases', []) or []),
-            'params': list(item.get('params', []) or []),
-            'required_params': list(item.get('required_params', []) or []),
-        }
-        for item in _shared_skill_payloads(registry_path)
-        if str(item.get('name', '')).strip()
-    ]
-
-
-def _shared_skill_payloads(registry_path: str = '') -> list[dict]:
-    merged: dict[str, dict] = {}
-    if load_default_skill_registry is not None:
-        try:
-            registry = load_default_skill_registry()
-            for item in getattr(registry, 'prompt_manifest', lambda: [])():
-                if isinstance(item, dict) and str(item.get('name', '')).strip():
-                    merged[str(item['name']).strip()] = dict(item)
-        except Exception:
-            pass
-    if load_default_ab_registry is not None:
-        try:
-            planner_view = load_default_ab_registry().planner_view()
-            for item in planner_view.get('skills', []):
-                if not isinstance(item, dict) or not str(item.get('name', '')).strip():
-                    continue
-                name = str(item['name']).strip()
-                merged[name] = {**merged.get(name, {}), **item}
-        except Exception:
-            pass
-    overlay_path = Path(str(registry_path or '').strip()).expanduser()
-    if str(registry_path or '').strip() and overlay_path.exists():
-        try:
-            payload = json.loads(overlay_path.read_text(encoding='utf-8'))
-            for item in payload.get('skills', []):
-                if not isinstance(item, dict) or not str(item.get('name', '')).strip():
-                    continue
-                name = str(item['name']).strip()
-                merged[name] = {**merged.get(name, {}), **item}
-        except (OSError, ValueError, TypeError):
-            pass
-    return [merged[name] for name in sorted(merged)]
 
 
 def _descriptor_from_manifest(manifest: ExportedSkillManifest) -> SkillDescriptor:
@@ -200,8 +138,6 @@ def _descriptor_from_manifest(manifest: ExportedSkillManifest) -> SkillDescripto
         datatype=manifest.datatype,
         description=manifest.description,
         input_names=list(manifest.input_names),
-        required_params=list(getattr(manifest, 'required_params', []) or []),
-        aliases=list(getattr(manifest, 'aliases', []) or []),
         functional_domains=list(manifest.functional_domains),
     )
 

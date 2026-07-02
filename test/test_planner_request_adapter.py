@@ -2,6 +2,7 @@ import json
 
 from chatbot_llm.planner_request_adapter import build_planner_request_intent
 from chatbot_llm.planner_request_adapter import build_planner_request_payload
+from chatbot_llm.planner_request_adapter import normalize_goal_text
 from chatbot_llm.planner_request_adapter import should_route_intents_through_planner
 from chatbot_llm.planner_request_adapter import Intent
 from chatbot_llm.turn_engine import TurnExecutionResult
@@ -85,6 +86,35 @@ def test_build_planner_request_intent_encodes_expected_message_shape():
     assert payload['goal_id'] == 'goal_turn_2'
     assert payload['request_kind'] == 'new_goal'
     assert 'user_text' not in payload
+
+
+def test_build_planner_request_payload_preserves_intent_sequence_hints():
+    payload = build_planner_request_payload(
+        turn_id='turn_sequence',
+        user_text='move your head in all directions',
+        turn_result=_make_result(
+            intent='head_look_left',
+            user_intent={
+                'type': 'head_look_left',
+                'goal': 'move the head in all directions',
+                'intent_sequence': [
+                    'head_look_left',
+                    'head_look_right',
+                    'head_look_up',
+                    'head_look_down',
+                ],
+            },
+        ),
+        knowledge_context='',
+    )
+
+    assert payload['normalized_intents'] == [
+        'head_look_left',
+        'head_look_right',
+        'head_look_up',
+        'head_look_down',
+    ]
+    assert payload['goal_text'] == 'move the head in all directions'
 
 
 def test_build_planner_request_intent_uses_confidence_floor_for_execution_route():
@@ -242,6 +272,32 @@ def test_build_planner_request_payload_prefers_explicit_goal_text() -> None:
 
     assert payload['goal_text'] == 'inspect the cup and report completion'
     assert 'user_text' not in payload
+
+
+def test_normalize_goal_text_strips_leading_filler_and_trailing_punctuation() -> None:
+    assert (
+        normalize_goal_text('Can you now change the color of the book to purple!')
+        == 'change the color of the book to purple'
+    )
+    assert (
+        normalize_goal_text('Hey Pop, could you please look at the cup for me')
+        == 'look at the cup for me'
+    )
+    assert normalize_goal_text('inspect the cup and report completion') == (
+        'inspect the cup and report completion'
+    )
+    assert normalize_goal_text('') == ''
+
+
+def test_goal_text_fallback_normalizes_verbatim_user_text() -> None:
+    payload = build_planner_request_payload(
+        turn_id='turn_verbatim',
+        user_text='Can you now change the color of the book to purple!',
+        turn_result=_make_result(user_intent={'type': 'look_at'}),
+        knowledge_context='',
+    )
+
+    assert payload['goal_text'] == 'change the color of the book to purple'
 
 
 def test_build_planner_request_payload_ignores_plan_hints_from_chatbot_result():

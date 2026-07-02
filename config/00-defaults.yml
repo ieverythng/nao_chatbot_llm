@@ -17,7 +17,6 @@
     think: false
     response_max_tokens: 192
     intent_max_tokens: 64
-    irr_max_tokens: 384
     fallback_response: 'I am having trouble reaching my language model right now.'
     max_history_messages: 20
     scene_memory_turns: 4
@@ -53,16 +52,12 @@
     environment_description: 'No specific objects described.'
     identity_reminder_every_n_turns: 6
     intent_detection_mode: 'llm_with_rules_fallback'
+    turn_pipeline_mode: 'response_first'
     prompt_pack_path: ''
     use_skill_catalog: true
     skill_catalog_packages: 'communication_skills,nao_skills,kb_skills'
     skill_catalog_max_entries: 16
     skill_catalog_max_chars: 3000
-    skill_registry_path: ''
-    turn_pipeline_mode: 'response_first'
-    irr_turn_state_enabled: true
-    irr_canonical_guard_enabled: true
-    irr_subject_lookup_enabled: false
     knowledge_enabled: true
     knowledge_query_service_name: '/kb/query'
     knowledge_query_timeout_sec: 1.0

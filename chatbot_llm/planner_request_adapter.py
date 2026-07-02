@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 import json
+import re
 
 from kb_skills.intent_labels import KB_QUERY_INTENTS
 from chatbot_llm.prompt_pack import default_prompt_pack
@@ -273,14 +274,10 @@ def _extract_assistant_ack_text(payload: str, *, _depth: int = 0) -> str:
     return ''
 
 
-def _normalized_intents(intent_name: str) -> list[str]:
-    clean_intent = _normalize_token(intent_name)
-    return [clean_intent] if clean_intent else []
-
-
 def _normalized_intents_for_turn(turn_result) -> list[str]:
     user_intent = _turn_user_intent(turn_result)
     candidates = [
+        *_coerce_str_list(user_intent.get('intent_sequence')),
         user_intent.get('type', ''),
         getattr(turn_result, 'intent', ''),
     ]
@@ -313,8 +310,65 @@ def _goal_text_from_user_intent(user_intent: dict, *, user_text: str) -> str:
     for key in ('goal_text', 'goal', 'task'):
         clean_value = str(user_intent.get(key, '')).strip()
         if clean_value:
-            return clean_value
-    return str(user_text or '').strip()
+            return normalize_goal_text(clean_value)
+    return normalize_goal_text(str(user_text or '').strip())
+
+
+# Leading conversational filler stripped from goal statements. The chatbot prompt is the
+# primary owner of a concise goal_text; this is a deterministic safety net so a verbatim
+# utterance never leaks to the planner when the model omits or echoes the user phrasing.
+_GOAL_TEXT_LEADING_FILLER = (
+    'can you please',
+    'could you please',
+    'would you please',
+    'please can you',
+    'please could you',
+    'can you',
+    'could you',
+    'would you',
+    'will you',
+    'please',
+    'hey pop',
+    'hey',
+    'okay',
+    'ok',
+    'so',
+    'now',
+    'pop',
+)
+
+
+def normalize_goal_text(value: str) -> str:
+    """Strip leading politeness/filler and trailing noise from a goal statement.
+
+    Case and wording are preserved otherwise; this never tries to summarize meaning (that
+    remains the chatbot's job), it only removes the obvious verbatim cruft that confuses
+    the downstream planner.
+    """
+    text = str(value or '').strip().strip('"\'').strip()
+    if not text:
+        return ''
+
+    changed = True
+    while changed:
+        changed = False
+        if text and text[0] in ',.':
+            text = text.lstrip(',. ').strip()
+            changed = True
+            continue
+        lowered = text.lower()
+        for filler in _GOAL_TEXT_LEADING_FILLER:
+            if not lowered.startswith(filler):
+                continue
+            boundary = lowered[len(filler):len(filler) + 1]
+            if boundary in ('', ' ', ',', '.'):
+                text = text[len(filler):].lstrip(',. ').strip()
+                changed = True
+                break
+
+    text = re.sub(r'\s+', ' ', text).strip()
+    stripped_trailing = text.rstrip('!').strip()
+    return stripped_trailing or text
 
 
 def _planner_confidence(turn_result) -> float:

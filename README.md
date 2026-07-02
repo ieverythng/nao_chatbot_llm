@@ -76,20 +76,6 @@ Defaults live in `config/00-defaults.yml`.
   stage; default is `64`.
 - `intent_max_tokens`: forwarded to Ollama as `num_predict` for the intent
   stage; default is `64`.
-- `turn_pipeline_mode`: selects `response_first`, `intent_first`, or the
-  isolated one-call `atomic_irr` ablation. The default remains
-  `response_first` until paired live testing accepts a new default.
-- `irr_max_tokens`: generation cap for the internal `irr.v1` response.
-- `irr_turn_state_enabled`: supplies the model with deterministic `ts.v1`
-  context assembled from current turn evidence.
-- `irr_canonical_guard_enabled`: requires registry-declared skill arguments to
-  resolve to canonical entities before an execution turn can reach planner
-  admission.
-- `irr_subject_lookup_enabled`: optionally enriches the current snapshot for
-  unambiguous canonical subjects mentioned by the user. It defaults to false.
-- `skill_registry_path`: optional planner registry overlay used alongside the
-  shared `skill_common` registry. The integrated launch passes the same path to
-  chatbot and planner.
 - `planner_mode_enabled`
 - `planner_request_topic`
 - `planner_request_intent`
@@ -119,11 +105,3 @@ python3 -m pytest -q test/test_planner_request_adapter.py
 - Keep `planner_llm` as the planner/supervisor.
 - Keep `nao_orchestrator` as the executor.
 - Use `say` as a plan step when speech order matters.
-- `atomic_irr` returns response text on every user turn, but does not decide
-  whether or when the robot speaks. `dialogue_manager` remains the utterance
-  authority.
-- `planner_handoff.requested` is model evidence, not publication authority.
-  The deterministic route guard and existing planner publisher decide whether
-  a request is emitted.
-- Planner-completion, planner-dialogue, execution-report, and report-result
-  system turns stay on their existing wording paths and bypass `atomic_irr`.

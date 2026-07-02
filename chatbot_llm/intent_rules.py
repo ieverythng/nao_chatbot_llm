@@ -34,6 +34,7 @@ SUPPORTED_INTENTS = (
 )
 
 _FALLBACK_EXECUTION_SKILL_INTENTS = {
+    'bring_object',
     'perform_motion',
     'look_at',
     'scan',
@@ -41,8 +42,13 @@ _FALLBACK_EXECUTION_SKILL_INTENTS = {
     'find_object',
     'navigate_to',
     'inspect_area',
+    'pick_object',
+    'place_object',
     'walk_to',
     'wave_greet',
+    'kb_add',
+    'kb_revise',
+    'kb_remove',
 }
 
 INTENT_ALIASES = {
@@ -183,11 +189,32 @@ def normalize_intent(intent: str, default: str = 'fallback', hint_text: str = ''
 def detect_intent(text: str) -> str:
     """Infer one of the local canonical intents from free text."""
     lowered = text.lower()
+    if _looks_like_kb_mutation(lowered, ('add', 'remember', 'store', 'save')):
+        return 'kb_add'
+    if _looks_like_kb_mutation(lowered, ('revise', 'update', 'change', 'correct')):
+        return 'kb_revise'
+    if _looks_like_kb_mutation(lowered, ('remove', 'delete', 'forget', 'clear')):
+        return 'kb_remove'
     if _contains_any_phrase(
         lowered,
         ('navigate to', 'go to', 'move to', 'walk to'),
     ):
         return 'navigate_to'
+    if _contains_any_phrase(
+        lowered,
+        ('bring ', 'bring the', 'bring a', 'bring an', 'bring me'),
+    ):
+        return 'bring_object'
+    if _contains_any_phrase(
+        lowered,
+        ('pick up', 'pick the', 'pick a', 'pick an', 'grab the', 'grab a'),
+    ):
+        return 'pick_object'
+    if _contains_any_phrase(
+        lowered,
+        ('place ', 'put ', 'set down', 'drop off'),
+    ):
+        return 'place_object'
     if _contains_any_phrase(
         lowered,
         ('wave hello', 'wave at', 'please wave', 'greet with a wave', 'wave', 'wave to', 'wave at me'),
@@ -354,3 +381,46 @@ def _contains_any_phrase(text: str, phrases: tuple[str, ...]) -> bool:
         if re.search(pattern, text):
             return True
     return False
+
+
+def _looks_like_kb_mutation(text: str, verbs: tuple[str, ...]) -> bool:
+    clean = ' '.join(str(text or '').strip().lower().split())
+    if not clean:
+        return False
+    if _looks_like_kb_question(clean):
+        return False
+    if not any(re.search(r'\b%s\b' % re.escape(verb), clean) for verb in verbs):
+        return False
+    return any(
+        marker in clean
+        for marker in (
+            'knowledge base',
+            'kb',
+            'memory',
+            'remember that',
+            'forget that',
+            'rdf:type',
+            'dbp:',
+            'oro:',
+        )
+    )
+
+
+def _looks_like_kb_question(text: str) -> bool:
+    clean = ' '.join(str(text or '').strip().lower().split())
+    if not clean:
+        return False
+    normalized = ''.join(ch if ch.isalnum() or ch.isspace() else ' ' for ch in clean)
+    normalized = ' '.join(normalized.split())
+    return normalized.startswith(
+        (
+            'what do you remember',
+            'what can you remember',
+            'do you remember',
+            'what do you know',
+            'what is',
+            'what are',
+            'which',
+            'tell me what',
+        )
+    )

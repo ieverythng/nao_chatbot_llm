@@ -9,6 +9,26 @@ from dataclasses import dataclass
 from chatbot_llm.backend_config import ChatbotConfig
 
 
+_DIGEST_SUPPORT_CLASSES = frozenset(('counter', 'desk', 'shelf', 'surface', 'table'))
+_DIGEST_PLACE_CLASSES = frozenset(
+    ('corridor', 'kitchen', 'lab', 'location', 'place', 'robot station', 'room', 'station')
+)
+_DIGEST_NON_USER_OBJECT_CLASSES = frozenset(
+    (
+        'cyc spatial thing',
+        'cyc spatial thing localized',
+        'location',
+        'owl thing',
+        'place',
+        'room',
+        'spatial thing',
+        'spatial thing localized',
+        'support surface',
+        'table',
+    )
+)
+
+
 # ---------------------------------------------------------------------------
 # Role-scoped snapshot settings
 # ---------------------------------------------------------------------------
@@ -163,17 +183,422 @@ def build_scene_context(
     return '\n\n'.join(sections).strip()
 
 
-def build_grounded_context_block(grounded_context: dict) -> str:
-    """Serialize compact grounded context exactly as the chatbot/planner contract."""
+def build_grounded_context_block(
+    grounded_context: dict,
+    *,
+    max_entities: int | None = None,
+) -> str:
+    """Serialize compact grounded context exactly as the chatbot/planner contract.
+
+    The grounded-context contract itself is never mutated; ``max_entities`` only caps the
+    LLM-facing serialization (visible entities first) so a very large live scene cannot
+    flood the prompt. Authoritative counts always live in the scene digest above the block.
+    """
     payload = dict(grounded_context or {})
     if not payload:
         return ''
-    return 'Grounded context JSON:\n```json\n%s\n```' % json.dumps(
-        payload,
-        ensure_ascii=True,
-        indent=2,
-        sort_keys=True,
+
+    truncation_note = ''
+    entities = payload.get('entities')
+    if (
+        max_entities is not None
+        and max_entities > 0
+        and isinstance(entities, list)
+        and len(entities) > max_entities
+    ):
+        visible_first = sorted(
+            entities,
+            key=lambda item: 0
+            if isinstance(item, dict) and coerce_visible(item.get('visible', True))
+            else 1,
+        )
+        payload['entities'] = visible_first[:max_entities]
+        truncation_note = (
+            '\n(Showing %d of %d entities; see the scene digest above for full counts.)'
+            % (max_entities, len(entities))
+        )
+
+    return 'Grounded context JSON:\n```json\n%s\n```%s' % (
+        json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True),
+        truncation_note,
     )
+
+
+# ---------------------------------------------------------------------------
+# Deterministic scene digest (derived view over the grounded-context contract)
+# ---------------------------------------------------------------------------
+
+_SCENE_DIGEST_MAX_PEOPLE = 8
+_SCENE_DIGEST_MAX_OBJECT_CLASSES = 12
+_SCENE_DIGEST_MAX_ATTRS_PER_CLASS = 8
+
+
+def build_scene_digest(grounded_context: dict) -> str:
+    """Build an authoritative, deterministic scene summary from the live grounded context.
+
+    This is a derived view layered on top of the grounded-context contract (which is left
+    untouched). It gives the model a pre-counted, attribute-qualified inventory so it
+    cannot under- or over-count, or invent scene facts, under long-context pressure.
+
+    The digest is recomputed every turn from the current entities, so KB mutations
+    (``kb/revise`` updates, ``kb/remove`` retractions) are reflected on the next turn with
+    no caching: removed entities disappear, revised colours/relations re-qualify the label.
+    """
+    entities = _digest_entities(grounded_context)
+    locations = _digest_locations(grounded_context, entities)
+    if not entities and not locations:
+        return ''
+
+    people = [item for item in entities if _digest_kind(item) == 'person']
+    objects = [
+        item for item in entities
+        if _digest_kind(item) != 'person' and _is_user_facing_digest_object(item)
+    ]
+
+    body = [
+        line
+        for line in (
+            _digest_people_line(people),
+            _digest_objects_line(objects),
+            _digest_locations_line(locations),
+        )
+        if line
+    ]
+    if not body:
+        return ''
+
+    header = (
+        'Scene digest (authoritative for this turn; derived live from the grounded '
+        'context. Trust these counts and this inventory over manual counting):'
+    )
+    return '\n'.join([header, *('- %s' % line for line in body)])
+
+
+def _digest_entities(grounded_context: dict) -> list[dict]:
+    if not isinstance(grounded_context, dict):
+        return []
+    raw_entities = grounded_context.get('entities', [])
+    if not isinstance(raw_entities, list):
+        return []
+    by_id: dict[str, dict] = {}
+    anonymous: list[dict] = []
+    for item in raw_entities:
+        if not isinstance(item, dict) or not coerce_visible(item.get('visible', True)):
+            continue
+        entity_id = str(item.get('id', '')).strip()
+        if not entity_id:
+            anonymous.append(item)
+            continue
+        if entity_id not in by_id:
+            by_id[entity_id] = dict(item)
+            continue
+        by_id[entity_id] = _merge_digest_entity(by_id[entity_id], item)
+    return [*by_id.values(), *anonymous]
+
+
+def _merge_digest_entity(base: dict, candidate: dict) -> dict:
+    merged = dict(base)
+    for key in ('label', 'kind', 'class'):
+        if (
+            not str(merged.get(key, '') or '').strip()
+            and str(candidate.get(key, '') or '').strip()
+        ):
+            merged[key] = candidate.get(key)
+    merged['visible'] = True
+    merged['relations'] = _unique_relations(
+        list(base.get('relations', []) if isinstance(base.get('relations'), list) else [])
+        + list(
+            candidate.get('relations', [])
+            if isinstance(candidate.get('relations'), list)
+            else []
+        )
+    )
+    return merged
+
+
+def _unique_relations(relations: list) -> list[dict]:
+    unique: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for relation in relations:
+        if not isinstance(relation, dict):
+            continue
+        predicate = str(relation.get('predicate', relation.get('p', ''))).strip()
+        obj = str(relation.get('object', relation.get('o', ''))).strip()
+        key = (predicate.lower(), obj)
+        if not predicate or not obj or key in seen:
+            continue
+        seen.add(key)
+        unique.append(dict(relation))
+    return unique
+
+
+def _digest_kind(entity: dict) -> str:
+    return str(entity.get('kind', '')).strip().lower()
+
+
+def _digest_people_line(people: list[dict]) -> str:
+    if not people:
+        return 'People (0): none currently grounded'
+    names = _unique_preserving_order(_digest_entity_name(item) for item in people)
+    shown = names[:_SCENE_DIGEST_MAX_PEOPLE]
+    suffix = ', ...' if len(names) > _SCENE_DIGEST_MAX_PEOPLE else ''
+    return 'People (%d): %s%s' % (len(people), ', '.join(shown), suffix)
+
+
+def _digest_objects_line(objects: list[dict]) -> str:
+    if not objects:
+        return 'Objects (0): none currently grounded'
+
+    counts: dict[str, int] = {}
+    attributes: dict[str, list[str]] = {}
+    order: list[str] = []
+    for entity in objects:
+        class_label = _digest_class_label(entity) or 'object'
+        if class_label not in counts:
+            counts[class_label] = 0
+            attributes[class_label] = []
+            order.append(class_label)
+        counts[class_label] += 1
+        attribute = _digest_object_attribute(entity)
+        if attribute:
+            attributes[class_label].append(attribute)
+
+    parts: list[str] = []
+    for class_label in order[:_SCENE_DIGEST_MAX_OBJECT_CLASSES]:
+        attrs = _unique_preserving_order(attributes[class_label])
+        attr_text = ''
+        if attrs:
+            shown_attrs = attrs[:_SCENE_DIGEST_MAX_ATTRS_PER_CLASS]
+            more = ', ...' if len(attrs) > _SCENE_DIGEST_MAX_ATTRS_PER_CLASS else ''
+            attr_text = ' [%s%s]' % (', '.join(shown_attrs), more)
+        parts.append('%s x%d%s' % (class_label, counts[class_label], attr_text))
+
+    more_classes = '; ...' if len(order) > _SCENE_DIGEST_MAX_OBJECT_CLASSES else ''
+    return 'Objects (%d): %s%s' % (len(objects), '; '.join(parts), more_classes)
+
+
+def _digest_object_attribute(entity: dict) -> str:
+    attributes: list[str] = []
+    name = _digest_relation_object(entity, ('dbp:name', 'name'))
+    if name:
+        attributes.append('named %s' % _humanize_value(name))
+    color = _digest_relation_object(entity, ('dbp:color', 'color'))
+    if color:
+        attributes.append(_normalized_identifier(color))
+    support = _digest_support_phrase(entity)
+    if support:
+        attributes.append(support)
+    return ', '.join(_unique_preserving_order(attributes))
+
+
+def _digest_locations(grounded_context: dict, entities: list[dict]) -> list[dict]:
+    if not isinstance(grounded_context, dict):
+        return []
+    raw_locations = grounded_context.get('locations', grounded_context.get('location_groups', []))
+    if isinstance(raw_locations, list) and raw_locations:
+        return [
+            _filter_digest_location(item)
+            for item in raw_locations
+            if isinstance(item, dict)
+        ]
+    return _derive_digest_locations(entities)
+
+
+def _derive_digest_locations(entities: list[dict]) -> list[dict]:
+    entity_index = {
+        str(entity.get('id', '')).strip(): entity
+        for entity in entities
+        if isinstance(entity, dict) and str(entity.get('id', '')).strip()
+    }
+    groups: dict[str, dict] = {}
+    for entity in entities:
+        entity_id = str(entity.get('id', '')).strip()
+        if not entity_id:
+            continue
+        for relation in entity.get('relations', []):
+            if not isinstance(relation, dict):
+                continue
+            predicate = str(relation.get('predicate', relation.get('p', ''))).strip()
+            predicate_key = predicate.lower().replace('_', '')
+            obj = str(relation.get('object', relation.get('o', ''))).strip()
+            if not obj:
+                continue
+            if predicate_key in {'oro:isat', 'oro:ison', 'oro:isin'}:
+                if not _is_user_facing_digest_object(entity):
+                    continue
+                group = groups.setdefault(
+                    obj,
+                    {
+                        'id': obj,
+                        'label': _digest_entity_name(entity_index.get(obj, {'id': obj})),
+                        'contains': [],
+                    },
+                )
+                _add_digest_location_member(group, entity, predicate)
+            elif predicate_key == 'oro:contains':
+                group = groups.setdefault(
+                    entity_id,
+                    {
+                        'id': entity_id,
+                        'label': _digest_entity_name(entity),
+                        'contains': [],
+                    },
+                )
+                _add_digest_location_member(
+                    group,
+                    entity_index.get(obj, {'id': obj}),
+                    predicate,
+                )
+    return sorted(groups.values(), key=lambda item: str(item.get('label') or item.get('id', '')))
+
+
+def _add_digest_location_member(group: dict, entity: dict, relation: str) -> None:
+    member_id = str(entity.get('id', '')).strip()
+    if not member_id or member_id == str(group.get('id', '')).strip():
+        return
+    if not _is_user_facing_digest_object(entity):
+        return
+    member = {
+        'id': member_id,
+        'label': _digest_entity_name(entity),
+        'kind': _digest_kind(entity) or 'object',
+        'class': str(entity.get('class', '')).strip(),
+        'relation': str(relation or '').strip(),
+    }
+    contains = group.setdefault('contains', [])
+    if not any(item.get('id') == member_id for item in contains if isinstance(item, dict)):
+        contains.append(member)
+
+
+def _filter_digest_location(location: dict) -> dict:
+    filtered = dict(location)
+    members = location.get('contains', location.get('members', []))
+    if not isinstance(members, list):
+        filtered['contains'] = []
+        return filtered
+    filtered['contains'] = [
+        dict(member) for member in members
+        if isinstance(member, dict) and _is_user_facing_digest_object(member)
+    ]
+    return filtered
+
+
+def _is_user_facing_digest_object(entity: dict) -> bool:
+    """Return true for objects that should appear in user-facing scene digests."""
+    if not isinstance(entity, dict) or not entity:
+        return False
+    kind = _digest_kind(entity)
+    if kind and kind != 'object':
+        return False
+    class_token = _digest_class_token(entity.get('class', ''))
+    if class_token in _DIGEST_NON_USER_OBJECT_CLASSES:
+        return False
+    if class_token in _DIGEST_SUPPORT_CLASSES or class_token in _DIGEST_PLACE_CLASSES:
+        return False
+    for relation in entity.get('relations', []):
+        if not isinstance(relation, dict):
+            continue
+        predicate = str(relation.get('predicate', relation.get('p', ''))).strip().lower()
+        if predicate != 'rdf:type':
+            continue
+        relation_class = _digest_class_token(relation.get('object', relation.get('o', '')))
+        if relation_class in _DIGEST_NON_USER_OBJECT_CLASSES:
+            return False
+        if relation_class in _DIGEST_SUPPORT_CLASSES or relation_class in _DIGEST_PLACE_CLASSES:
+            return False
+    return True
+
+
+def _digest_class_token(value) -> str:
+    return _humanize_value(value).strip().lower()
+
+
+def _digest_locations_line(locations: list[dict]) -> str:
+    if not locations:
+        return ''
+    parts: list[str] = []
+    for location in locations[:_SCENE_DIGEST_MAX_OBJECT_CLASSES]:
+        if not isinstance(location, dict):
+            continue
+        members = location.get('contains', location.get('members', []))
+        if not isinstance(members, list) or not members:
+            continue
+        member_names = []
+        for member in members[:_SCENE_DIGEST_MAX_ATTRS_PER_CLASS]:
+            if isinstance(member, dict):
+                member_names.append(
+                    _humanize_value(
+                        member.get('label', member.get('id', 'unknown object'))
+                    )
+                )
+            else:
+                member_names.append(_humanize_value(member))
+        if not member_names:
+            continue
+        more = ', ...' if len(members) > _SCENE_DIGEST_MAX_ATTRS_PER_CLASS else ''
+        location_name = _humanize_value(
+            location.get('label', location.get('id', 'unknown location'))
+        )
+        parts.append('%s contains %s%s' % (location_name, ', '.join(member_names), more))
+    if not parts:
+        return ''
+    more_locations = '; ...' if len(locations) > _SCENE_DIGEST_MAX_OBJECT_CLASSES else ''
+    return 'Locations: %s%s' % ('; '.join(parts), more_locations)
+
+
+def _digest_support_phrase(entity: dict) -> str:
+    for predicate_key, prefix in (
+        ('oro:ison', 'on'),
+        ('oro:isat', 'at'),
+        ('oro:isin', 'in'),
+        ('oro:contains', 'contains'),
+    ):
+        obj = _digest_relation_object(entity, (predicate_key,))
+        if obj:
+            return '%s %s' % (prefix, _humanize_value(obj))
+    return ''
+
+
+def _digest_relation_object(entity: dict, predicate_keys) -> str:
+    relations = entity.get('relations', [])
+    if not isinstance(relations, list):
+        return ''
+    wanted = {str(key).strip().lower() for key in predicate_keys}
+    for relation in relations:
+        if not isinstance(relation, dict):
+            continue
+        predicate = str(relation.get('predicate', relation.get('p', ''))).strip().lower()
+        if predicate in wanted:
+            obj = str(relation.get('object', relation.get('o', ''))).strip()
+            if obj:
+                return obj
+    return ''
+
+
+def _digest_entity_name(entity: dict) -> str:
+    name = _digest_relation_object(entity, ('dbp:name', 'name'))
+    if name:
+        return _humanize_value(name)
+    label = str(entity.get('label', '') or '').strip()
+    if label:
+        return _humanize_value(label)
+    identifier = str(entity.get('id', '')).strip()
+    return identifier or 'unknown'
+
+
+def _digest_class_label(entity: dict) -> str:
+    class_value = str(entity.get('class', '')).strip()
+    if class_value:
+        return _display_type(class_value).lower()
+    label = str(entity.get('label', '') or '').strip()
+    if label:
+        return _humanize_value(label).lower()
+    return ''
+
+
+def coerce_visible(value) -> bool:
+    """Coerce a grounded-context ``visible`` flag, defaulting to visible."""
+    return _coerce_bool(value, True)
 
 
 def extract_scene_memory_entry(snapshot: str) -> str:
@@ -186,14 +611,6 @@ def extract_scene_memory_entry(snapshot: str) -> str:
             clean_line = clean_line[2:].strip()
         return clean_line
     return ''
-
-
-def _first_non_empty_value(payload: dict, *keys: str, fallback: str = '') -> str:
-    for key in keys:
-        value = str(payload.get(key, '')).strip()
-        if value:
-            return value
-    return str(fallback or '').strip()
 
 
 # ---------------------------------------------------------------------------
