@@ -59,6 +59,7 @@ def make_config() -> ChatbotConfig:
         planner_request_topic='/planner/request',
         planner_request_intent='planner_request',
         planner_scene_summary_topic='/scene/summary',
+        grounded_context_digest_enabled=True,
         grounded_context_include_state_t0=False,
         turn_trace_enabled=True,
         turn_trace_topic='/chatbot_llm/turn_trace',
@@ -456,6 +457,112 @@ def test_build_scene_digest_filters_meta_support_and_people_from_location_member
     assert 'localized marker' not in digest
     assert 'work table x' not in digest.lower()
     assert 'contains ALEX' not in digest
+
+
+def test_build_scene_digest_does_not_promote_people_or_objects_to_locations():
+    digest = build_scene_digest(
+        {
+            'entities': [
+                {
+                    'id': 'anonymous_person_dcdbc',
+                    'label': 'anonymous_person_dcdbc',
+                    'kind': 'person',
+                    'class': 'Human',
+                    'visible': True,
+                },
+                {
+                    'id': 'book_nwred',
+                    'label': 'book',
+                    'kind': 'object',
+                    'class': 'Book',
+                    'visible': True,
+                    'relations': [
+                        {'predicate': 'oro:isAt', 'object': 'anonymous_person_dcdbc'},
+                        {'predicate': 'oro:contains', 'object': 'anonymous_person_dcdbc'},
+                    ],
+                },
+                {
+                    'id': 'cup_ohjps',
+                    'label': 'cup',
+                    'kind': 'object',
+                    'class': 'Tableware',
+                    'visible': True,
+                    'relations': [
+                        {'predicate': 'oro:contains', 'object': 'anonymous_person_dcdbc'},
+                    ],
+                },
+            ],
+            'locations': [
+                {
+                    'id': 'book_nwred',
+                    'label': 'book',
+                    'class': 'Book',
+                    'contains': [
+                        {
+                            'id': 'anonymous_person_dcdbc',
+                            'label': 'anonymous_person_dcdbc',
+                            'kind': 'object',
+                            'relation': 'oro:contains',
+                        }
+                    ],
+                },
+                {
+                    'id': 'anonymous_person_dcdbc',
+                    'label': 'anonymous_person_dcdbc',
+                    'class': 'Human',
+                    'contains': [
+                        {
+                            'id': 'book_nwred',
+                            'label': 'book',
+                            'kind': 'object',
+                            'class': 'Book',
+                            'relation': 'oro:isAt',
+                        }
+                    ],
+                },
+            ],
+        }
+    )
+
+    assert 'Locations:' not in digest
+    assert 'book contains' not in digest
+    assert 'anonymous person dcdbc contains' not in digest
+
+
+def test_build_scene_digest_keeps_objects_with_domain_and_spatial_rdf_types():
+    digest = build_scene_digest(
+        {
+            'entities': [
+                {
+                    'id': 'codex_probe_cup',
+                    'label': 'cup',
+                    'kind': 'object',
+                    'class': 'Cup',
+                    'visible': True,
+                    'relations': [
+                        {'predicate': 'rdf:type', 'object': 'cyc:SpatialThing-Localized'},
+                        {'predicate': 'rdf:type', 'object': 'Cup'},
+                        {'predicate': 'dbp:name', 'object': 'TITAS'},
+                    ],
+                },
+                {
+                    'id': 'codex_probe_book',
+                    'label': 'book',
+                    'kind': 'object',
+                    'class': '',
+                    'visible': True,
+                    'relations': [
+                        {'predicate': 'rdf:type', 'object': 'cyc:SpatialThing-Localized'},
+                        {'predicate': 'rdf:type', 'object': 'Book'},
+                    ],
+                },
+            ],
+        }
+    )
+
+    assert 'Objects (2):' in digest
+    assert 'cup x1 [named TITAS]' in digest
+    assert 'book x1' in digest
 
 
 def test_build_scene_digest_filters_compact_location_members():

@@ -63,6 +63,7 @@ class ChatbotConfig:
     planner_request_topic: str
     planner_request_intent: str
     planner_scene_summary_topic: str
+    grounded_context_digest_enabled: bool
     grounded_context_include_state_t0: bool
     turn_trace_enabled: bool
     turn_trace_topic: str
@@ -128,6 +129,7 @@ def declare_backend_parameters(node) -> None:
     node.declare_parameter('planner_request_topic', '/planner/request')
     node.declare_parameter('planner_request_intent', 'planner_request')
     node.declare_parameter('planner_scene_summary_topic', '/scene/summary')
+    node.declare_parameter('grounded_context_digest_enabled', True)
     node.declare_parameter('grounded_context_include_state_t0', False)
     node.declare_parameter('turn_trace_enabled', True)
     node.declare_parameter('turn_trace_topic', '/chatbot_llm/turn_trace')
@@ -288,6 +290,9 @@ def load_backend_config(node) -> ChatbotConfig:
             node.get_parameter('planner_scene_summary_topic').value
         ).strip()
         or '/scene/summary',
+        grounded_context_digest_enabled=as_bool(
+            node.get_parameter('grounded_context_digest_enabled').value
+        ),
         grounded_context_include_state_t0=as_bool(
             node.get_parameter('grounded_context_include_state_t0').value
         ),

@@ -114,6 +114,7 @@ _EXECUTION_REPORT_KEYS = (
     'steps',
     'latest_result_summary',
     'latest_result_payload',
+    'plan_outcome_summary',
 )
 
 
@@ -330,6 +331,9 @@ def _extract_execution_report_context(payload: str) -> dict:
         'latest_result_summary': str(context.get('latest_result_summary', '')).strip(),
         'latest_result_payload': context.get('latest_result_payload', {})
         if isinstance(context.get('latest_result_payload', {}), dict)
+        else {},
+        'plan_outcome_summary': context.get('plan_outcome_summary', {})
+        if isinstance(context.get('plan_outcome_summary', {}), dict)
         else {},
     }
     if not any(normalized.get(key) for key in _EXECUTION_REPORT_KEYS):

@@ -74,6 +74,7 @@ def make_config(
         planner_request_topic='/planner/request',
         planner_request_intent='planner_request',
         planner_scene_summary_topic='/scene/summary',
+        grounded_context_digest_enabled=True,
         grounded_context_include_state_t0=False,
         turn_trace_enabled=True,
         turn_trace_topic='/chatbot_llm/turn_trace',
@@ -1304,6 +1305,140 @@ def test_turn_engine_execution_report_fallback_synthesizes_multi_object_chain():
     assert result.intent_source == 'execution_report'
     assert result.verbal_ack == (
         'I walked to the apple, the book, and the phone and reported each arrival.'
+    )
+
+
+def test_turn_engine_execution_report_uses_outcome_summary_for_multi_bring():
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='rules'),
+        transport=FakeTransport(
+            [
+                '{"verbal_ack":"I have brought codex_lab_phone to codex_lab_alex."}',
+            ]
+        ),
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text=(
+            '{"execution_report":{"goal_text":"Bring every object from the work table '
+            'to ALEX and report what happened.",'
+            '"report_role":"final",'
+            '"latest_result_summary":"I brought codex_lab_phone to codex_lab_alex.",'
+            '"latest_result_payload":{"recipient":"codex_lab_alex"},'
+            '"plan_outcome_summary":{'
+            '"completed_targets":["codex_lab_cup","codex_lab_manual","codex_lab_phone"],'
+            '"failed_targets":[],"pending_targets":[],'
+            '"all_required_steps_succeeded":true},'
+            '"steps":[{"name":"bring_object","status":"succeeded",'
+            '"args":{"object_id":"codex_lab_cup","recipient":"codex_lab_alex"},'
+            '"result_summary":"I brought codex_lab_cup to codex_lab_alex."},'
+            '{"name":"bring_object","status":"succeeded",'
+            '"args":{"object_id":"codex_lab_manual","recipient":"codex_lab_alex"},'
+            '"result_summary":"I brought codex_lab_manual to codex_lab_alex."},'
+            '{"name":"bring_object","status":"succeeded",'
+            '"args":{"object_id":"codex_lab_phone","recipient":"codex_lab_alex"},'
+            '"result_summary":"I brought codex_lab_phone to codex_lab_alex."}]}}'
+        ),
+        history=[],
+        user_id='__system__',
+    )
+
+    assert result.intent_source == 'execution_report'
+    assert result.verbal_ack == (
+        'I brought the cup, the manual, and the phone to ALEX.'
+    )
+
+
+def test_turn_engine_execution_report_does_not_complete_delivery_recipient():
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='rules'),
+        transport=FakeTransport(
+            [
+                (
+                    '{"verbal_ack":"I completed the cup wsgzv, the phone msbqb, '
+                    'and the anonymous person jdjbc."}'
+                ),
+            ]
+        ),
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text=(
+            '{"execution_report":{"goal_text":"Bring every object in view to the person '
+            'and report what happened.",'
+            '"report_role":"final",'
+            '"latest_result_summary":"I brought phone_msbqb to anonymous_person_jdjbc.",'
+            '"latest_result_payload":{"recipient":"anonymous_person_jdjbc"},'
+            '"plan_outcome_summary":{'
+            '"completed_targets":["anonymous_person_jdjbc","cup_wsgzv","phone_msbqb"],'
+            '"failed_targets":[],"pending_targets":[],'
+            '"all_required_steps_succeeded":true},'
+            '"steps":[{"name":"navigate_to","status":"succeeded",'
+            '"args":{"target":"anonymous_person_jdjbc"},'
+            '"result_summary":"I completed destination navigation to anonymous_person_jdjbc."},'
+            '{"name":"bring_object","status":"succeeded",'
+            '"args":{"object_id":"cup_wsgzv","recipient":"anonymous_person_jdjbc"},'
+            '"result_summary":"I brought cup_wsgzv to anonymous_person_jdjbc."},'
+            '{"name":"bring_object","status":"succeeded",'
+            '"args":{"object_id":"phone_msbqb","recipient":"anonymous_person_jdjbc"},'
+            '"result_summary":"I brought phone_msbqb to anonymous_person_jdjbc."}]}}'
+        ),
+        history=[],
+        user_id='__system__',
+    )
+
+    assert result.intent_source == 'execution_report'
+    assert result.verbal_ack == (
+        'I brought the cup wsgzv and the phone msbqb to the person.'
+    )
+
+
+def test_turn_engine_execution_report_uses_steps_when_goal_text_is_clarification():
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='rules'),
+        transport=FakeTransport(
+            [
+                (
+                    '{"verbal_ack":"I completed the cup sisyf, the cup zwlrv, '
+                    'and the anonymous person cjfba."}'
+                ),
+            ]
+        ),
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text=(
+            '{"execution_report":{"goal_text":"Person cjfba!",'
+            '"report_role":"final",'
+            '"latest_result_summary":"I brought cup_zwlrv to anonymous_person_cjfba.",'
+            '"latest_result_payload":{"recipient":"anonymous_person_cjfba"},'
+            '"plan_outcome_summary":{'
+            '"completed_targets":["cup_sisyf","cup_zwlrv","anonymous_person_cjfba"],'
+            '"failed_targets":[],"pending_targets":[],'
+            '"all_required_steps_succeeded":true},'
+            '"steps":[{"name":"navigate_to","status":"succeeded",'
+            '"args":{"target":"anonymous_person_cjfba"},'
+            '"result_summary":"I completed destination navigation to anonymous_person_cjfba."},'
+            '{"name":"bring_object","status":"succeeded",'
+            '"args":{"object_id":"cup_sisyf","recipient":"anonymous_person_cjfba"},'
+            '"result_summary":"I brought cup_sisyf to anonymous_person_cjfba."},'
+            '{"name":"bring_object","status":"succeeded",'
+            '"args":{"object_id":"cup_zwlrv","recipient":"anonymous_person_cjfba"},'
+            '"result_summary":"I brought cup_zwlrv to anonymous_person_cjfba."}]}}'
+        ),
+        history=[],
+        user_id='__system__',
+    )
+
+    assert result.intent_source == 'execution_report'
+    assert result.verbal_ack == (
+        'I brought the cup sisyf and the cup zwlrv to the person.'
     )
 
 

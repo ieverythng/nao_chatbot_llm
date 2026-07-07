@@ -27,6 +27,7 @@ from chatbot_llm.knowledge_snapshot import resolve_knowledge_snapshot_settings
 from chatbot_llm.knowledge_snapshot_client import KnowledgeSnapshotClient
 from chatbot_llm.ollama_transport import OllamaTransport
 from chatbot_llm.planner_handoff import PlannerHandoff
+from chatbot_llm.planner_request_adapter import dialogue_turn_id
 from chatbot_llm.skill_catalog import build_skill_catalog_text
 from chatbot_llm.skill_catalog import build_skill_catalog_text_from_shared_registry
 from chatbot_llm.turn_engine import DialogueTurnEngine
@@ -204,7 +205,11 @@ class LLMChatbot(Node):
             session.last_user_id = user_id
             self._session = session
 
-        turn_id = '%s:%d' % (session.role_name, session.request_count + 1)
+        turn_id = dialogue_turn_id(
+            session.role_name,
+            dialogue_id,
+            session.request_count + 1,
+        )
         self.get_logger().info(
             '[CHATBOT] dialogue=%s user=%s turn=%s input=%s'
             % (
@@ -230,7 +235,9 @@ class LLMChatbot(Node):
                 current_snapshot,
                 knowledge_rows=current_snapshot_rows,
             )
-        scene_digest = build_scene_digest(grounded_context)
+        scene_digest = ''
+        if self._config.grounded_context_digest_enabled:
+            scene_digest = build_scene_digest(grounded_context)
         grounded_context_block = build_grounded_context_block(
             grounded_context,
             max_entities=_GROUNDED_BLOCK_MAX_ENTITIES,

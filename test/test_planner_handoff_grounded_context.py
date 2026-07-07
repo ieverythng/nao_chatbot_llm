@@ -115,7 +115,13 @@ def test_handoff_source_payload_projects_to_compact_llm_grounded_context() -> No
 
     compact = project_llm_grounded_context(source_context)
 
-    assert set(compact) == {'entities'}
+    assert set(compact) == {'entities', 'counts'}
+    assert compact['counts'] == {
+        'entities': 2,
+        'people': 1,
+        'objects': 1,
+        'locations': 0,
+    }
     assert compact['entities'] == [
         {
             'id': 'cup_1',
@@ -126,7 +132,7 @@ def test_handoff_source_payload_projects_to_compact_llm_grounded_context() -> No
         },
         {
             'id': 'person_1',
-            'label': 'person',
+            'label': 'person_1',
             'kind': 'person',
             'class': 'Person',
             'visible': True,
@@ -174,6 +180,10 @@ def test_handoff_grounded_context_forwards_knowledge_rows() -> None:
         {
             'id': 'table_1',
             'label': 'table_1',
+            'role': 'support_group',
+            'member_count': 1,
+            'object_count': 1,
+            'person_count': 0,
             'contains': [
                 {
                     'id': 'cup_1',

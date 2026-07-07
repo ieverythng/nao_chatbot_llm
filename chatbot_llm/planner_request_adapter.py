@@ -13,6 +13,7 @@ from planner_common import PlannerRequest
 from planner_common import extract_json_object
 from planner_common import IntentLabels
 from planner_common import is_perform_motion_object_label
+from planner_common import make_goal_id
 from planner_common import normalize_grounded_context
 from planner_common import project_llm_grounded_context
 
@@ -425,6 +426,15 @@ def _grounded_context_payload(
     return project_llm_grounded_context(payload)
 
 
+def dialogue_turn_id(role_name: str, dialogue_id: tuple[int, ...] | None, request_count: int) -> str:
+    """Build a planner-visible turn id scoped to one dialogue session."""
+    return '%s:%s:%d' % (
+        str(role_name or '__default__').strip() or '__default__',
+        _short_uuid(dialogue_id),
+        max(1, int(request_count or 1)),
+    )
+
+
 def _resolved_request_kind(user_intent: dict, resolved_intent: str) -> str:
     explicit_kind = _normalize_token(user_intent.get('request_kind', ''))
     if explicit_kind in PLANNER_REQUEST_KINDS:
@@ -456,9 +466,15 @@ def _resolved_goal_id(
             char if char.isalnum() or char in ('_', '-') else '_'
             for char in clean_turn_id
         ).strip('_')
-        if normalized_turn_id:
+        if normalized_turn_id and not _is_local_dialogue_turn_id(normalized_turn_id):
             return 'goal_%s' % normalized_turn_id
-    return 'goal_unknown'
+    return make_goal_id()
+
+
+def _is_local_dialogue_turn_id(value: str) -> bool:
+    """Return true for ids that are not globally useful outside one dialogue."""
+    normalized = str(value or '').strip().lower()
+    return normalized in {'default', '__default__'}
 
 
 def _resolved_supersedes_goal_id(
@@ -478,6 +494,12 @@ def _resolved_supersedes_goal_id(
     if clean_active_goal_id and clean_active_goal_id != clean_goal_id:
         return clean_active_goal_id
     return ''
+
+
+def _short_uuid(dialogue_id: tuple[int, ...] | None) -> str:
+    if not dialogue_id:
+        return 'unknown'
+    return ''.join('%02x' % value for value in dialogue_id[:4])
 
 
 def _normalize_token(value) -> str:

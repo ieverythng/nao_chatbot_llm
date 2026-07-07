@@ -426,16 +426,21 @@ def _derive_digest_locations(entities: list[dict]) -> list[dict]:
             if predicate_key in {'oro:isat', 'oro:ison', 'oro:isin'}:
                 if not _is_user_facing_digest_object(entity):
                     continue
+                group_entity = entity_index.get(obj, {'id': obj})
+                if not _is_digest_location_group_candidate(group_entity, obj):
+                    continue
                 group = groups.setdefault(
                     obj,
                     {
                         'id': obj,
-                        'label': _digest_entity_name(entity_index.get(obj, {'id': obj})),
+                        'label': _digest_entity_name(group_entity),
                         'contains': [],
                     },
                 )
                 _add_digest_location_member(group, entity, predicate)
             elif predicate_key == 'oro:contains':
+                if not _is_digest_location_group_candidate(entity, entity_id):
+                    continue
                 group = groups.setdefault(
                     entity_id,
                     {
@@ -471,6 +476,11 @@ def _add_digest_location_member(group: dict, entity: dict, relation: str) -> Non
 
 
 def _filter_digest_location(location: dict) -> dict:
+    if not _is_digest_location_group_candidate(
+        location,
+        str(location.get('id', '')).strip(),
+    ):
+        return {'contains': []}
     filtered = dict(location)
     members = location.get('contains', location.get('members', []))
     if not isinstance(members, list):
@@ -481,6 +491,34 @@ def _filter_digest_location(location: dict) -> dict:
         if isinstance(member, dict) and _is_user_facing_digest_object(member)
     ]
     return filtered
+
+
+def _is_digest_location_group_candidate(entity: dict, entity_id: str) -> bool:
+    if isinstance(entity, dict) and entity:
+        kind = str(entity.get('kind', '')).strip().lower()
+        if kind and kind not in {'object', 'location', 'place'}:
+            return False
+        class_token = _digest_class_token(entity.get('class', ''))
+        if class_token in _DIGEST_SUPPORT_CLASSES or class_token in _DIGEST_PLACE_CLASSES:
+            return True
+        if class_token and _is_digest_user_object_type(class_token):
+            return False
+    clean_id = _humanize_value(entity_id).strip().lower()
+    return any(
+        marker in clean_id
+        for marker in (
+            'counter',
+            'corridor',
+            'desk',
+            'kitchen',
+            'lab',
+            'room',
+            'shelf',
+            'station',
+            'surface',
+            'table',
+        )
+    )
 
 
 def _is_user_facing_digest_object(entity: dict) -> bool:
@@ -495,17 +533,34 @@ def _is_user_facing_digest_object(entity: dict) -> bool:
         return False
     if class_token in _DIGEST_SUPPORT_CLASSES or class_token in _DIGEST_PLACE_CLASSES:
         return False
+    if _is_digest_user_object_type(class_token):
+        return True
+    rdf_type_tokens = []
     for relation in entity.get('relations', []):
         if not isinstance(relation, dict):
             continue
         predicate = str(relation.get('predicate', relation.get('p', ''))).strip().lower()
         if predicate != 'rdf:type':
             continue
-        relation_class = _digest_class_token(relation.get('object', relation.get('o', '')))
+        rdf_type_tokens.append(_digest_class_token(relation.get('object', relation.get('o', ''))))
+    if any(_is_digest_user_object_type(token) for token in rdf_type_tokens):
+        return True
+    for relation_class in rdf_type_tokens:
         if relation_class in _DIGEST_NON_USER_OBJECT_CLASSES:
             return False
         if relation_class in _DIGEST_SUPPORT_CLASSES or relation_class in _DIGEST_PLACE_CLASSES:
             return False
+    return True
+
+
+def _is_digest_user_object_type(class_token: str) -> bool:
+    token = str(class_token or '').strip()
+    if not token:
+        return False
+    if token in _DIGEST_NON_USER_OBJECT_CLASSES:
+        return False
+    if token in _DIGEST_SUPPORT_CLASSES or token in _DIGEST_PLACE_CLASSES:
+        return False
     return True
 
 

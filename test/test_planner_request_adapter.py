@@ -2,6 +2,7 @@ import json
 
 from chatbot_llm.planner_request_adapter import build_planner_request_intent
 from chatbot_llm.planner_request_adapter import build_planner_request_payload
+from chatbot_llm.planner_request_adapter import dialogue_turn_id
 from chatbot_llm.planner_request_adapter import normalize_goal_text
 from chatbot_llm.planner_request_adapter import should_route_intents_through_planner
 from chatbot_llm.planner_request_adapter import Intent
@@ -56,7 +57,15 @@ def test_build_planner_request_payload_derives_scene_targets_and_bounds_context(
             'assistant:You are welcome.',
             'user:bring me the cup now',
         ],
-        'grounded_context': {'entities': []},
+        'grounded_context': {
+            'entities': [],
+            'counts': {
+                'entities': 0,
+                'people': 0,
+                'objects': 0,
+                'locations': 0,
+            },
+        },
         'planner_mode': 'default',
         'dialogue_turn_id': 'turn_1',
     }
@@ -86,6 +95,31 @@ def test_build_planner_request_intent_encodes_expected_message_shape():
     assert payload['goal_id'] == 'goal_turn_2'
     assert payload['request_kind'] == 'new_goal'
     assert 'user_text' not in payload
+
+
+def test_build_planner_request_payload_generates_goal_for_dialogue_local_turn_id():
+    payload = build_planner_request_payload(
+        turn_id='__default__',
+        user_text='bring me the cup',
+        turn_result=_make_result(),
+        knowledge_context='',
+    )
+
+    assert payload['goal_id'].startswith('goal_')
+    assert payload['goal_id'] != 'goal___default__'
+    assert payload['dialogue_turn_id'] == '__default__'
+
+
+def test_build_planner_request_payload_preserves_scoped_dialogue_turn_goal_id():
+    payload = build_planner_request_payload(
+        turn_id='__default__:01020304:1',
+        user_text='bring me the cup',
+        turn_result=_make_result(),
+        knowledge_context='',
+    )
+
+    assert payload['goal_id'] == 'goal_default___01020304_1'
+    assert payload['dialogue_turn_id'] == '__default__:01020304:1'
 
 
 def test_build_planner_request_payload_preserves_intent_sequence_hints():
@@ -150,7 +184,13 @@ def test_build_planner_request_payload_keeps_richer_grounded_context() -> None:
                 'kind': 'object',
                 'visible': True,
             }
-        ]
+        ],
+        'counts': {
+            'entities': 1,
+            'people': 0,
+            'objects': 1,
+            'locations': 0,
+        },
     }
 
 
@@ -178,7 +218,13 @@ def test_build_planner_request_payload_derives_structured_kb_references() -> Non
                 'class': 'Human',
                 'visible': True,
             },
-        ]
+        ],
+        'counts': {
+            'entities': 2,
+            'people': 1,
+            'objects': 1,
+            'locations': 0,
+        },
     }
 
 
@@ -477,3 +523,12 @@ def test_build_planner_request_payload_does_not_guess_when_heuristics_do_not_mat
     )
 
     assert payload['planner_mode'] == 'default'
+
+
+def test_dialogue_turn_id_is_scoped_by_dialogue_uuid() -> None:
+    first = dialogue_turn_id('__default__', (1, 2, 3, 4), 1)
+    second = dialogue_turn_id('__default__', (9, 8, 7, 6), 1)
+
+    assert first == '__default__:01020304:1'
+    assert second == '__default__:09080706:1'
+    assert first != second

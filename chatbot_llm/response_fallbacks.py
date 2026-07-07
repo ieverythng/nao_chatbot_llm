@@ -342,6 +342,9 @@ def _fallback_execution_report_ack(report_context: dict) -> str:
         step for step in report_context.get('steps', [])
         if isinstance(step, dict) and str(step.get('status', '')).strip().lower() == 'succeeded'
     ]
+    outcome_report = _completed_target_outcome_report(report_context)
+    if outcome_report:
+        return outcome_report
     latest_summary = str(report_context.get('latest_result_summary', '')).strip()
     if str(report_context.get('report_role', '')).strip().lower() == 'intermediate':
         if latest_summary:
@@ -385,6 +388,37 @@ def _fallback_execution_report_ack(report_context: dict) -> str:
     return ''
 
 
+def _completed_target_outcome_report(report_context: dict) -> str:
+    if str(report_context.get('report_role', '')).strip().lower() == 'intermediate':
+        return ''
+    outcome = report_context.get('plan_outcome_summary', {})
+    if not isinstance(outcome, dict):
+        return ''
+    completed_targets = _clean_unique_list(outcome.get('completed_targets', []))
+    delivery_objects = _completed_delivery_objects(report_context)
+    is_delivery = _is_delivery_report_context(report_context, delivery_objects=delivery_objects)
+    report_targets = delivery_objects or completed_targets
+    if len(report_targets) < 2:
+        return ''
+    failed_targets = _clean_unique_list(outcome.get('failed_targets', []))
+    pending_targets = _clean_unique_list(outcome.get('pending_targets', []))
+    labels = [_friendly_target_label(target) for target in report_targets]
+    recipient = _latest_delivery_recipient(report_context)
+    if recipient and is_delivery:
+        report = 'I brought %s to %s.' % (_natural_join(labels), _friendly_recipient_label(recipient))
+    else:
+        report = 'I completed %s.' % _natural_join(labels)
+    if failed_targets:
+        report += ' I could not complete %s.' % _natural_join(
+            [_friendly_target_label(target) for target in failed_targets]
+        )
+    if pending_targets:
+        report += ' %s still pending.' % _natural_join(
+            [_friendly_target_label(target) for target in pending_targets]
+        )
+    return report
+
+
 def _postprocess_execution_report_ack(candidate: str, report_context: dict) -> str:
     """Reject report wording that duplicates or promises a future report."""
     clean = str(candidate or '').strip()
@@ -422,6 +456,10 @@ def _postprocess_execution_report_ack(candidate: str, report_context: dict) -> s
     if _uses_stale_intermediate_arrival(clean, report_context):
         return ''
     clean = _rewrite_person_delivery_surface_phrase(clean, report_context)
+    if _misclassifies_delivery_recipient_as_completed(clean, report_context):
+        return ''
+    if _omits_required_completed_targets(clean, report_context):
+        return ''
 
     sentences = _split_sentences(clean)
     if len(sentences) <= 1:
@@ -430,6 +468,51 @@ def _postprocess_execution_report_ack(candidate: str, report_context: dict) -> s
     if len(successful_steps) == 1 and any(_is_generic_completion_sentence(item) for item in sentences):
         return ''
     return clean
+
+
+def _omits_required_completed_targets(candidate: str, report_context: dict) -> bool:
+    if str(report_context.get('report_role', '')).strip().lower() == 'intermediate':
+        return False
+    outcome = report_context.get('plan_outcome_summary', {})
+    if not isinstance(outcome, dict):
+        return False
+    completed_targets = _clean_unique_list(outcome.get('completed_targets', []))
+    delivery_objects = _completed_delivery_objects(report_context)
+    if _is_delivery_report_context(report_context, delivery_objects=delivery_objects):
+        completed_targets = delivery_objects or completed_targets
+    if len(completed_targets) < 2:
+        return False
+    lowered = str(candidate or '').lower()
+    mentioned = 0
+    for target in completed_targets:
+        target_text = target.lower()
+        short = target_text
+        for prefix in ('codex_probe_', 'codex_lab_', 'codex_kitchen_', 'detected_', 'object_'):
+            if short.startswith(prefix):
+                short = short[len(prefix):]
+                break
+        short = short.replace('_', ' ')
+        if target_text in lowered or short in lowered:
+            mentioned += 1
+    return mentioned < len(completed_targets)
+
+
+def _misclassifies_delivery_recipient_as_completed(candidate: str, report_context: dict) -> bool:
+    delivery_objects = _completed_delivery_objects(report_context)
+    if not _is_delivery_report_context(report_context, delivery_objects=delivery_objects):
+        return False
+    recipient = _latest_delivery_recipient(report_context)
+    if not recipient:
+        return False
+    lowered = str(candidate or '').strip().lower()
+    if 'completed' not in lowered and 'finished' not in lowered:
+        return False
+    recipient_forms = {
+        recipient.lower(),
+        recipient.lower().replace('_', ' '),
+        _friendly_recipient_label(recipient).lower(),
+    }
+    return any(form and form in lowered for form in recipient_forms)
 
 
 def _uses_stale_intermediate_arrival(candidate: str, report_context: dict) -> bool:
@@ -596,6 +679,53 @@ def _successful_non_report_steps(report_context: dict) -> list[dict]:
     ]
 
 
+def _completed_delivery_objects(report_context: dict) -> list[str]:
+    targets: list[str] = []
+    for step in _successful_non_report_steps(report_context):
+        if str(step.get('name', '')).strip().lower() not in {
+            'bring_object',
+            'deliver_object',
+            'pick_object',
+            'place_object',
+        }:
+            continue
+        payload = step.get('result_payload', {})
+        if not isinstance(payload, dict):
+            payload = {}
+        args = step.get('args', {})
+        if not isinstance(args, dict):
+            args = {}
+        target = str(
+            payload.get('object_id')
+            or payload.get('object')
+            or payload.get('target_object')
+            or payload.get('target')
+            or args.get('object_id')
+            or args.get('object')
+            or args.get('target_object')
+            or args.get('target')
+            or ''
+        ).strip()
+        if target and target not in targets:
+            targets.append(target)
+    return targets
+
+
+def _is_delivery_report_context(
+    report_context: dict,
+    *,
+    delivery_objects: list[str] | None = None,
+) -> bool:
+    goal_text = str(report_context.get('goal_text', '')).strip().lower()
+    if any(marker in goal_text for marker in ('bring', 'deliver', 'handoff')):
+        return True
+    if delivery_objects is None:
+        delivery_objects = _completed_delivery_objects(report_context)
+    if not delivery_objects:
+        return False
+    return bool(_latest_delivery_recipient(report_context))
+
+
 def _ordered_navigation_report(successful_steps: list[dict], report_context: dict) -> str:
     goal_text = str(report_context.get('goal_text', '')).strip().lower()
     if not any(marker in goal_text for marker in ('each object', 'every object', 'all objects')):
@@ -618,11 +748,68 @@ def _friendly_target_label(target: str) -> str:
     if not clean:
         return 'the target'
     lowered = clean.lower()
-    for prefix in ('codex_probe_', 'detected_', 'object_'):
+    for prefix in ('codex_probe_', 'codex_lab_', 'codex_kitchen_', 'detected_', 'object_'):
         if lowered.startswith(prefix):
             clean = clean[len(prefix):]
             break
     return 'the %s' % clean.replace('_', ' ')
+
+
+def _friendly_recipient_label(target: str) -> str:
+    clean = str(target or '').strip()
+    if not clean:
+        return 'the recipient'
+    lowered = clean.lower()
+    for prefix in ('codex_lab_', 'codex_kitchen_', 'codex_recipient_', 'detected_', 'object_'):
+        if lowered.startswith(prefix):
+            clean = clean[len(prefix):]
+            lowered = clean.lower()
+            break
+    if 'person' in lowered and not any(char.isdigit() for char in lowered):
+        return 'the person'
+    label = clean.replace('_', ' ').strip()
+    if label and ' ' not in label:
+        return label.upper()
+    return 'the %s' % label if label else 'the recipient'
+
+
+def _clean_unique_list(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    result: list[str] = []
+    for item in value:
+        clean = str(item or '').strip()
+        if clean and clean not in result:
+            result.append(clean)
+    return result
+
+
+def _latest_delivery_recipient(report_context: dict) -> str:
+    latest_payload = report_context.get('latest_result_payload', {})
+    if isinstance(latest_payload, dict):
+        recipient = str(
+            latest_payload.get('recipient')
+            or latest_payload.get('recipient_id')
+            or latest_payload.get('destination')
+            or latest_payload.get('destination_id')
+            or ''
+        ).strip()
+        if recipient:
+            return recipient
+    for step in reversed(_successful_non_report_steps(report_context)):
+        args = step.get('args', {})
+        if not isinstance(args, dict):
+            continue
+        recipient = str(
+            args.get('recipient')
+            or args.get('recipient_id')
+            or args.get('destination')
+            or args.get('destination_id')
+            or ''
+        ).strip()
+        if recipient:
+            return recipient
+    return ''
 
 
 def _natural_join(items: list[str]) -> str:
