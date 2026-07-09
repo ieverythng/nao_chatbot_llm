@@ -217,14 +217,6 @@ def _sanitize_execution_ack(verbal_ack: str) -> str:
     ).strip()
 
     lowered = clean_ack.lower()
-    if '?' in clean_ack and re.search(
-        r'\b('
-        r'which|what|where|who|specific|specify|clarify|'
-        r'would you like|do you mean|should i|should we'
-        r')\b',
-        lowered,
-    ):
-        return 'Okay, I will try that now.'
     if re.search(
         r"\b(i cannot|i can't|i could not|i couldn't|i do not have|i don't have|unable to)\b",
         lowered,
@@ -399,27 +391,6 @@ def _fallback_execution_report_ack(report_context: dict) -> str:
 def _completed_target_outcome_report(report_context: dict) -> str:
     if str(report_context.get('report_role', '')).strip().lower() == 'intermediate':
         return ''
-    report_outcome = report_context.get('report_outcome', {})
-    if isinstance(report_outcome, dict) and report_outcome.get('reportable_objects'):
-        reportable_objects = [
-            str(item.get('label') or item.get('id') or '').strip()
-            for item in report_outcome.get('reportable_objects', [])
-            if isinstance(item, dict) and str(item.get('label') or item.get('id') or '').strip()
-        ]
-        recipients = [
-            str(item.get('label') or item.get('id') or '').strip()
-            for item in report_outcome.get('recipients', [])
-            if isinstance(item, dict) and str(item.get('label') or item.get('id') or '').strip()
-        ]
-        if len(reportable_objects) > 1 and recipients:
-            return 'I brought %s to %s.' % (
-                _natural_join([_friendly_object_label(item) for item in reportable_objects]),
-                _friendly_recipient_label(recipients[-1]),
-            )
-        if len(reportable_objects) > 1:
-            return 'I completed %s.' % _natural_join(
-                [_friendly_object_label(item) for item in reportable_objects]
-            )
     outcome = report_context.get('plan_outcome_summary', {})
     if not isinstance(outcome, dict):
         return ''
@@ -487,11 +458,7 @@ def _postprocess_execution_report_ack(candidate: str, report_context: dict) -> s
     clean = _rewrite_person_delivery_surface_phrase(clean, report_context)
     if _misclassifies_delivery_recipient_as_completed(clean, report_context):
         return ''
-    if _misclassifies_excluded_report_target_as_completed(clean, report_context):
-        return ''
     if _omits_required_completed_targets(clean, report_context):
-        return ''
-    if _uses_generic_completion_for_ordered_navigation(clean, report_context):
         return ''
 
     sentences = _split_sentences(clean)
@@ -506,16 +473,6 @@ def _postprocess_execution_report_ack(candidate: str, report_context: dict) -> s
 def _omits_required_completed_targets(candidate: str, report_context: dict) -> bool:
     if str(report_context.get('report_role', '')).strip().lower() == 'intermediate':
         return False
-    report_outcome = report_context.get('report_outcome', {})
-    if isinstance(report_outcome, dict) and report_outcome.get('reportable_objects'):
-        completed_targets = [
-            str(item.get('id') or item.get('label') or '').strip()
-            for item in report_outcome.get('reportable_objects', [])
-            if isinstance(item, dict) and str(item.get('id') or item.get('label') or '').strip()
-        ]
-        if len(completed_targets) < 2:
-            return False
-        return _candidate_mentions_fewer_than_required(candidate, completed_targets)
     outcome = report_context.get('plan_outcome_summary', {})
     if not isinstance(outcome, dict):
         return False
@@ -525,10 +482,6 @@ def _omits_required_completed_targets(candidate: str, report_context: dict) -> b
         completed_targets = delivery_objects or completed_targets
     if len(completed_targets) < 2:
         return False
-    return _candidate_mentions_fewer_than_required(candidate, completed_targets)
-
-
-def _candidate_mentions_fewer_than_required(candidate: str, completed_targets: list[str]) -> bool:
     lowered = str(candidate or '').lower()
     mentioned = 0
     for target in completed_targets:
@@ -542,28 +495,6 @@ def _candidate_mentions_fewer_than_required(candidate: str, completed_targets: l
         if target_text in lowered or short in lowered:
             mentioned += 1
     return mentioned < len(completed_targets)
-
-
-def _uses_generic_completion_for_ordered_navigation(
-    candidate: str,
-    report_context: dict,
-) -> bool:
-    """Reject terse final reports for ordered walk/report plans.
-
-    The fallback wording can summarize ordered navigation more accurately than
-    "I completed X, Y, and Z", while still preserving specific LLM reports.
-    """
-    if str(report_context.get('report_role', '')).strip().lower() == 'intermediate':
-        return False
-    if not _ordered_navigation_report(_successful_non_report_steps(report_context), report_context):
-        return False
-    lowered = str(candidate or '').strip().lower()
-    if not any(marker in lowered for marker in ('i completed ', 'i have completed ')):
-        return False
-    return not any(
-        marker in lowered
-        for marker in ('walked to', 'arrived at', 'arrived to', 'reported each arrival')
-    )
 
 
 def _misclassifies_delivery_recipient_as_completed(candidate: str, report_context: dict) -> bool:
@@ -582,31 +513,6 @@ def _misclassifies_delivery_recipient_as_completed(candidate: str, report_contex
         _friendly_recipient_label(recipient).lower(),
     }
     return any(form and form in lowered for form in recipient_forms)
-
-
-def _misclassifies_excluded_report_target_as_completed(candidate: str, report_context: dict) -> bool:
-    report_outcome = report_context.get('report_outcome', {})
-    if not isinstance(report_outcome, dict):
-        return False
-    lowered = str(candidate or '').strip().lower()
-    if not any(marker in lowered for marker in ('completed', 'finished', 'brought', 'delivered')):
-        return False
-    excluded = []
-    for item in report_outcome.get('excluded_targets', []):
-        if not isinstance(item, dict):
-            continue
-        reason = str(item.get('reason', '')).strip().lower()
-        if reason not in {'recipient', 'support', 'room', 'navigation_only'}:
-            continue
-        for key in ('id', 'label'):
-            value = str(item.get(key, '')).strip()
-            if value:
-                excluded.append(value)
-    for value in excluded:
-        forms = {value.lower(), value.lower().replace('_', ' ')}
-        if any(form and form in lowered for form in forms):
-            return True
-    return False
 
 
 def _uses_stale_intermediate_arrival(candidate: str, report_context: dict) -> bool:
@@ -847,19 +753,6 @@ def _friendly_target_label(target: str) -> str:
             clean = clean[len(prefix):]
             break
     return 'the %s' % clean.replace('_', ' ')
-
-
-def _friendly_object_label(target: str) -> str:
-    clean = str(target or '').strip()
-    if not clean:
-        return 'the object'
-    lowered = clean.lower()
-    for prefix in ('codex_probe_', 'codex_lab_', 'codex_kitchen_', 'detected_', 'object_'):
-        if lowered.startswith(prefix):
-            clean = clean[len(prefix):]
-            break
-    label = clean.replace('_', ' ').strip()
-    return 'the %s' % label if label else 'the object'
 
 
 def _friendly_recipient_label(target: str) -> str:

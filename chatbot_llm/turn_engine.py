@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ast
 import json
 import re
 from dataclasses import dataclass
@@ -175,45 +174,6 @@ def _grounded_context_has_person_named(
     return False
 
 
-def _coerce_scene_target_dict(value) -> dict:
-    if isinstance(value, dict):
-        return value
-    text = str(value or '').strip()
-    if not text or not text.startswith('{'):
-        return {}
-    for parser in (json.loads, ast.literal_eval):
-        try:
-            parsed = parser(text)
-        except (ValueError, SyntaxError, TypeError, json.JSONDecodeError):
-            continue
-        if isinstance(parsed, dict):
-            return parsed
-    return {}
-
-
-def _person_names_from_scene_target(value) -> list[str]:
-    target = _coerce_scene_target_dict(value)
-    if not target or not _looks_like_person_entity(target):
-        return []
-    return _person_name_texts(target)
-
-
-def _user_intent_has_person_named(user_intent: dict, requested_name: str) -> bool:
-    compact_name = _compact_match_text(requested_name)
-    if not compact_name:
-        return True
-    scene_targets = user_intent.get('scene_targets', []) if isinstance(user_intent, dict) else []
-    if isinstance(scene_targets, str):
-        scene_targets = [scene_targets]
-    if not isinstance(scene_targets, (list, tuple)):
-        return False
-    for target in scene_targets:
-        for candidate in _person_names_from_scene_target(target):
-            if _compact_match_text(candidate) == compact_name:
-                return True
-    return False
-
-
 def _requested_named_people(user_text: str, user_intent: dict) -> list[str]:
     candidates: list[str] = []
     text = str(user_text or '')
@@ -235,16 +195,8 @@ def _requested_named_people(user_text: str, user_intent: dict) -> list[str]:
             scene_targets = [scene_targets]
         if isinstance(scene_targets, (list, tuple)):
             for target in scene_targets:
-                person_names = _person_names_from_scene_target(target)
-                if person_names:
-                    candidates.extend(person_names)
-                    continue
                 value = str(target or '').strip()
-                if (
-                    value
-                    and not value.lower().startswith('codex_')
-                    and not value.startswith('{')
-                ):
+                if value and not value.lower().startswith('codex_'):
                     candidates.append(value)
 
     unique: list[str] = []
@@ -1020,15 +972,9 @@ class DialogueTurnEngine:
             missing_people = [
                 name
                 for name in _requested_named_people(user_text, user_intent)
-                if not (
-                    _grounded_context_has_person_named(
-                        knowledge_snapshot=knowledge_snapshot,
-                        requested_name=name,
-                    )
-                    or _user_intent_has_person_named(
-                        user_intent,
-                        name,
-                    )
+                if not _grounded_context_has_person_named(
+                    knowledge_snapshot=knowledge_snapshot,
+                    requested_name=name,
                 )
             ]
             if missing_people:

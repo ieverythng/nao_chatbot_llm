@@ -11,7 +11,7 @@ from chatbot_llm.backend_config import ChatbotConfig
 
 _DIGEST_SUPPORT_CLASSES = frozenset(('counter', 'desk', 'shelf', 'surface', 'table'))
 _DIGEST_PLACE_CLASSES = frozenset(
-    ('corridor', 'kitchen', 'lab', 'location', 'park', 'place', 'robot station', 'room', 'station')
+    ('corridor', 'kitchen', 'lab', 'location', 'place', 'robot station', 'room', 'station')
 )
 _DIGEST_NON_USER_OBJECT_CLASSES = frozenset(
     (
@@ -25,17 +25,6 @@ _DIGEST_NON_USER_OBJECT_CLASSES = frozenset(
         'spatial thing localized',
         'support surface',
         'table',
-    )
-)
-_DIGEST_GENERIC_OBJECT_CLASSES = frozenset(('tableware',))
-_DIGEST_SPATIAL_PREDICATES = frozenset(
-    (
-        'oro:contains',
-        'oro:isat',
-        'oro:isin',
-        'oro:ison',
-        'oro:isunder',
-        'oro:placeof',
     )
 )
 
@@ -199,13 +188,13 @@ def build_grounded_context_block(
     *,
     max_entities: int | None = None,
 ) -> str:
-    """Serialize the compact grounded-context projection used by the chatbot.
+    """Serialize compact grounded context exactly as the chatbot/planner contract.
 
-    The live context object is never mutated. The prompt projection removes contradictory
-    movable-object spatial aliases before ``max_entities`` caps visible entities first.
-    Authoritative counts always live in the scene digest above the block.
+    The grounded-context contract itself is never mutated; ``max_entities`` only caps the
+    LLM-facing serialization (visible entities first) so a very large live scene cannot
+    flood the prompt. Authoritative counts always live in the scene digest above the block.
     """
-    payload = _sanitize_grounded_context_projection(grounded_context)
+    payload = dict(grounded_context or {})
     if not payload:
         return ''
 
@@ -255,9 +244,8 @@ def build_scene_digest(grounded_context: dict) -> str:
     (``kb/revise`` updates, ``kb/remove`` retractions) are reflected on the next turn with
     no caching: removed entities disappear, revised colours/relations re-qualify the label.
     """
-    projected_context = _sanitize_grounded_context_projection(grounded_context)
-    entities = _digest_entities(projected_context)
-    locations = _digest_locations(projected_context, entities)
+    entities = _digest_entities(grounded_context)
+    locations = _digest_locations(grounded_context, entities)
     if not entities and not locations:
         return ''
 
@@ -284,106 +272,6 @@ def build_scene_digest(grounded_context: dict) -> str:
         'context. Trust these counts and this inventory over manual counting):'
     )
     return '\n'.join([header, *('- %s' % line for line in body)])
-
-
-def _sanitize_grounded_context_projection(grounded_context: dict) -> dict:
-    """Return an LLM-facing copy with movable-object spatial clutter collapsed."""
-    if not isinstance(grounded_context, dict) or not grounded_context:
-        return {}
-    payload = dict(grounded_context)
-    raw_entities = payload.get('entities')
-    if not isinstance(raw_entities, list):
-        return payload
-
-    entity_index = {
-        str(entity.get('id', '')).strip(): entity
-        for entity in raw_entities
-        if isinstance(entity, dict) and str(entity.get('id', '')).strip()
-    }
-    payload['entities'] = [
-        _sanitize_entity_spatial_projection(entity, entity_index)
-        if isinstance(entity, dict)
-        else entity
-        for entity in raw_entities
-    ]
-    return payload
-
-
-def _sanitize_entity_spatial_projection(entity: dict, entity_index: dict[str, dict]) -> dict:
-    relations = entity.get('relations', [])
-    if not isinstance(relations, list) or not _is_user_facing_digest_object(entity):
-        return dict(entity)
-
-    canonical_place = _spatial_place_for_entity(entity, entity_index, set())
-    projected = dict(entity)
-    kept_relations: list[dict] = []
-    dropped_movable_spatial_relation = False
-    for relation in relations:
-        if not isinstance(relation, dict):
-            continue
-        predicate = str(relation.get('predicate', relation.get('p', ''))).strip()
-        obj = str(relation.get('object', relation.get('o', ''))).strip()
-        if not predicate or not obj:
-            continue
-        predicate_key = _spatial_predicate_key(predicate)
-        target_entity = entity_index.get(obj)
-        target_is_movable = (
-            isinstance(target_entity, dict)
-            and target_entity
-            and _is_user_facing_digest_object(target_entity)
-        )
-        if predicate_key in _DIGEST_SPATIAL_PREDICATES and target_is_movable:
-            dropped_movable_spatial_relation = True
-            continue
-        kept_relations.append(dict(relation))
-
-    has_canonical_place = any(
-        isinstance(relation, dict)
-        and _spatial_predicate_key(str(relation.get('predicate', relation.get('p', ''))))
-        in _DIGEST_SPATIAL_PREDICATES
-        and str(relation.get('object', relation.get('o', ''))).strip() == canonical_place
-        for relation in kept_relations
-    )
-    if canonical_place and dropped_movable_spatial_relation and not has_canonical_place:
-        kept_relations.append({'predicate': 'oro:isAt', 'object': canonical_place})
-    projected['relations'] = _unique_relations(kept_relations)
-    return projected
-
-
-def _spatial_place_for_entity(
-    entity: dict,
-    entity_index: dict[str, dict],
-    seen: set[str],
-) -> str:
-    entity_id = str(entity.get('id', '')).strip()
-    if entity_id:
-        if entity_id in seen:
-            return ''
-        seen.add(entity_id)
-    relations = entity.get('relations', [])
-    if not isinstance(relations, list):
-        return ''
-    for relation in relations:
-        if not isinstance(relation, dict):
-            continue
-        predicate = str(relation.get('predicate', relation.get('p', ''))).strip()
-        if _spatial_predicate_key(predicate) not in {'oro:isat', 'oro:isin', 'oro:ison'}:
-            continue
-        obj = str(relation.get('object', relation.get('o', ''))).strip()
-        if not obj:
-            continue
-        target_entity = entity_index.get(obj)
-        if _is_digest_location_group_candidate(target_entity or {'id': obj}, obj):
-            return obj
-        if isinstance(target_entity, dict) and _is_user_facing_digest_object(target_entity):
-            resolved = _spatial_place_for_entity(target_entity, entity_index, seen)
-            if resolved:
-                return resolved
-    return ''
-
-
-def _spatial_predicate_key(predicate: str) -> str:
-    return str(predicate or '').strip().lower().replace('_', '')
 
 
 def _digest_entities(grounded_context: dict) -> list[dict]:
@@ -624,7 +512,6 @@ def _is_digest_location_group_candidate(entity: dict, entity_id: str) -> bool:
             'desk',
             'kitchen',
             'lab',
-            'park',
             'room',
             'shelf',
             'station',
@@ -756,12 +643,9 @@ def _digest_entity_name(entity: dict) -> str:
 
 def _digest_class_label(entity: dict) -> str:
     class_value = str(entity.get('class', '')).strip()
-    label = str(entity.get('label', '') or '').strip()
-    class_token = _digest_class_token(class_value)
-    if label and class_token in _DIGEST_GENERIC_OBJECT_CLASSES:
-        return _humanize_value(label).lower()
     if class_value:
         return _display_type(class_value).lower()
+    label = str(entity.get('label', '') or '').strip()
     if label:
         return _humanize_value(label).lower()
     return ''
