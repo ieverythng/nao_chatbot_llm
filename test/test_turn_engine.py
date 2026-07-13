@@ -1308,7 +1308,48 @@ def test_turn_engine_execution_report_fallback_synthesizes_multi_object_chain():
     )
 
 
-def test_turn_engine_execution_report_uses_outcome_summary_for_multi_bring():
+def test_turn_engine_execution_report_rejects_generic_ordered_navigation_completion():
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='rules'),
+        transport=FakeTransport(
+            [
+                '{"verbal_ack":"I completed the pear baqgn, the cup pxhkp, and the phone xvqzb."}',
+            ]
+        ),
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text=(
+            '{"execution_report":{"goal_text":"walk to every object and report each arrival",'
+            '"report_role":"final",'
+            '"steps":[{"name":"navigate_to","status":"succeeded",'
+            '"args":{"target":"pear_baqgn"},'
+            '"result_summary":"I completed destination navigation to pear_baqgn."},'
+            '{"name":"report_result","status":"succeeded",'
+            '"result_summary":"I have arrived at the pear."},'
+            '{"name":"navigate_to","status":"succeeded",'
+            '"args":{"target":"cup_pxhkp"},'
+            '"result_summary":"I completed destination navigation to cup_pxhkp."},'
+            '{"name":"report_result","status":"succeeded",'
+            '"result_summary":"I have arrived at the cup."},'
+            '{"name":"navigate_to","status":"succeeded",'
+            '"args":{"target":"phone_xvqzb"},'
+            '"result_summary":"I completed destination navigation to phone_xvqzb."}]}}'
+        ),
+        history=[],
+        user_id='__system__',
+    )
+
+    assert result.intent_source == 'execution_report'
+    assert result.verbal_ack == (
+        'I walked to the pear baqgn, the cup pxhkp, and the phone xvqzb '
+        'and reported each arrival.'
+    )
+
+
+def test_turn_engine_execution_report_uses_safe_delivery_fallback_for_bad_multi_bring():
     engine = DialogueTurnEngine(
         config=make_config(intent_mode='rules'),
         transport=FakeTransport(
@@ -1331,6 +1372,13 @@ def test_turn_engine_execution_report_uses_outcome_summary_for_multi_bring():
             '"completed_targets":["codex_lab_cup","codex_lab_manual","codex_lab_phone"],'
             '"failed_targets":[],"pending_targets":[],'
             '"all_required_steps_succeeded":true},'
+            '"report_outcome":{"mode":"delivery",'
+            '"reportable_objects":['
+            '{"id":"codex_lab_cup","label":"cup","status":"completed"},'
+            '{"id":"codex_lab_manual","label":"manual","status":"completed"},'
+            '{"id":"codex_lab_phone","label":"phone","status":"completed"}],'
+            '"recipients":[{"id":"codex_lab_alex","label":"ALEX","kind":"person"}],'
+            '"anchors":[],"excluded_targets":[],"events":[],"failures":[]},'
             '"steps":[{"name":"bring_object","status":"succeeded",'
             '"args":{"object_id":"codex_lab_cup","recipient":"codex_lab_alex"},'
             '"result_summary":"I brought codex_lab_cup to codex_lab_alex."},'
@@ -1346,9 +1394,7 @@ def test_turn_engine_execution_report_uses_outcome_summary_for_multi_bring():
     )
 
     assert result.intent_source == 'execution_report'
-    assert result.verbal_ack == (
-        'I brought the cup, the manual, and the phone to ALEX.'
-    )
+    assert result.verbal_ack == 'I completed the delivery.'
 
 
 def test_turn_engine_execution_report_does_not_complete_delivery_recipient():
@@ -1392,9 +1438,171 @@ def test_turn_engine_execution_report_does_not_complete_delivery_recipient():
     )
 
     assert result.intent_source == 'execution_report'
-    assert result.verbal_ack == (
-        'I brought the cup wsgzv and the phone msbqb to the person.'
+    assert result.verbal_ack == 'I completed the delivery.'
+
+
+def test_turn_engine_execution_report_accepts_recipient_as_delivery_destination():
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='rules'),
+        transport=FakeTransport(
+            [
+                (
+                    '{"verbal_ack":"I brought the cup and the phone to '
+                    'anonymous_person_jdjbc."}'
+                ),
+            ]
+        ),
+        logger=None,
+        skill_catalog_text='',
     )
+
+    result = engine.execute_turn(
+        user_text=(
+            '{"execution_report":{"goal_text":"Bring every object in view to the person.",'
+            '"report_role":"final",'
+            '"latest_result_summary":"I brought phone_msbqb to anonymous_person_jdjbc.",'
+            '"latest_result_payload":{"recipient":"anonymous_person_jdjbc"},'
+            '"report_outcome":{'
+            '"mode":"delivery",'
+            '"reportable_objects":['
+            '{"id":"cup_wsgzv","label":"cup","class":"Tableware","status":"completed"},'
+            '{"id":"phone_msbqb","label":"phone","class":"Phone","status":"completed"}],'
+            '"recipients":[{"id":"anonymous_person_jdjbc","label":"anonymous person","kind":"person"}],'
+            '"anchors":[],'
+            '"excluded_targets":[{"id":"anonymous_person_jdjbc","label":"anonymous person","reason":"recipient"}],'
+            '"events":[],"failures":[]},'
+            '"steps":[{"name":"bring_object","status":"succeeded",'
+            '"args":{"object_id":"cup_wsgzv","recipient":"anonymous_person_jdjbc"}},'
+            '{"name":"bring_object","status":"succeeded",'
+            '"args":{"object_id":"phone_msbqb","recipient":"anonymous_person_jdjbc"}}]}}'
+        ),
+        history=[],
+        user_id='__system__',
+    )
+
+    assert result.intent_source == 'execution_report'
+    assert result.verbal_ack == 'I brought the cup and the phone to anonymous_person_jdjbc.'
+
+
+def test_turn_engine_execution_report_accepts_collective_delivery_wording():
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='rules'),
+        transport=FakeTransport(
+            [
+                '{"verbal_ack":"I delivered the requested objects to ALEX."}',
+            ]
+        ),
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text=(
+            '{"execution_report":{"goal_text":"Bring every object from the work table '
+            'to ALEX and report what happened.",'
+            '"report_role":"final",'
+            '"latest_result_payload":{"recipient":"codex_lab_alex"},'
+            '"report_outcome":{"mode":"delivery",'
+            '"reportable_objects":['
+            '{"id":"codex_lab_cup","label":"cup","status":"completed"},'
+            '{"id":"codex_lab_manual","label":"manual","status":"completed"},'
+            '{"id":"codex_lab_phone","label":"phone","status":"completed"}],'
+            '"recipients":[{"id":"codex_lab_alex","label":"ALEX","kind":"person"}],'
+            '"anchors":[],"excluded_targets":[{"id":"codex_lab_alex","label":"ALEX","reason":"recipient"}],'
+            '"events":[],"failures":[]},'
+            '"steps":[{"name":"bring_object","status":"succeeded",'
+            '"args":{"object_id":"codex_lab_cup","recipient":"codex_lab_alex"}},'
+            '{"name":"bring_object","status":"succeeded",'
+            '"args":{"object_id":"codex_lab_manual","recipient":"codex_lab_alex"}},'
+            '{"name":"bring_object","status":"succeeded",'
+            '"args":{"object_id":"codex_lab_phone","recipient":"codex_lab_alex"}}]}}'
+        ),
+        history=[],
+        user_id='__system__',
+    )
+
+    assert result.intent_source == 'execution_report'
+    assert result.verbal_ack == 'I delivered the requested objects to ALEX.'
+
+
+def test_turn_engine_execution_report_accepts_completed_delivery_to_recipient():
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='rules'),
+        transport=FakeTransport(
+            [
+                '{"verbal_ack":"I completed the delivery to ALEX."}',
+            ]
+        ),
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text=(
+            '{"execution_report":{"goal_text":"Bring every object from the work table '
+            'to ALEX and report what happened.",'
+            '"report_role":"final",'
+            '"report_outcome":{"mode":"delivery",'
+            '"reportable_objects":['
+            '{"id":"codex_lab_cup","label":"cup","status":"completed"},'
+            '{"id":"codex_lab_phone","label":"phone","status":"completed"}],'
+            '"recipients":[{"id":"codex_lab_alex","label":"ALEX","kind":"person"}],'
+            '"anchors":[],"excluded_targets":[{"id":"codex_lab_alex","label":"ALEX","reason":"recipient"}],'
+            '"events":[],"failures":[]},'
+            '"steps":[{"name":"bring_object","status":"succeeded",'
+            '"args":{"object_id":"codex_lab_cup","recipient":"codex_lab_alex"}},'
+            '{"name":"bring_object","status":"succeeded",'
+            '"args":{"object_id":"codex_lab_phone","recipient":"codex_lab_alex"}}]}}'
+        ),
+        history=[],
+        user_id='__system__',
+    )
+
+    assert result.intent_source == 'execution_report'
+    assert result.verbal_ack == 'I completed the delivery to ALEX.'
+
+
+def test_turn_engine_execution_report_rejects_report_outcome_excluded_target():
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='rules'),
+        transport=FakeTransport(
+            [
+                (
+                    '{"verbal_ack":"I completed the cup wsgzv, the phone msbqb, '
+                    'and the anonymous person jdjbc."}'
+                ),
+            ]
+        ),
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text=(
+            '{"execution_report":{"goal_text":"Bring every object in view to the person.",'
+            '"report_role":"final",'
+            '"latest_result_summary":"I brought phone_msbqb to anonymous_person_jdjbc.",'
+            '"latest_result_payload":{"recipient":"anonymous_person_jdjbc"},'
+            '"report_outcome":{'
+            '"mode":"delivery",'
+            '"reportable_objects":['
+            '{"id":"cup_wsgzv","label":"cup wsgzv","class":"Tableware","status":"completed"},'
+            '{"id":"phone_msbqb","label":"phone msbqb","class":"Phone","status":"completed"}],'
+            '"recipients":[{"id":"anonymous_person_jdjbc","label":"anonymous person","kind":"person"}],'
+            '"anchors":[],'
+            '"excluded_targets":[{"id":"anonymous_person_jdjbc","label":"anonymous person","reason":"recipient"}],'
+            '"events":[],"failures":[]},'
+            '"steps":[{"name":"bring_object","status":"succeeded",'
+            '"args":{"object_id":"cup_wsgzv","recipient":"anonymous_person_jdjbc"}},'
+            '{"name":"bring_object","status":"succeeded",'
+            '"args":{"object_id":"phone_msbqb","recipient":"anonymous_person_jdjbc"}}]}}'
+        ),
+        history=[],
+        user_id='__system__',
+    )
+
+    assert result.intent_source == 'execution_report'
+    assert result.verbal_ack == 'I completed the delivery.'
 
 
 def test_turn_engine_execution_report_uses_steps_when_goal_text_is_clarification():
@@ -1437,9 +1645,7 @@ def test_turn_engine_execution_report_uses_steps_when_goal_text_is_clarification
     )
 
     assert result.intent_source == 'execution_report'
-    assert result.verbal_ack == (
-        'I brought the cup sisyf and the cup zwlrv to the person.'
-    )
+    assert result.verbal_ack == 'I completed the delivery.'
 
 
 def test_turn_engine_planner_completion_fallback_without_llm_response():
@@ -1827,6 +2033,37 @@ def test_turn_engine_uses_route_safe_ack_when_json_has_no_safe_ack():
     assert result.updated_history == ['user:stand up', 'assistant:Okay, I will try that now.']
 
 
+def test_turn_engine_sanitizes_execution_ack_that_asks_for_clarification():
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"Yes, I can move my head in all directions. '
+                'Is there a specific direction you would like me to look?",'
+                '"route":"execution","user_intent":{"type":"head_motion_sequence"}}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='Can you move your head in all directions?',
+        history=[],
+        user_id='user1',
+    )
+
+    assert result.route == 'execution'
+    assert result.verbal_ack == 'Okay, I will try that now.'
+    assert result.updated_history == [
+        'user:Can you move your head in all directions?',
+        'assistant:Okay, I will try that now.',
+    ]
+
+
 def test_turn_engine_json_without_ack_does_not_claim_backend_outage():
     backend_outage_text = 'I am having trouble reaching my language model right now.'
     transport = FakeTransport(
@@ -2171,6 +2408,41 @@ def test_turn_engine_allows_execution_for_present_named_person_target() -> None:
 
     assert result.route == 'execution'
     assert result.intent == 'bring_object'
+
+
+def test_turn_engine_ignores_object_scene_target_dict_when_checking_named_person() -> None:
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"Sure, I will bring the gold apple to ALEX.",'
+                '"route":"execution",'
+                '"user_intent":{"type":"bring_object",'
+                '"scene_targets":['
+                '"{\'id\': \'codex_gold_apple\', \'label\': \'gold apple\', '
+                '\'kind\': \'object\', \'class\': \'Apple\'}",'
+                '"{\'id\': \'codex_gold_recipient\', \'label\': \'ALEX\', '
+                '\'kind\': \'person\', \'class\': \'Human\'}"]},'
+                '"confidence":0.95}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='Can you bring that gold apple to the person named ALEX?',
+        history=[],
+        user_id='user1',
+        knowledge_snapshot='Grounded context JSON:\n```json\n{"entities":[]}\n```',
+    )
+
+    assert result.route == 'execution'
+    assert result.intent == 'bring_object'
+    assert 'route_conflict' not in result.user_intent
 
 
 def test_turn_engine_repairs_dialogue_route_over_execution_skill_intent() -> None:

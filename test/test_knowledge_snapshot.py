@@ -288,6 +288,49 @@ def test_build_grounded_context_block_renders_authoritative_relations():
     assert '"predicate": "dbp:color"' in block
 
 
+def test_grounded_context_projection_collapses_movable_object_spatial_clutter_to_place():
+    context = {
+        'entities': [
+            {
+                'id': 'book_onigw',
+                'label': 'book',
+                'kind': 'object',
+                'class': 'Book',
+                'visible': True,
+                'relations': [
+                    {'predicate': 'oro:isAt', 'object': 'Park'},
+                    {'predicate': 'oro:isAt', 'object': 'cup_cqvmy'},
+                    {'predicate': 'oro:contains', 'object': 'cup_cqvmy'},
+                ],
+            },
+            {
+                'id': 'cup_cqvmy',
+                'label': 'cup',
+                'kind': 'object',
+                'class': 'Tableware',
+                'visible': True,
+                'relations': [
+                    {'predicate': 'dbp:color', 'object': 'Black'},
+                    {'predicate': 'oro:isAt', 'object': 'book_onigw'},
+                    {'predicate': 'oro:isOn', 'object': 'book_onigw'},
+                    {'predicate': 'oro:contains', 'object': 'book_onigw'},
+                ],
+            },
+        ],
+    }
+
+    block = build_grounded_context_block(context)
+    digest = build_scene_digest(context)
+
+    assert '"id": "cup_cqvmy"' in block
+    assert '"object": "Park"' in block
+    assert '"object": "book_onigw"' not in block
+    assert '"object": "cup_cqvmy"' not in block
+    assert 'cup x1 [black, at Park]' in digest
+    assert 'book x1 [at Park]' in digest
+    assert 'book onigw' not in digest
+
+
 def _apple(entity_id: str, color: str) -> dict:
     return {
         'id': entity_id,
