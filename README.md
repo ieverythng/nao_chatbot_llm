@@ -72,6 +72,9 @@ Defaults live in `config/00-defaults.yml`.
 - `model`
 - `intent_model`
 - `think`: forwarded as Ollama `think=false/true`; default is `false`.
+- `temperature`, `top_p`, `top_k`, `min_p`, `presence_penalty`, and
+  `repetition_penalty`: forwarded explicitly to OpenAI-compatible/vLLM requests
+  and mapped into Ollama generation options.
 - `response_max_tokens`: forwarded to Ollama as `num_predict` for the response
   stage; default is `64`.
 - `intent_max_tokens`: output budget for the structured intent and bounded
@@ -87,9 +90,9 @@ Defaults live in `config/00-defaults.yml`.
 - `knowledge_max_chars`
 - `scene_memory_turns`
 
-The default response and intent model is currently `qwen3.5:397b-cloud` with
-`think: false`. Keep the generation caps low for spoken dialogue latency; raise
-`response_max_tokens` only when the turn genuinely needs a longer utterance.
+The integrated lab profile selects its configured vLLM model and keeps thinking
+disabled. Keep generation caps low for spoken dialogue latency; raise
+`response_max_tokens` only when a measured case truncates.
 
 ## Tests
 

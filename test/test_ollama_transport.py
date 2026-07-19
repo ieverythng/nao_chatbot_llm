@@ -13,6 +13,10 @@ def test_openai_chat_url_uses_openai_payload_shape():
         messages=[{'role': 'user', 'content': 'hello'}],
         temperature=0.2,
         top_p=0.9,
+        top_k=20,
+        min_p=0.0,
+        presence_penalty=1.5,
+        repetition_penalty=1.0,
         think=False,
         context_window_tokens=4096,
         max_tokens=32,
@@ -24,6 +28,10 @@ def test_openai_chat_url_uses_openai_payload_shape():
         'messages': [{'role': 'user', 'content': 'hello'}],
         'temperature': 0.2,
         'top_p': 0.9,
+        'top_k': 20,
+        'min_p': 0.0,
+        'presence_penalty': 1.5,
+        'repetition_penalty': 1.0,
         'max_tokens': 32,
     }
 
@@ -35,6 +43,10 @@ def test_openai_chat_url_disables_thinking_for_namespaced_qwen_model():
         messages=[{'role': 'user', 'content': 'hello'}],
         temperature=0.2,
         top_p=0.9,
+        top_k=20,
+        min_p=0.0,
+        presence_penalty=1.5,
+        repetition_penalty=1.0,
         think=False,
         context_window_tokens=4096,
         max_tokens=32,
@@ -42,6 +54,10 @@ def test_openai_chat_url_disables_thinking_for_namespaced_qwen_model():
     )
 
     assert payload['chat_template_kwargs'] == {'enable_thinking': False}
+    assert payload['top_k'] == 20
+    assert payload['min_p'] == 0.0
+    assert payload['presence_penalty'] == 1.5
+    assert payload['repetition_penalty'] == 1.0
 
 
 def test_ollama_chat_url_keeps_ollama_payload_shape():

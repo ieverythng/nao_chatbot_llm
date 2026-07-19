@@ -680,6 +680,10 @@ class LLMChatbot(Node):
                 temperature=config.temperature,
                 top_p=config.top_p,
                 think=config.think,
+                top_k=config.top_k,
+                min_p=config.min_p,
+                presence_penalty=config.presence_penalty,
+                repetition_penalty=config.repetition_penalty,
             ):
                 self.get_logger().warn(
                     '[LLM PREFLIGHT] chatbot tiny probe failed | model=%s attempt=%d/%d'
@@ -694,6 +698,10 @@ class LLMChatbot(Node):
                 top_p=config.top_p,
                 think=config.think,
                 max_tokens=config.response_max_tokens,
+                top_k=config.top_k,
+                min_p=config.min_p,
+                presence_penalty=config.presence_penalty,
+                repetition_penalty=config.repetition_penalty,
             ):
                 self.get_logger().warn(
                     '[LLM PREFLIGHT] chatbot realistic probe failed | model=%s attempt=%d/%d'
@@ -733,6 +741,10 @@ class LLMChatbot(Node):
                 temperature=config.temperature,
                 top_p=config.top_p,
                 think=config.think,
+                top_k=config.top_k,
+                min_p=config.min_p,
+                presence_penalty=config.presence_penalty,
+                repetition_penalty=config.repetition_penalty,
             ):
                 self.get_logger().warn('[LLM PREFLIGHT] chatbot keepalive failed | model=%s' % model)
 
