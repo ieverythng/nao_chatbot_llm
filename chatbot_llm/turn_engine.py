@@ -16,6 +16,11 @@ from chatbot_llm.intent_rules import build_rule_response
 from chatbot_llm.intent_rules import detect_intent
 from chatbot_llm.intent_rules import is_execution_intent_label
 from chatbot_llm.intent_rules import normalize_intent
+from chatbot_llm.person_references import canonicalize_person_references
+from chatbot_llm.person_references import looks_like_person_entity
+from chatbot_llm.person_references import person_reference_names
+from chatbot_llm.person_references import resolve_grounded_person_id
+from chatbot_llm.planner_request_adapter import requests_per_target_reporting
 from chatbot_llm.prompt_builders import build_intent_prompt
 from chatbot_llm.prompt_builders import build_response_prompt
 from chatbot_llm.prompt_builders import load_persona_prompt
@@ -44,6 +49,7 @@ from chatbot_llm.route_heuristics import _is_advice_or_idea_request
 from chatbot_llm.route_heuristics import _is_capability_query
 from chatbot_llm.route_heuristics import _is_greeting_intent
 from chatbot_llm.route_heuristics import _is_information_only_action_word_question
+from chatbot_llm.route_heuristics import _is_explicit_non_action_instruction
 from chatbot_llm.route_heuristics import _is_non_immediate_action_discussion
 from chatbot_llm.route_heuristics import _is_personal_preference_question
 from chatbot_llm.route_heuristics import _is_reflective_execution_question
@@ -66,6 +72,7 @@ from chatbot_llm.system_turn import _PLANNER_COMPLETION_RESPONSE_ADDENDUM
 from chatbot_llm.system_turn import _PLANNER_DIALOGUE_RESPONSE_ADDENDUM
 from chatbot_llm.system_turn import _system_task_response_addendum
 from kb_skills.intent_labels import KB_QUERY_INTENTS
+from planner_common import validate_target_selection
 
 
 # ---------------------------------------------------------------------------
@@ -86,10 +93,19 @@ class TurnExecutionResult:
     route: str
 
 
+_TARGET_SELECTION_INTENTS = frozenset({'bring_object', 'navigate_to', 'walk_to'})
+
+
 _UNCLEAR_RESPONSE_ACK = 'I could not understand the request clearly enough. Could you rephrase it?'
 _MISSING_NAMED_PERSON_ACK = (
     'I cannot confirm that person in the current grounded context. '
     'Which person should I use for the task?'
+)
+
+_EXECUTION_COMMITMENT_RE = re.compile(
+    r"\b(?:i\s+will|i'll|i\s+am\s+going\s+to|i'm\s+going\s+to|"
+    r"let\s+me|starting|beginning)\b",
+    flags=re.IGNORECASE,
 )
 
 
@@ -97,52 +113,8 @@ def _compact_match_text(value: str) -> str:
     return re.sub(r'[^a-z0-9]+', '', str(value or '').lower())
 
 
-def _iter_context_dicts(value):
-    if isinstance(value, dict):
-        yield value
-        for nested_value in value.values():
-            yield from _iter_context_dicts(nested_value)
-    elif isinstance(value, list):
-        for item in value:
-            yield from _iter_context_dicts(item)
-
-
-def _relation_texts(entity: dict) -> list[str]:
-    texts: list[str] = []
-    relations = entity.get('relations', [])
-    if not isinstance(relations, list):
-        return texts
-    for relation in relations:
-        if not isinstance(relation, dict):
-            continue
-        predicate = str(relation.get('predicate', '')).lower()
-        if 'name' not in predicate and predicate not in {'dbp:name', 'rdfs:label'}:
-            continue
-        for key in ('object', 'value', 'target', 'label'):
-            value = str(relation.get(key, '')).strip()
-            if value:
-                texts.append(value)
-    return texts
-
-
-def _looks_like_person_entity(entity: dict) -> bool:
-    descriptor = ' '.join(
-        str(entity.get(key, ''))
-        for key in ('kind', 'class', 'type', 'entity_class', 'label', 'id')
-    ).lower()
-    if 'location' in descriptor or 'place' in descriptor or 'room' in descriptor:
-        return False
-    return any(marker in descriptor for marker in ('person', 'human', 'recipient'))
-
-
-def _person_name_texts(entity: dict) -> list[str]:
-    texts = []
-    for key in ('id', 'label', 'name', 'display_name'):
-        value = str(entity.get(key, '')).strip()
-        if value:
-            texts.append(value)
-    texts.extend(_relation_texts(entity))
-    return texts
+def _ack_commits_to_execution(verbal_ack: str) -> bool:
+    return bool(_EXECUTION_COMMITMENT_RE.search(str(verbal_ack or '')))
 
 
 def _extract_grounded_context_dict(knowledge_snapshot: str) -> dict:
@@ -156,21 +128,110 @@ def _extract_grounded_context_dict(knowledge_snapshot: str) -> dict:
     return {}
 
 
+def _intent_target_selection_errors(
+    intent_payload: dict,
+    knowledge_snapshot: str,
+    *,
+    user_text: str = '',
+) -> list[str]:
+    """Validate model-authored target scope against the current projection."""
+    if not isinstance(intent_payload, dict):
+        return []
+    user_intent = _coerce_user_intent(intent_payload.get('user_intent', intent_payload))
+    intent_name = normalize_intent(user_intent.get('type', ''), default='')
+    if intent_name not in _TARGET_SELECTION_INTENTS:
+        return []
+
+    expected_operation = 'deliver' if intent_name == 'bring_object' else 'visit'
+    grounded_context = _extract_grounded_context_dict(knowledge_snapshot)
+    validation = validate_target_selection(
+        user_intent.get('target_selection', {}),
+        grounded_context,
+        expected_operation=expected_operation,
+    )
+    selection = validation.selection
+    errors = list(validation.errors)
+    if (
+        selection.get('report_policy') == 'per_target'
+        and not requests_per_target_reporting(user_text)
+    ):
+        errors.append(
+            'target_selection.report_policy must be final unless the user explicitly '
+            'requests a report for each target'
+        )
+    return errors
+
+
+def _text_requires_grounded_target_selection(user_text: str) -> bool:
+    normalized = ' '.join(str(user_text or '').strip().lower().split())
+    return bool(
+        re.search(
+            r'\b(?:all|each|every|both)\s+(?:the\s+)?'
+            r'(?:(?:visible|selected)\s+)?objects?\b',
+            normalized,
+        )
+        or re.search(
+            r'\b(?:these|those)\s+(?:(?:visible|selected)\s+)?objects?\b',
+            normalized,
+        )
+    )
+
+
+def _is_current_grounding_query(user_text: str) -> bool:
+    """Return whether this turn should establish a fresh scene boundary."""
+    normalized = ' '.join(str(user_text or '').strip().lower().split())
+    inferred_intent = _infer_kb_query_intent_from_text(user_text)
+    scene_question = any(
+        marker in normalized
+        for marker in (
+            'objects in the scene',
+            'items in the scene',
+            'about the scene',
+            'current scene',
+            'in the environment',
+        )
+    )
+    return bool(
+        (inferred_intent and inferred_intent != 'kb_query_scene_change')
+        or scene_question
+    ) and not (
+        inferred_intent == 'kb_query_scene_change'
+        or _is_reflective_execution_question(user_text)
+    ) and not _is_personal_preference_question(user_text) and not _looks_like_execution_text(
+        user_text
+    )
+
+
 def _grounded_context_has_person_named(
     *,
     knowledge_snapshot: str,
     requested_name: str,
 ) -> bool:
-    compact_name = _compact_match_text(requested_name)
-    if not compact_name:
+    if not _compact_match_text(requested_name):
         return True
     context = _extract_grounded_context_dict(knowledge_snapshot)
-    for entity in _iter_context_dicts(context):
-        if not _looks_like_person_entity(entity):
+    return bool(resolve_grounded_person_id(context, requested_name))
+
+
+def _grounded_context_has_non_person_named(context: dict, requested_name: str) -> bool:
+    compact_name = _compact_match_text(requested_name)
+    if not compact_name:
+        return False
+    for collection_name in ('entities', 'locations'):
+        records = context.get(collection_name, []) if isinstance(context, dict) else []
+        if not isinstance(records, list):
             continue
-        for candidate in _person_name_texts(entity):
-            compact_candidate = _compact_match_text(candidate)
-            if compact_candidate and compact_candidate == compact_name:
+        for record in records:
+            if not isinstance(record, dict) or looks_like_person_entity(record):
+                continue
+            names = [record.get(key, '') for key in ('id', 'label', 'name')]
+            names.extend(
+                relation.get('object', '')
+                for relation in record.get('relations', [])
+                if isinstance(relation, dict)
+                and 'name' in str(relation.get('predicate', '')).lower()
+            )
+            if compact_name in {_compact_match_text(name) for name in names}:
                 return True
     return False
 
@@ -193,9 +254,9 @@ def _coerce_scene_target_dict(value) -> dict:
 
 def _person_names_from_scene_target(value) -> list[str]:
     target = _coerce_scene_target_dict(value)
-    if not target or not _looks_like_person_entity(target):
+    if not target or not looks_like_person_entity(target):
         return []
-    return _person_name_texts(target)
+    return person_reference_names(target)
 
 
 def _user_intent_has_person_named(user_intent: dict, requested_name: str) -> bool:
@@ -229,6 +290,14 @@ def _requested_named_people(user_text: str, user_intent: dict) -> list[str]:
         if value:
             candidates.append(value)
 
+    intent_type = str(user_intent.get('type', '')).strip().lower()
+    if intent_type in {'bring_object', 'deliver_object', 'place_object'}:
+        for match in re.finditer(
+            r'\bto\s+(?:the\s+)?([A-Z][A-Za-z0-9_-]*)\b',
+            text,
+        ):
+            candidates.append(match.group(1))
+
     if re.search(r'\b(?:person|human|recipient)\b', text, flags=re.IGNORECASE):
         scene_targets = user_intent.get('scene_targets', [])
         if isinstance(scene_targets, str):
@@ -238,25 +307,63 @@ def _requested_named_people(user_text: str, user_intent: dict) -> list[str]:
                 person_names = _person_names_from_scene_target(target)
                 if person_names:
                     candidates.extend(person_names)
-                    continue
-                value = str(target or '').strip()
-                if (
-                    value
-                    and not value.lower().startswith('codex_')
-                    and not value.startswith('{')
-                ):
-                    candidates.append(value)
 
     unique: list[str] = []
     seen = set()
+    non_name_references = {
+        'i', 'we', 'you', 'he', 'she', 'they',
+        'who', 'whom', 'whose', 'that', 'which',
+    }
     for candidate in candidates:
         clean = str(candidate or '').strip(' ,.;:!?')
         compact = _compact_match_text(clean)
-        if not compact or compact in seen:
+        if not compact or compact in non_name_references or compact in seen:
             continue
         seen.add(compact)
         unique.append(clean)
     return unique
+
+
+def _execution_continuation_context(
+    *,
+    user_intent: dict,
+    user_text: str,
+    resolved_intent: str,
+    requested_person: str,
+) -> dict:
+    """Retain the rejected action while a user corrects its named person."""
+    intent_name = str(user_intent.get('type', '') or resolved_intent).strip().lower()
+    if not intent_name or not is_execution_intent_label(intent_name):
+        return {}
+    goal_text = ''
+    for key in ('goal_text', 'goal', 'task'):
+        goal_text = str(user_intent.get(key, '')).strip()
+        if goal_text:
+            break
+    if not goal_text:
+        goal_text = str(user_text or '').strip()
+    scene_targets = user_intent.get('scene_targets', [])
+    if not isinstance(scene_targets, (list, tuple)):
+        scene_targets = [scene_targets] if scene_targets else []
+    return {
+        'goal_text': goal_text,
+        'normalized_intents': [intent_name],
+        'scene_targets': list(scene_targets),
+        'object': str(user_intent.get('object', '')).strip(),
+        'recipient': str(user_intent.get('recipient', '')).strip(),
+        'requested_person': str(requested_person or '').strip(),
+    }
+
+
+def _has_explicit_person_name_phrase(user_text: str) -> bool:
+    return bool(
+        re.search(
+            r'\b(?:person|human|recipient)\s+(?:named|called)\s+'
+            r'[A-Za-z][A-Za-z0-9_-]*',
+            str(user_text or ''),
+            flags=re.IGNORECASE,
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -357,7 +464,16 @@ class DialogueTurnEngine:
             history,
             max_history_messages=self._config.max_history_messages,
         )
-        history_messages = self._inject_identity_reminder(history_messages)
+        if _is_current_grounding_query(user_text):
+            self._trace(
+                trace,
+                turn_id,
+                'CONTEXT_BOUNDARY',
+                'current grounded query resets prior dialogue scene context',
+            )
+            history_messages = []
+        else:
+            history_messages = self._inject_identity_reminder(history_messages)
 
         if (
             self._config.planner_mode_enabled
@@ -422,6 +538,40 @@ class DialogueTurnEngine:
 
         if self._config.planner_mode_enabled:
             llm_route = _normalize_route(response_payload.get('route', ''))
+            self._trace(
+                trace,
+                turn_id,
+                'LLM_REQUEST',
+                'stage=intent_after_response model=%s timeout=%.1fs'
+                % (self._config.intent_model, self._config.intent_request_timeout_sec),
+            )
+            intent_payload = self._query_intent(
+                history_messages=history_messages,
+                user_text=user_text,
+                assistant_response=verbal_ack,
+                user_id=user_id,
+                knowledge_snapshot=knowledge_snapshot,
+                timeout_sec=self._config.intent_request_timeout_sec,
+                trace=trace,
+                turn_id=turn_id,
+            )
+            (
+                staged_intent,
+                staged_intent_source,
+                staged_intent_confidence,
+                staged_user_intent,
+            ) = self._resolve_intent(
+                user_text=user_text,
+                verbal_ack=verbal_ack,
+                intent_payload=intent_payload,
+            )
+            response_payload = dict(response_payload)
+            if staged_intent and staged_intent != 'fallback':
+                staged_user_intent = dict(staged_user_intent)
+                staged_user_intent['type'] = staged_intent
+                response_payload['user_intent'] = staged_user_intent
+                response_payload['route'] = self._route_for_intent(staged_intent)
+                response_payload['intent_confidence'] = staged_intent_confidence
             (
                 route,
                 resolved_intent,
@@ -434,6 +584,64 @@ class DialogueTurnEngine:
                 response_payload=response_payload,
                 knowledge_snapshot=knowledge_snapshot,
             )
+            if staged_intent and staged_intent != 'fallback':
+                intent_source = '%s+%s' % (intent_source, staged_intent_source)
+            route_ack_user_intent = user_intent
+            if route == _EXECUTION_ROUTE and resolved_intent in {'', 'fallback'}:
+                route_ack_user_intent = dict(user_intent)
+                if str(route_ack_user_intent.get('type', '')).strip().lower() == 'fallback':
+                    route_ack_user_intent.pop('type', None)
+                route_ack_user_intent.setdefault('goal', user_text.strip())
+            if self._route_ack_requires_retry(
+                initial_route=llm_route,
+                final_route=route,
+                user_text=user_text,
+                verbal_ack=verbal_ack,
+                intent_source=intent_source,
+            ):
+                self._trace(
+                    trace,
+                    turn_id,
+                    'LLM_RETRY',
+                    'stage=route_ack owner=chatbot_llm final_route=%s intent=%s'
+                    % (route, resolved_intent or '-'),
+                )
+                locked_payload = self._query_response(
+                    history_messages=history_messages,
+                    user_text=user_text,
+                    user_id=user_id,
+                    knowledge_snapshot=knowledge_snapshot,
+                    timeout_sec=self._config.request_timeout_sec,
+                    locked_route_context={
+                        'route': route,
+                        'resolved_intent': resolved_intent,
+                        'user_intent': route_ack_user_intent,
+                    },
+                )
+                locked_ack = str(locked_payload.get('verbal_ack', '')).strip()
+                if self._locked_route_ack_is_valid(
+                    route=route,
+                    user_text=user_text,
+                    verbal_ack=locked_ack,
+                    returned_route=locked_payload.get('route', ''),
+                ):
+                    verbal_ack = locked_ack
+                else:
+                    self._trace(
+                        trace,
+                        turn_id,
+                        'ROUTE_ACK_REJECTED',
+                        'locked response remained inconsistent; execution suppressed',
+                    )
+                    route = _DIALOGUE_ROUTE
+                    resolved_intent = ''
+                    intent_source = '%s+route_ack_validation_failed' % intent_source
+                    user_intent = {
+                        'route_conflict': {
+                            'reason': 'route_ack_validation_failed',
+                        }
+                    }
+                    verbal_ack = _UNCLEAR_RESPONSE_ACK
             if route == _EXECUTION_ROUTE:
                 verbal_ack = _sanitize_execution_ack(verbal_ack)
             elif (
@@ -498,6 +706,8 @@ class DialogueTurnEngine:
             user_id=user_id,
             knowledge_snapshot=knowledge_snapshot,
             timeout_sec=self._config.intent_request_timeout_sec,
+            trace=trace,
+            turn_id=turn_id,
         )
 
         (
@@ -576,6 +786,8 @@ class DialogueTurnEngine:
             user_id=user_id,
             knowledge_snapshot=knowledge_snapshot,
             timeout_sec=self._config.intent_request_timeout_sec,
+            trace=trace,
+            turn_id=turn_id,
         )
         (
             resolved_intent,
@@ -763,7 +975,13 @@ class DialogueTurnEngine:
                 )
             )
             if resolved:
-                return resolved, 'llm_intent', confidence, user_intent
+                if intent_payload.get('_validation_retry'):
+                    source = 'llm_intent_retry'
+                elif intent_payload.get('_validation_retry_exhausted'):
+                    source = 'llm_intent_retry_exhausted'
+                else:
+                    source = 'llm_intent'
+                return resolved, source, confidence, user_intent
 
         if self._config.intent_detection_mode == 'llm_with_rules_fallback':
             fallback_intent = detect_intent(user_text)
@@ -778,9 +996,14 @@ class DialogueTurnEngine:
                 else {}
             )
             fallback_confidence = 1.0 if fallback_intent != 'fallback' else 0.0
+            fallback_source = (
+                'rules_llm_intent_retry_exhausted'
+                if intent_payload.get('_validation_retry_exhausted')
+                else 'rules_llm_intent_fallback'
+            )
             return (
                 fallback_intent,
-                'rules_llm_intent_fallback',
+                fallback_source,
                 fallback_confidence,
                 fallback_user_intent,
             )
@@ -1010,17 +1233,25 @@ class DialogueTurnEngine:
                 user_intent = dict(user_intent)
                 user_intent['type'] = kb_query_intent
 
-        if _is_non_immediate_action_discussion(user_text):
+        if (
+            _is_non_immediate_action_discussion(user_text)
+            or _is_explicit_non_action_instruction(user_text)
+        ):
             inferred_route = _DIALOGUE_ROUTE
             resolved_intent = ''
             user_intent = _dialogue_user_intent(user_intent)
             route_repaired = True
 
         if inferred_route == _EXECUTION_ROUTE:
+            grounded_context = _extract_grounded_context_dict(knowledge_snapshot)
+            user_intent = canonicalize_person_references(user_intent, grounded_context)
             missing_people = [
                 name
                 for name in _requested_named_people(user_text, user_intent)
-                if not (
+                if (
+                    grounded_context
+                    or _has_explicit_person_name_phrase(user_text)
+                ) and not (
                     _grounded_context_has_person_named(
                         knowledge_snapshot=knowledge_snapshot,
                         requested_name=name,
@@ -1029,14 +1260,28 @@ class DialogueTurnEngine:
                         user_intent,
                         name,
                     )
+                    or _grounded_context_has_non_person_named(
+                        grounded_context,
+                        name,
+                    )
                 )
             ]
             if missing_people:
+                continuation_context = _execution_continuation_context(
+                    user_intent=user_intent,
+                    user_text=user_text,
+                    resolved_intent=resolved_intent,
+                    requested_person=missing_people[0],
+                )
                 user_intent = dict(user_intent)
                 user_intent['route_conflict'] = {
                     'requested_person': missing_people[0],
                     'reason': 'missing_named_person_in_grounded_context',
                 }
+                if continuation_context:
+                    user_intent['route_conflict']['pending_execution'] = (
+                        continuation_context
+                    )
                 user_intent = _dialogue_user_intent(user_intent)
                 inferred_route = _DIALOGUE_ROUTE
                 resolved_intent = ''
@@ -1351,6 +1596,42 @@ class DialogueTurnEngine:
             }
         return {'verbal_ack': str(raw_response).strip(), '_route_missing': True}
 
+    @staticmethod
+    def _route_ack_requires_retry(
+        *,
+        initial_route: str,
+        final_route: str,
+        user_text: str,
+        verbal_ack: str,
+        intent_source: str,
+    ) -> bool:
+        del user_text, intent_source
+        return bool(
+            initial_route == _DIALOGUE_ROUTE
+            and final_route == _EXECUTION_ROUTE
+            and not _ack_commits_to_execution(verbal_ack)
+        )
+
+    @staticmethod
+    def _locked_route_ack_is_valid(
+        *,
+        route: str,
+        user_text: str,
+        verbal_ack: str,
+        returned_route: str,
+    ) -> bool:
+        clean_ack = str(verbal_ack or '').strip()
+        echoed_route = _normalize_route(returned_route)
+        if not clean_ack or (echoed_route and echoed_route != route):
+            return False
+        if route == _EXECUTION_ROUTE and not _ack_commits_to_execution(clean_ack):
+            return False
+        return _sanitize_locked_route_ack(
+            route=route,
+            user_text=user_text,
+            verbal_ack=clean_ack,
+        ) == clean_ack
+
     def _query_intent(
         self,
         history_messages: list[dict],
@@ -1359,6 +1640,8 @@ class DialogueTurnEngine:
         user_id: str,
         knowledge_snapshot: str,
         timeout_sec: float,
+        trace=None,
+        turn_id: str = '',
     ) -> dict:
         prompt = build_intent_prompt(
             robot_name=self._config.robot_name,
@@ -1401,13 +1684,65 @@ class DialogueTurnEngine:
             max_tokens=self._config.intent_max_tokens,
             response_format=self._config.intent_schema,
         )
-        if not raw_response:
-            return {}
+        parsed = _extract_json_object(raw_response) if raw_response else {}
+        if parsed:
+            validation_errors = _intent_target_selection_errors(
+                parsed,
+                knowledge_snapshot,
+                user_text=user_text,
+            )
+        else:
+            _warn(self._logger, 'Intent extraction response was not valid JSON')
+            validation_errors = ['intent output must be one valid JSON object']
+        if not validation_errors:
+            return parsed
 
-        parsed = _extract_json_object(raw_response)
+        self._trace(
+            trace,
+            turn_id,
+            'LLM_RETRY',
+            'stage=intent owner=chatbot_llm fallback_id=intent_validation_retry '
+            'semantics_changed=false errors=%s' % '; '.join(validation_errors),
+        )
+        retry_messages = list(messages)
+        retry_messages.append(
+            {
+                'role': 'user',
+                'content': json.dumps(
+                    {
+                        'task': 'Correct the intent JSON without changing the user request',
+                        'validation_errors': validation_errors,
+                    },
+                    separators=(',', ':'),
+                ),
+            }
+        )
+        retry_response = self._transport.query(
+            messages=retry_messages,
+            timeout_sec=timeout_sec,
+            model=self._config.intent_model,
+            temperature=self._config.temperature,
+            top_p=self._config.top_p,
+            think=self._config.think,
+            max_tokens=self._config.intent_max_tokens,
+            response_format=self._config.intent_schema,
+        )
+        retry_payload = _extract_json_object(retry_response)
+        if retry_payload and not _intent_target_selection_errors(
+            retry_payload,
+            knowledge_snapshot,
+            user_text=user_text,
+        ):
+            retry_payload['_validation_retry'] = True
+            return retry_payload
         if not parsed:
-            self._logger.warn('Intent extraction response was not valid JSON')
+            if (
+                self._config.intent_detection_mode == 'llm_with_rules_fallback'
+                and _text_requires_grounded_target_selection(user_text)
+            ):
+                return {'_validation_retry_exhausted': True}
             return {}
+        parsed['_validation_retry_exhausted'] = True
         return parsed
 
     def _query_planner_completion_ack(self, completion_context: dict) -> str:

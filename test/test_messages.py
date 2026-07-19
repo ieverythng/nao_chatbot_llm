@@ -106,7 +106,7 @@ class TestBuildLlmMessages:
         )
         # msgs[0] = leading system prompt
         assert msgs[1] == {"role": "system", "content": "world"}
-        assert msgs[2] == {"role": "user", "content": 'alice "hi"'}
+        assert msgs[2] == {"role": "user", "content": 'alice: "hi"'}
         assert msgs[3] == {"role": "assistant", "content": "hello"}
 
 

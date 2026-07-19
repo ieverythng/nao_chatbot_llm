@@ -43,9 +43,20 @@ def test_default_prompt_pack_loads_canonical_yaml():
     assert 'intent_sequence' in pack.intent_schema['properties']['user_intent']['properties']
     assert {'verbal_ack', 'route', 'confidence'} <= set(pack.response_schema['required'])
     assert 'scene_targets' in pack.intent_schema['properties']['user_intent']['properties']
+    target_selection = pack.intent_schema['properties']['user_intent']['properties'][
+        'target_selection'
+    ]
+    assert target_selection['properties']['selection_kind']['enum'] == [
+        'explicit_members',
+        'location_members',
+        'visible_objects',
+    ]
+    assert target_selection['properties']['operation']['enum'] == ['deliver', 'visit']
     assert 'ack_text' in pack.intent_schema['properties']['user_intent']['properties']
     assert 'coordination_markers' in pack.planner_multi_step_heuristics
     assert 'action_hint_tokens' in pack.planner_multi_step_heuristics
+    assert 'target_selection is the intent stage' in pack.intent_prompt_addendum
+    assert 'canonical grounded entity ids' in pack.intent_prompt_addendum
 
 
 def test_prompt_pack_loads_planner_multi_step_heuristics(tmp_path):

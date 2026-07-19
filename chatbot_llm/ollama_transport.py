@@ -200,6 +200,9 @@ def _chat_payload(
         }
         if max_tokens is not None:
             payload['max_tokens'] = max(1, int(max_tokens))
+        template_kwargs = _openai_chat_template_kwargs(model)
+        if template_kwargs:
+            payload['chat_template_kwargs'] = template_kwargs
         return payload
 
     payload = {
@@ -297,8 +300,7 @@ def _thinking_text(payload: dict) -> str:
 
 
 def _no_think_messages(model: str, messages: list[dict]) -> list[dict]:
-    clean_model = str(model or '').strip().lower()
-    if not any(clean_model.startswith(prefix) for prefix in _NO_THINK_MODEL_PREFIXES):
+    if not _is_qwen3_model(model):
         return list(messages)
     if not messages:
         return [{'role': 'system', 'content': _NO_THINK_PREFIX}]
@@ -309,6 +311,17 @@ def _no_think_messages(model: str, messages: list[dict]) -> list[dict]:
     else:
         prepared.insert(0, {'role': 'system', 'content': _NO_THINK_PREFIX})
     return prepared
+
+
+def _is_qwen3_model(model: str) -> bool:
+    model_name = str(model or '').strip().lower().rsplit('/', 1)[-1]
+    return any(model_name.startswith(prefix) for prefix in _NO_THINK_MODEL_PREFIXES)
+
+
+def _openai_chat_template_kwargs(model: str) -> dict[str, bool]:
+    if not _is_qwen3_model(model):
+        return {}
+    return {'enable_thinking': False}
 
 
 def _uses_ollama_response_format(model: str) -> bool:

@@ -2,6 +2,7 @@ from chatbot_llm.backend_config import ChatbotConfig
 from chatbot_llm.turn_engine import DialogueTurnEngine
 from chatbot_llm.turn_engine import _system_task_response_addendum
 from chatbot_llm.prompt_builders import build_intent_prompt
+from chatbot_llm.system_turn import _extract_planner_completion_context
 import pytest
 
 
@@ -267,6 +268,55 @@ def test_turn_engine_prompt_keeps_current_grounded_facts_for_scene_followups(use
     assert '"object":"TITAS"' in transport.calls[0]['messages'][0]['content']
 
 
+def test_current_grounding_query_drops_stale_scene_history():
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"I can see the current objects.",'
+                '"route":"knowledge_query",'
+                '"user_intent":{"type":"kb_query_visible_objects"}}'
+            ),
+            '{"user_intent":{"type":"kb_query_visible_objects"},"intent_confidence":0.9}',
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='What can you tell me about the objects in the scene?',
+        history=[
+            'user:What did you see in the lab?',
+            'assistant:I saw ATLAS, MIDAS, TITAS, and VEGA on the lab table.',
+        ],
+        user_id='user1',
+        knowledge_snapshot=(
+            'Grounded context JSON:\n'
+            '```json\n'
+            '{"entities":[{"id":"phone_1","label":"phone",'
+            '"kind":"object","class":"Cellular Telephone",'
+            '"visible":true,"relations":[]}]}\n'
+            '```'
+        ),
+    )
+
+    for call in transport.calls:
+        assert all(
+            'ATLAS' not in str(message.get('content', ''))
+            and 'MIDAS' not in str(message.get('content', ''))
+            and 'TITAS' not in str(message.get('content', ''))
+            and 'VEGA' not in str(message.get('content', ''))
+            for message in call['messages']
+        )
+    assert result.updated_history == [
+        'user:What can you tell me about the objects in the scene?',
+        'assistant:I can see the current objects.',
+    ]
+
+
 def test_turn_engine_prompt_explicitly_mentions_recent_history():
     transport = FakeTransport(
         [
@@ -309,7 +359,7 @@ def test_turn_engine_prompt_explicitly_mentions_recent_history():
     assert transport.calls[0]['messages'][2]['content'] == 'Yes, I can see a person.'
 
 
-def test_turn_engine_planner_mode_uses_single_response_stage_for_execution():
+def test_turn_engine_planner_mode_runs_response_then_intent_for_execution():
     transport = FakeTransport(
         [
             (
@@ -336,7 +386,7 @@ def test_turn_engine_planner_mode_uses_single_response_stage_for_execution():
     )
 
     assert result.success is True
-    assert len(transport.calls) == 1
+    assert len(transport.calls) == 3
     assert result.route == 'execution'
     assert result.intent == 'fallback'
     assert result.intent_source == 'llm_response_route'
@@ -351,6 +401,62 @@ def test_turn_engine_planner_mode_uses_single_response_stage_for_execution():
     assert 'executable plans after this response' in transport.calls[0]['messages'][0]['content']
     assert 'Route policy, response style, and examples' in transport.calls[0]['messages'][0]['content']
     assert 'Grounded context for this turn:\nperson_1 rdf:type Person' in transport.calls[0]['messages'][0]['content']
+
+
+def test_turn_engine_planner_mode_completes_missing_execution_intent():
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"I will bring the book to the person hjeed.",'
+                '"route":"execution","confidence":0.83}'
+            ),
+            (
+                '{"user_intent":{"type":"bring_object",'
+                '"goal_text":"bring the book to the person hjeed",'
+                '"scene_targets":["book","person hjeed"]},'
+                '"intent_confidence":0.94}'
+            ),
+            (
+                '{"user_intent":{"type":"bring_object",'
+                '"goal_text":"bring the book to the person hjeed",'
+                '"scene_targets":["book_xkyff","anonymous_person_hjeed"],'
+                '"target_selection":{"selection_kind":"explicit_members",'
+                '"operation":"deliver","source_location_id":"",'
+                '"member_ids":["book_xkyff"],'
+                '"recipient_id":"anonymous_person_hjeed",'
+                '"ordering":"none","report_policy":"none"}},'
+                '"intent_confidence":0.95}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='The book to the person hjeed!',
+        history=[],
+        user_id='user1',
+        knowledge_snapshot=(
+            'Grounded context JSON:\n```json\n'
+            '{"entities":[{"id":"book_xkyff","kind":"object"},'
+            '{"id":"anonymous_person_hjeed","kind":"person"}]}\n```'
+        ),
+    )
+
+    assert len(transport.calls) == 3
+    assert result.route == 'execution'
+    assert result.intent == 'bring_object'
+    assert result.intent_source == 'llm_response_route+llm_intent_retry'
+    assert result.user_intent['type'] == 'bring_object'
+    assert result.user_intent['scene_targets'] == ['book_xkyff', 'anonymous_person_hjeed']
+    assert result.user_intent['target_selection']['member_ids'] == ['book_xkyff']
+    assert result.user_intent['target_selection']['recipient_id'] == (
+        'anonymous_person_hjeed'
+    )
 
 
 def test_turn_engine_intent_first_locks_route_before_response_wording():
@@ -622,7 +728,7 @@ def test_turn_engine_intent_first_rejects_knowledge_query_action_promise():
     assert result.verbal_ack == 'I will answer from the current grounded context.'
 
 
-def test_turn_engine_planner_mode_repairs_missing_execution_route_without_second_call():
+def test_turn_engine_planner_mode_repairs_missing_execution_route_after_intent_stage():
     transport = FakeTransport(
         [
             '{"verbal_ack":"I can do that.","user_intent":{"type":"posture_stand"},"confidence":0.51}',
@@ -641,10 +747,12 @@ def test_turn_engine_planner_mode_repairs_missing_execution_route_without_second
         user_id='user1',
     )
 
-    assert len(transport.calls) == 1
+    assert len(transport.calls) == 3
     assert result.route == 'execution'
     assert result.intent == 'posture_stand'
-    assert result.intent_source == 'llm_response_route_repair'
+    assert result.intent_source == (
+        'llm_response_route_repair+rules_llm_intent_fallback'
+    )
 
 
 def test_turn_engine_planner_mode_keeps_capability_question_dialogue_only():
@@ -750,7 +858,7 @@ def test_turn_engine_planner_mode_promotes_dialogue_wave_ack_to_execution():
         user_id='user1',
     )
 
-    assert len(transport.calls) == 1
+    assert len(transport.calls) == 3
     assert result.route == 'execution'
     assert result.intent == 'wave_greet'
     assert result.intent_source == 'llm_response_route'
@@ -835,6 +943,22 @@ def test_turn_engine_renders_planner_completion_for_system_payload_with_llm():
     assert 'Respond briefly.' in transport.calls[0]['messages'][0]['content']
     assert 'Planner completion wording task:' in transport.calls[0]['messages'][0]['content']
     assert 'planner_completion' in transport.calls[0]['messages'][1]['content']
+
+
+def test_planner_completion_extraction_preserves_aggregate_plan_outcome():
+    context = _extract_planner_completion_context(
+        '{"planner_completion":{"result_summary":"Reached phone_1.",'
+        '"plan_outcome_summary":{"completed_targets":'
+        '["apple_1","pear_1","phone_1"],"failed_targets":[],'
+        '"pending_targets":[],"all_required_steps_succeeded":true}}}'
+    )
+
+    assert context['plan_outcome_summary'] == {
+        'completed_targets': ['apple_1', 'pear_1', 'phone_1'],
+        'failed_targets': [],
+        'pending_targets': [],
+        'all_required_steps_succeeded': True,
+    }
 
 
 def test_turn_engine_renders_execution_report_for_system_payload_with_llm():
@@ -1394,7 +1518,39 @@ def test_turn_engine_execution_report_uses_safe_delivery_fallback_for_bad_multi_
     )
 
     assert result.intent_source == 'execution_report'
-    assert result.verbal_ack == 'I completed the delivery.'
+    assert result.verbal_ack == (
+        'I delivered the cup, the manual, and the phone to ALEX.'
+    )
+
+
+def test_turn_engine_execution_report_does_not_claim_incomplete_delivery() -> None:
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='rules'),
+        transport=FakeTransport(
+            ['{"verbal_ack":"I completed the delivery."}']
+        ),
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text=(
+            '{"execution_report":{"goal_text":"Bring the cup and book to ALEX.",'
+            '"report_role":"final",'
+            '"report_outcome":{"mode":"mixed",'
+            '"reportable_objects":[{"id":"cup_1","label":"cup","status":"completed"}],'
+            '"recipients":[{"id":"person_1","label":"ALEX","kind":"person"}],'
+            '"anchors":[],"excluded_targets":[],"events":[],'
+            '"failures":[{"step_id":"","skill":"bring_object",'
+            '"target":"book_1","reason":"selected target has no successful execution evidence"}]},'
+            '"steps":[{"name":"bring_object","status":"succeeded",'
+            '"args":{"object_id":"cup_1","recipient":"person_1"}}]}}'
+        ),
+        history=[],
+        user_id='__system__',
+    )
+
+    assert result.verbal_ack == 'I could not complete the full delivery.'
 
 
 def test_turn_engine_execution_report_does_not_complete_delivery_recipient():
@@ -1438,7 +1594,9 @@ def test_turn_engine_execution_report_does_not_complete_delivery_recipient():
     )
 
     assert result.intent_source == 'execution_report'
-    assert result.verbal_ack == 'I completed the delivery.'
+    assert result.verbal_ack == (
+        'I delivered the cup wsgzv and the phone msbqb to the person.'
+    )
 
 
 def test_turn_engine_execution_report_accepts_recipient_as_delivery_destination():
@@ -1602,7 +1760,9 @@ def test_turn_engine_execution_report_rejects_report_outcome_excluded_target():
     )
 
     assert result.intent_source == 'execution_report'
-    assert result.verbal_ack == 'I completed the delivery.'
+    assert result.verbal_ack == (
+        'I delivered the cup wsgzv and the phone msbqb to the person.'
+    )
 
 
 def test_turn_engine_execution_report_uses_steps_when_goal_text_is_clarification():
@@ -1645,7 +1805,9 @@ def test_turn_engine_execution_report_uses_steps_when_goal_text_is_clarification
     )
 
     assert result.intent_source == 'execution_report'
-    assert result.verbal_ack == 'I completed the delivery.'
+    assert result.verbal_ack == (
+        'I delivered the cup sisyf and the cup zwlrv to the person.'
+    )
 
 
 def test_turn_engine_planner_completion_fallback_without_llm_response():
@@ -2140,6 +2302,147 @@ def test_turn_engine_repairs_dialogue_route_when_ack_promises_execution():
     assert result.intent_source == 'llm_response_route_repair'
 
 
+def test_response_first_regenerates_ack_after_intent_changes_route_to_execution():
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"Yes, I can stand up. How can I assist you?",'
+                '"route":"dialogue","user_intent":{"type":"fallback"}}'
+            ),
+            '{"user_intent":{"type":"posture_stand"},"confidence":0.95}',
+            (
+                '{"verbal_ack":"I will stand up now.","route":"execution",'
+                '"user_intent":{"type":"posture_stand"}}'
+            ),
+        ]
+    )
+    traces = []
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='Please stand up.',
+        history=[],
+        user_id='user1',
+        turn_id='turn_ack_retry',
+        trace=lambda turn_id, stage, message: traces.append((turn_id, stage, message)),
+    )
+
+    assert result.route == 'execution'
+    assert result.intent == 'posture_stand'
+    assert result.verbal_ack == 'I will stand up now.'
+    assert len(transport.calls) == 3
+    assert 'Locked route context:' in transport.calls[2]['messages'][0]['content']
+    assert any(stage == 'LLM_RETRY' and 'route_ack' in message for _, stage, message in traces)
+
+
+def test_response_first_accepts_committed_locked_ack_without_repeated_route():
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"Yes, I can stand up. How can I assist you?",'
+                '"route":"dialogue","user_intent":{"type":"fallback"}}'
+            ),
+            '{"user_intent":{"type":"posture_stand"},"confidence":0.95}',
+            '{"verbal_ack":"I will stand up now."}',
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='Please stand up.',
+        history=[],
+        user_id='user1',
+    )
+
+    assert result.route == 'execution'
+    assert result.intent == 'posture_stand'
+    assert result.verbal_ack == 'I will stand up now.'
+
+
+def test_response_first_locks_open_execution_goal_without_fallback_intent():
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"Yes, I can move my head in all directions.",'
+                '"route":"dialogue","user_intent":{"type":"fallback"}}'
+            ),
+            '{"user_intent":{"type":"fallback"},"confidence":0.95}',
+            '{"verbal_ack":"I will move my head in all directions now."}',
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='Can you move your head in all directions?',
+        history=[],
+        user_id='user1',
+    )
+
+    assert result.route == 'execution'
+    assert result.verbal_ack == 'I will move my head in all directions now.'
+    assert result.user_intent == {
+        'type': 'fallback',
+        'goal': 'Can you move your head in all directions?',
+    }
+    locked_prompt = transport.calls[2]['messages'][0]['content']
+    assert '"goal":"Can you move your head in all directions?"' in locked_prompt
+    assert '"type":"fallback"' not in locked_prompt.split('Locked route context:', 1)[1]
+
+
+def test_response_first_blocks_execution_when_locked_ack_retry_is_still_inconsistent():
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"Yes, I can stand up. How can I assist you?",'
+                '"route":"dialogue","user_intent":{"type":"fallback"}}'
+            ),
+            '{"user_intent":{"type":"posture_stand"},"confidence":0.95}',
+            (
+                '{"verbal_ack":"Yes, I can stand up. Which posture would you like?",'
+                '"route":"execution","user_intent":{"type":"posture_stand"}}'
+            ),
+        ]
+    )
+    traces = []
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='Please stand up.',
+        history=[],
+        user_id='user1',
+        turn_id='turn_ack_block',
+        trace=lambda turn_id, stage, message: traces.append((turn_id, stage, message)),
+    )
+
+    assert result.route == 'dialogue'
+    assert result.intent == ''
+    assert result.verbal_ack == (
+        'I could not understand the request clearly enough. Could you rephrase it?'
+    )
+    assert result.user_intent['route_conflict']['reason'] == 'route_ack_validation_failed'
+    assert any(stage == 'ROUTE_ACK_REJECTED' for _, stage, _ in traces)
+
+
 def test_turn_engine_routes_explicit_kb_add_as_execution() -> None:
     transport = FakeTransport(
         [
@@ -2222,6 +2525,34 @@ def test_turn_engine_honors_explicit_dialogue_route_for_future_action_discussion
     assert result.route == 'dialogue'
     assert result.intent == ''
     assert result.intent_source == 'llm_response_route_repair'
+
+
+def test_turn_engine_does_not_execute_explicit_non_action_kb_instruction() -> None:
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"I will remember that ALEX is the recipient without acting yet.",'
+                '"route":"dialogue","user_intent":{"type":"kb_add",'
+                '"goal_text":"remember ALEX as recipient"},"confidence":0.91}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='Remember that ALEX is the recipient, but do not act yet.',
+        history=[],
+        user_id='user1',
+    )
+
+    assert result.route == 'dialogue'
+    assert result.intent == ''
+    assert result.user_intent.get('type') == 'fallback'
 
 
 def test_turn_engine_repairs_missing_route_for_future_action_discussion() -> None:
@@ -2330,6 +2661,293 @@ def test_turn_engine_fills_missing_bring_intent_for_planner_mode() -> None:
     assert result.user_intent['type'] == 'bring_object'
 
 
+def test_turn_engine_retries_missing_grounded_target_selection() -> None:
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"I will bring the work-table objects to Alex.",'
+                '"route":"execution","confidence":0.9}'
+            ),
+            (
+                '{"user_intent":{"type":"bring_object",'
+                '"goal_text":"bring every object from the work table to Alex"},'
+                '"intent_confidence":0.9}'
+            ),
+            (
+                '{"user_intent":{"type":"bring_object",'
+                '"goal_text":"bring every object from the work table to Alex",'
+                '"target_selection":{"selection_kind":"location_members",'
+                '"operation":"deliver","source_location_id":"work_table",'
+                '"member_ids":["cup_1","book_1"],"recipient_id":"person_alex",'
+                '"ordering":"none","report_policy":"none"}},'
+                '"intent_confidence":0.94}'
+            ),
+        ]
+    )
+    traces = []
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='Bring every object from the work table to Alex.',
+        history=[],
+        user_id='user1',
+        turn_id='turn-selection-retry',
+        trace=lambda turn_id, stage, message: traces.append((turn_id, stage, message)),
+        knowledge_snapshot=(
+            'Grounded context JSON:\n```json\n'
+            '{"entities":[{"id":"cup_1","kind":"object"},'
+            '{"id":"book_1","kind":"object"},'
+            '{"id":"person_alex","kind":"person","relations":['
+            '{"predicate":"dbp:name","object":"Alex"}]}],'
+            '"locations":[{"id":"work_table","role":"support_group",'
+            '"contains":[{"id":"cup_1","kind":"object"},'
+            '{"id":"book_1","kind":"object"}]}]}'
+            '\n```'
+        ),
+    )
+
+    assert len(transport.calls) == 3
+    assert result.intent_source.endswith('+llm_intent_retry')
+    assert result.user_intent['target_selection']['member_ids'] == ['cup_1', 'book_1']
+    assert any(stage == 'LLM_RETRY' and 'target_selection' in message for _, stage, message in traces)
+    retry_request = transport.calls[2]['messages'][-1]['content']
+    assert 'validation_errors' in retry_request
+    assert 'target_selection' in retry_request
+
+
+def test_turn_engine_retries_delivery_with_location_as_recipient() -> None:
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"I will bring the cup to you.",'
+                '"route":"execution","confidence":0.9}'
+            ),
+            (
+                '{"user_intent":{"type":"bring_object",'
+                '"goal_text":"bring me the cup",'
+                '"target_selection":{"selection_kind":"explicit_members",'
+                '"operation":"deliver","source_location_id":"kitchen",'
+                '"member_ids":["cup_1"],"recipient_id":"kitchen",'
+                '"ordering":"none","report_policy":"final"}},'
+                '"intent_confidence":0.94}'
+            ),
+            (
+                '{"user_intent":{"type":"bring_object",'
+                '"goal_text":"bring me the cup",'
+                '"target_selection":{"selection_kind":"explicit_members",'
+                '"operation":"deliver","source_location_id":"kitchen",'
+                '"member_ids":["cup_1"],"recipient_id":"person_user",'
+                '"ordering":"none","report_policy":"final"}},'
+                '"intent_confidence":0.96}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='Bring me the cup.',
+        history=[],
+        user_id='person_user',
+        knowledge_snapshot=(
+            'Grounded context JSON:\n```json\n'
+            '{"entities":[{"id":"cup_1","kind":"object"},'
+            '{"id":"person_user","kind":"person"}],'
+            '"locations":[{"id":"kitchen","kind":"location",'
+            '"contains":[{"id":"cup_1","kind":"object"}]}]}'
+            '\n```'
+        ),
+    )
+
+    assert len(transport.calls) == 3
+    assert result.intent_source.endswith('+llm_intent_retry')
+    assert result.user_intent['target_selection']['recipient_id'] == 'person_user'
+    assert 'grounded person' in transport.calls[2]['messages'][-1]['content']
+
+
+def test_turn_engine_retries_invalid_intent_json_before_rules_fallback() -> None:
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"I will visit every table object and report each '
+                'arrival.","route":"execution","confidence":0.9}'
+            ),
+            'not valid json',
+            (
+                '{"user_intent":{"type":"navigate_to",'
+                '"goal_text":"walk to every object on the table and report each arrival",'
+                '"target_selection":{"selection_kind":"explicit_members",'
+                '"operation":"visit","source_location_id":"",'
+                '"member_ids":["apple_1","book_1","phone_1"],'
+                '"recipient_id":"","ordering":"sequential",'
+                '"report_policy":"per_target"}},"intent_confidence":0.95}'
+            ),
+        ]
+    )
+    traces = []
+    engine = DialogueTurnEngine(
+        config=make_config(
+            intent_mode='llm_with_rules_fallback',
+            planner_mode_enabled=True,
+        ),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='Walk to every object on the table and let me know at each one.',
+        history=[],
+        user_id='user1',
+        turn_id='turn-invalid-intent-retry',
+        trace=lambda turn_id, stage, message: traces.append((turn_id, stage, message)),
+        knowledge_snapshot=(
+            'Grounded context JSON:\n```json\n'
+            '{"entities":[{"id":"apple_1","kind":"object"},'
+            '{"id":"book_1","kind":"object"},'
+            '{"id":"phone_1","kind":"object"}]}\n```'
+        ),
+    )
+
+    assert len(transport.calls) == 3
+    assert result.intent_source.endswith('+llm_intent_retry')
+    assert result.user_intent['target_selection']['member_ids'] == [
+        'apple_1',
+        'book_1',
+        'phone_1',
+    ]
+    assert any(
+        stage == 'LLM_RETRY' and 'valid JSON' in message
+        for _, stage, message in traces
+    )
+
+
+def test_turn_engine_marks_quantified_scope_retry_exhaustion_for_salvage() -> None:
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"I will visit every object.",'
+                '"route":"execution","confidence":0.9}'
+            ),
+            'not valid json',
+            'still not valid json',
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(
+            intent_mode='llm_with_rules_fallback',
+            planner_mode_enabled=True,
+        ),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='Walk to every object on the table and report each arrival.',
+        history=[],
+        user_id='user1',
+    )
+
+    assert len(transport.calls) == 3
+    assert result.intent == 'navigate_to'
+    assert result.intent_source.endswith('+rules_llm_intent_retry_exhausted')
+
+
+def test_turn_engine_retries_per_target_policy_for_final_summary_request() -> None:
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"I will deliver both objects and report back.",'
+                '"route":"execution","confidence":0.9}'
+            ),
+            (
+                '{"user_intent":{"type":"bring_object",'
+                '"goal_text":"bring all kitchen objects to Alex and report the outcome",'
+                '"target_selection":{"selection_kind":"location_members",'
+                '"operation":"deliver","source_location_id":"kitchen",'
+                '"member_ids":["cup_1","book_1"],"recipient_id":"person_alex",'
+                '"ordering":"sequential","report_policy":"per_target"}},'
+                '"intent_confidence":0.94}'
+            ),
+            (
+                '{"user_intent":{"type":"bring_object",'
+                '"goal_text":"bring all kitchen objects to Alex and report the outcome",'
+                '"target_selection":{"selection_kind":"location_members",'
+                '"operation":"deliver","source_location_id":"kitchen",'
+                '"member_ids":["cup_1","book_1"],"recipient_id":"person_alex",'
+                '"ordering":"sequential","report_policy":"final"}},'
+                '"intent_confidence":0.96}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='Bring every object from the kitchen to ALEX and report what happened.',
+        history=[],
+        user_id='user1',
+        knowledge_snapshot=(
+            'Grounded context JSON:\n```json\n'
+            '{"entities":[{"id":"cup_1","kind":"object"},'
+            '{"id":"book_1","kind":"object"},'
+            '{"id":"person_alex","kind":"person"}],'
+            '"locations":[{"id":"kitchen","contains":['
+            '{"id":"cup_1","kind":"object"},'
+            '{"id":"book_1","kind":"object"}]}]}'
+            '\n```'
+        ),
+    )
+
+    assert len(transport.calls) == 3
+    assert result.intent_source.endswith('+llm_intent_retry')
+    assert result.user_intent['target_selection']['report_policy'] == 'final'
+    retry_request = transport.calls[2]['messages'][-1]['content']
+    assert 'report for each target' in retry_request
+
+
+def test_turn_engine_does_not_retry_primitive_motion_without_target_selection() -> None:
+    transport = FakeTransport(
+        [
+            '{"verbal_ack":"I will look left.","route":"execution","confidence":0.9}',
+            (
+                '{"user_intent":{"type":"head_look_left",'
+                '"goal_text":"look left"},"intent_confidence":0.95}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='Look left.',
+        history=[],
+        user_id='user1',
+    )
+
+    assert len(transport.calls) == 2
+    assert result.intent == 'head_look_left'
+    assert result.intent_source.endswith('+llm_intent')
+
+
 def test_turn_engine_blocks_execution_for_absent_named_person_target() -> None:
     transport = FakeTransport(
         [
@@ -2368,12 +2986,101 @@ def test_turn_engine_blocks_execution_for_absent_named_person_target() -> None:
     assert result.route == 'dialogue'
     assert result.intent == ''
     assert result.user_intent['type'] == 'fallback'
-    assert result.user_intent['route_conflict'] == {
+    assert result.user_intent['route_conflict']['requested_person'] == 'BLAKE'
+    assert result.user_intent['route_conflict']['reason'] == (
+        'missing_named_person_in_grounded_context'
+    )
+    assert result.user_intent['route_conflict']['pending_execution'] == {
+        'goal_text': 'Bring every object from the work table to the person named BLAKE.',
+        'normalized_intents': ['bring_object'],
+        'scene_targets': ['codex_lab_table_section', 'BLAKE'],
+        'object': '',
+        'recipient': '',
         'requested_person': 'BLAKE',
-        'reason': 'missing_named_person_in_grounded_context',
     }
     assert 'cannot confirm that person' in result.verbal_ack.lower()
     assert 'bring every object' not in result.verbal_ack.lower()
+
+
+def test_turn_engine_blocks_delivery_to_absent_bare_named_recipient() -> None:
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"I will deliver the objects to MORGAN.",'
+                '"route":"execution",'
+                '"user_intent":{"type":"bring_object",'
+                '"goal":"Deliver every work-table object to MORGAN",'
+                '"scene_targets":["cup_1","book_1"]},'
+                '"confidence":0.9}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text=(
+            'Deliver every work-table object to MORGAN and explain what '
+            'information is missing if MORGAN is not present.'
+        ),
+        history=[],
+        user_id='user1',
+        knowledge_snapshot=(
+            'Grounded context JSON:\n```json\n'
+            '{"entities":[{"id":"person_alex","kind":"person",'
+            '"relations":[{"predicate":"dbp:name","object":"ALEX"}]},'
+            '{"id":"cup_1","kind":"object"},{"id":"book_1","kind":"object"}]}'
+            '\n```'
+        ),
+    )
+
+    assert result.route == 'dialogue'
+    assert result.intent == ''
+    assert result.user_intent['route_conflict']['requested_person'] == 'MORGAN'
+    assert result.user_intent['route_conflict']['reason'] == (
+        'missing_named_person_in_grounded_context'
+    )
+    assert result.user_intent['route_conflict']['pending_execution']['normalized_intents'] == [
+        'bring_object'
+    ]
+
+
+def test_turn_engine_does_not_treat_grounded_delivery_location_as_missing_person() -> None:
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"I will bring the cup to Kitchen.",'
+                '"route":"execution",'
+                '"user_intent":{"type":"bring_object","object":"cup_1"},'
+                '"confidence":0.9}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='Bring the cup to Kitchen.',
+        history=[],
+        user_id='user1',
+        knowledge_snapshot=(
+            'Grounded context JSON:\n```json\n'
+            '{"entities":[{"id":"cup_1","kind":"object"},'
+            '{"id":"kitchen","kind":"location","label":"Kitchen"}]}'
+            '\n```'
+        ),
+    )
+
+    assert result.route == 'execution'
+    assert 'route_conflict' not in result.user_intent
 
 
 def test_turn_engine_allows_execution_for_present_named_person_target() -> None:
@@ -2410,6 +3117,83 @@ def test_turn_engine_allows_execution_for_present_named_person_target() -> None:
     assert result.intent == 'bring_object'
 
 
+def test_turn_engine_does_not_treat_relative_pronoun_as_person_name() -> None:
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"I will bring those objects to the person.",'
+                '"route":"execution",'
+                '"user_intent":{"type":"bring_object"},'
+                '"confidence":0.9}'
+            ),
+            '',
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(
+            intent_mode='llm_with_rules_fallback',
+            planner_mode_enabled=True,
+        ),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='Bring those objects to the person we were talking about.',
+        history=[],
+        user_id='user1',
+        knowledge_snapshot=(
+            'Grounded context JSON:\n```json\n'
+            '{"entities":[{"id":"anonymous_person_jdefb","kind":"person",'
+            '"class":"Human"},{"id":"cup_1","kind":"object","class":"Cup"}]}'
+            '\n```'
+        ),
+    )
+
+    assert result.route == 'execution'
+    assert 'route_conflict' not in result.user_intent
+
+
+def test_turn_engine_canonicalizes_unique_hri_person_suffix_for_execution() -> None:
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"I will bring the cup to person jeebd.",'
+                '"route":"execution",'
+                '"user_intent":{"type":"bring_object","object":"cup_1",'
+                '"recipient":"jeebd","scene_targets":["cup_1","person jeebd"]},'
+                '"confidence":0.9}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='Bring the cup to person jeebd.',
+        history=[],
+        user_id='user1',
+        knowledge_snapshot=(
+            'Grounded context JSON:\n```json\n'
+            '{"entities":['
+            '{"id":"cup_1","kind":"object"},'
+            '{"id":"anonymous_person_jeebd","label":"anonymous_person",'
+            '"kind":"person","class":"Human"}]}'
+            '\n```'
+        ),
+    )
+
+    assert result.route == 'execution'
+    assert result.intent == 'bring_object'
+    assert result.user_intent['recipient'] == 'anonymous_person_jeebd'
+    assert result.user_intent['scene_targets'] == ['cup_1', 'anonymous_person_jeebd']
+
+
 def test_turn_engine_ignores_object_scene_target_dict_when_checking_named_person() -> None:
     transport = FakeTransport(
         [
@@ -2443,6 +3227,49 @@ def test_turn_engine_ignores_object_scene_target_dict_when_checking_named_person
     assert result.route == 'execution'
     assert result.intent == 'bring_object'
     assert 'route_conflict' not in result.user_intent
+
+
+def test_turn_engine_normalizes_structured_scene_targets_to_ids() -> None:
+    transport = FakeTransport(
+        [
+            (
+                '{"verbal_ack":"Sure, I will bring the gold apple to ALEX.",'
+                '"route":"execution",'
+                '"user_intent":{"type":"bring_object",'
+                '"goal_text":"Bring the gold apple to ALEX.",'
+                '"scene_targets":['
+                '{"id":"codex_gold_apple","label":"gold apple"},'
+                '{"id":"codex_gold_recipient","label":"ALEX"}]},'
+                '"confidence":0.95}'
+            ),
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+
+    result = engine.execute_turn(
+        user_text='Can you bring that gold apple to the person named ALEX?',
+        history=[],
+        user_id='user1',
+        knowledge_snapshot=(
+            'Grounded context JSON:\n```json\n'
+            '{"entities":['
+            '{"id":"codex_gold_apple","kind":"object","class":"Apple"},'
+            '{"id":"codex_gold_recipient","kind":"person","class":"Human",'
+            '"relations":[{"predicate":"dbp:name","object":"ALEX"}]}]}'
+            '\n```'
+        ),
+    )
+
+    assert result.route == 'execution'
+    assert result.user_intent['scene_targets'] == [
+        'codex_gold_apple',
+        'codex_gold_recipient',
+    ]
 
 
 def test_turn_engine_repairs_dialogue_route_over_execution_skill_intent() -> None:
@@ -2908,3 +3735,30 @@ def test_turn_engine_knowledge_query_does_not_duplicate_scan_offer() -> None:
 
     assert result.route == 'knowledge_query'
     assert result.verbal_ack.lower().count('fresh scan') == 1
+
+
+def test_turn_engine_folds_identity_reminder_into_leading_system_message() -> None:
+    transport = FakeTransport(
+        [
+            '{"verbal_ack":"I am still NAO.","route":"dialogue"}',
+        ]
+    )
+    engine = DialogueTurnEngine(
+        config=make_config(intent_mode='llm', planner_mode_enabled=True),
+        transport=transport,
+        logger=None,
+        skill_catalog_text='',
+    )
+    engine._handled_requests = 6
+
+    result = engine.execute_turn(
+        user_text='Who are you?',
+        history=['user:Hello', 'assistant:Hello there.'],
+        user_id='user1',
+    )
+
+    assert result.success is True
+    messages = transport.calls[0]['messages']
+    assert [message['role'] for message in messages].count('system') == 1
+    assert messages[0]['role'] == 'system'
+    assert 'Reminder: You are NAO.' in messages[0]['content']

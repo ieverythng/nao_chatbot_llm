@@ -58,6 +58,27 @@ DEFAULT_PLANNER_MULTI_STEP_HEURISTICS: dict[str, list[str]] = {
     ],
 }
 
+
+_TARGET_SELECTION_SCHEMA: dict[str, Any] = {
+    'type': 'object',
+    'properties': {
+        'selection_kind': {
+            'type': 'string',
+            'enum': ['explicit_members', 'location_members', 'visible_objects'],
+        },
+        'operation': {'type': 'string', 'enum': ['deliver', 'visit']},
+        'source_location_id': {'type': 'string'},
+        'member_ids': {'type': 'array', 'items': {'type': 'string'}},
+        'recipient_id': {'type': 'string'},
+        'ordering': {'type': 'string', 'enum': ['none', 'sequential']},
+        'report_policy': {
+            'type': 'string',
+            'enum': ['none', 'per_target', 'final'],
+        },
+    },
+    'required': ['selection_kind', 'operation', 'member_ids'],
+}
+
 DEFAULT_RESPONSE_SCHEMA: dict[str, Any] = {
     'type': 'object',
     'properties': {
@@ -112,6 +133,7 @@ DEFAULT_INTENT_SCHEMA: dict[str, Any] = {
                     'type': 'array',
                     'items': {'type': 'string'},
                 },
+                'target_selection': _TARGET_SELECTION_SCHEMA,
             },
             'required': ['type'],
         },

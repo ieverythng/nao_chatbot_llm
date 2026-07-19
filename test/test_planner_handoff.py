@@ -1,5 +1,6 @@
 import sys
 import types
+from types import SimpleNamespace
 
 
 def _install_ros_message_stubs() -> None:
@@ -54,8 +55,58 @@ def _install_ros_message_stubs() -> None:
 _install_ros_message_stubs()
 
 from chatbot_llm.planner_handoff import _kb_references_from_scene
+from chatbot_llm.planner_handoff import _grounded_context_or_refresh
+from chatbot_llm.planner_handoff import _planner_handoff_observability
 from chatbot_llm.planner_handoff import _scene_summary_payload
 from chatbot_llm.planner_handoff import _state_t0_payload
+
+
+def test_planner_handoff_observability_marks_repaired_execution_without_intent() -> None:
+    evidence = _planner_handoff_observability(
+        SimpleNamespace(
+            route='execution',
+            intent='',
+            intent_source='llm_response_route_repair',
+        ),
+        {
+            'goal_id': 'goal_head_1',
+            'dialogue_turn_id': 'turn_head_1',
+            'normalized_intents': [],
+        },
+    )
+
+    assert evidence == {
+        'route': 'execution',
+        'intent': '',
+        'intent_source': 'llm_response_route_repair',
+        'route_repaired': True,
+        'normalized_intents': [],
+        'intent_gap': True,
+        'goal_id': 'goal_head_1',
+        'dialogue_turn_id': 'turn_head_1',
+    }
+
+
+def test_planner_handoff_observability_accepts_structured_execution_intent() -> None:
+    evidence = _planner_handoff_observability(
+        SimpleNamespace(
+            route='execution',
+            intent='head_look_left',
+            intent_source='llm_response_route+llm_intent',
+        ),
+        {
+            'goal_id': 'goal_head_2',
+            'dialogue_turn_id': 'turn_head_2',
+            'normalized_intents': ['head_look_left', 'report_result'],
+        },
+    )
+
+    assert evidence['route_repaired'] is False
+    assert evidence['intent_gap'] is False
+    assert evidence['normalized_intents'] == [
+        'head_look_left',
+        'report_result',
+    ]
 
 
 def test_scene_summary_payload_keeps_people_entries() -> None:
@@ -153,3 +204,19 @@ def test_grounded_context_projection_prefers_structured_rows_over_text_fallback(
         }
     ]
     assert 'state_t0' not in projected
+def test_empty_turn_grounding_refreshes_before_planner_handoff() -> None:
+    refreshed = {'entities': [{'id': 'person_alex', 'kind': 'person'}]}
+
+    assert _grounded_context_or_refresh(
+        {'entities': [], 'counts': {'entities': 0}},
+        lambda: refreshed,
+    ) == refreshed
+
+
+def test_nonempty_turn_grounding_remains_authoritative() -> None:
+    current = {'entities': [{'id': 'person_current', 'kind': 'person'}]}
+
+    assert _grounded_context_or_refresh(
+        current,
+        lambda: {'entities': [{'id': 'person_stale', 'kind': 'person'}]},
+    ) is current

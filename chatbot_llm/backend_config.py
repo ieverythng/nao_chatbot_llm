@@ -98,7 +98,7 @@ def declare_backend_parameters(node) -> None:
     node.declare_parameter('top_p', 0.9)
     node.declare_parameter('think', False)
     node.declare_parameter('response_max_tokens', 192)
-    node.declare_parameter('intent_max_tokens', 64)
+    node.declare_parameter('intent_max_tokens', 256)
     node.declare_parameter('preflight_enabled', True)
     node.declare_parameter('preflight_required', False)
     node.declare_parameter('preflight_timeout_sec', 45.0)

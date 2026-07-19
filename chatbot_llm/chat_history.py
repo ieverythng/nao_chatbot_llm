@@ -17,26 +17,24 @@ def coerce_history(raw_history) -> list[str]:
 
 
 def trim_messages(messages: list[dict], max_history_messages: int) -> list[dict]:
-    """Trim non-system messages while preserving one leading system message."""
-    if max_history_messages <= 0:
-        return list(messages)
+    """Trim history while folding every system instruction into one leading message."""
     if not messages:
         return list(messages)
 
-    system_prefix = []
+    system_contents = []
     non_system_messages = []
     for message in messages:
-        if (
-            not system_prefix
-            and message.get('role', '') == 'system'
-            and str(message.get('content', '')).strip()
-        ):
-            system_prefix = [message]
+        content = str(message.get('content', '')).strip()
+        if message.get('role', '') == 'system' and content:
+            system_contents.append(content)
             continue
         non_system_messages.append(message)
 
-    if len(non_system_messages) > max_history_messages:
+    if max_history_messages > 0 and len(non_system_messages) > max_history_messages:
         non_system_messages = non_system_messages[-max_history_messages:]
+    system_prefix = []
+    if system_contents:
+        system_prefix = [{'role': 'system', 'content': '\n\n'.join(system_contents)}]
     return system_prefix + non_system_messages
 
 
