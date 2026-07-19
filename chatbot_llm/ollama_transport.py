@@ -38,6 +38,10 @@ class OllamaTransport:
         think: bool = False,
         max_tokens: int | None = None,
         response_format: dict | None = None,
+        top_k: int | None = None,
+        min_p: float | None = None,
+        presence_penalty: float | None = None,
+        repetition_penalty: float | None = None,
     ) -> str:
         """Run one non-streaming chat request against Ollama."""
         request_messages = _no_think_messages(model, messages)
@@ -51,6 +55,10 @@ class OllamaTransport:
             context_window_tokens=self._context_window_tokens,
             max_tokens=max_tokens,
             response_format=response_format,
+            top_k=top_k,
+            min_p=min_p,
+            presence_penalty=presence_penalty,
+            repetition_penalty=repetition_penalty,
         )
 
         request = urllib.request.Request(
@@ -103,6 +111,10 @@ class OllamaTransport:
         temperature: float,
         top_p: float,
         think: bool,
+        top_k: int | None = None,
+        min_p: float | None = None,
+        presence_penalty: float | None = None,
+        repetition_penalty: float | None = None,
     ) -> bool:
         """Return true when the configured model can answer a tiny JSON request."""
         text = self.query(
@@ -122,6 +134,10 @@ class OllamaTransport:
             top_p=top_p,
             think=think,
             max_tokens=16,
+            top_k=top_k,
+            min_p=min_p,
+            presence_penalty=presence_penalty,
+            repetition_penalty=repetition_penalty,
         )
         return _preflight_ready(text)
 
@@ -134,6 +150,10 @@ class OllamaTransport:
         top_p: float,
         think: bool,
         max_tokens: int = 32,
+        top_k: int | None = None,
+        min_p: float | None = None,
+        presence_penalty: float | None = None,
+        repetition_penalty: float | None = None,
     ) -> bool:
         """Return true when the model can answer a demo-shaped chatbot request."""
         text = self.query(
@@ -156,6 +176,10 @@ class OllamaTransport:
             top_p=top_p,
             think=think,
             max_tokens=max_tokens,
+            top_k=top_k,
+            min_p=min_p,
+            presence_penalty=presence_penalty,
+            repetition_penalty=repetition_penalty,
         )
         return bool(str(text or '').strip())
 
@@ -190,6 +214,10 @@ def _chat_payload(
     context_window_tokens: int,
     max_tokens: int | None,
     response_format: dict | None,
+    top_k: int | None = None,
+    min_p: float | None = None,
+    presence_penalty: float | None = None,
+    repetition_penalty: float | None = None,
 ) -> dict:
     if _is_openai_chat_url(server_url):
         payload = {
@@ -200,6 +228,14 @@ def _chat_payload(
         }
         if max_tokens is not None:
             payload['max_tokens'] = max(1, int(max_tokens))
+        if top_k is not None:
+            payload['top_k'] = max(0, int(top_k))
+        if min_p is not None:
+            payload['min_p'] = max(0.0, float(min_p))
+        if presence_penalty is not None:
+            payload['presence_penalty'] = float(presence_penalty)
+        if repetition_penalty is not None:
+            payload['repetition_penalty'] = max(0.0, float(repetition_penalty))
         template_kwargs = _openai_chat_template_kwargs(model)
         if template_kwargs:
             payload['chat_template_kwargs'] = template_kwargs
@@ -220,6 +256,14 @@ def _chat_payload(
         payload['format'] = response_format
     if max_tokens is not None:
         payload['options']['num_predict'] = max(1, int(max_tokens))
+    if top_k is not None:
+        payload['options']['top_k'] = max(0, int(top_k))
+    if min_p is not None:
+        payload['options']['min_p'] = max(0.0, float(min_p))
+    if presence_penalty is not None:
+        payload['options']['presence_penalty'] = float(presence_penalty)
+    if repetition_penalty is not None:
+        payload['options']['repeat_penalty'] = max(0.0, float(repetition_penalty))
     return payload
 
 

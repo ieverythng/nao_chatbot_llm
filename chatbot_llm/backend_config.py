@@ -15,6 +15,7 @@ from chatbot_llm.skill_catalog import parse_package_list
 INTENT_DETECTION_MODES = {'rules', 'llm', 'llm_with_rules_fallback'}
 TURN_PIPELINE_MODES = {'response_first', 'intent_first'}
 
+
 @dataclass(frozen=True)
 class ChatbotConfig:
     """Runtime configuration for the lifecycle chatbot backend."""
@@ -76,6 +77,10 @@ class ChatbotConfig:
     knowledge_default_models: list[str]
     knowledge_max_results: int
     knowledge_max_chars: int
+    top_k: int = 0
+    min_p: float = 0.0
+    presence_penalty: float = 0.0
+    repetition_penalty: float = 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -96,6 +101,10 @@ def declare_backend_parameters(node) -> None:
     node.declare_parameter('context_window_tokens', 4096)
     node.declare_parameter('temperature', 0.2)
     node.declare_parameter('top_p', 0.9)
+    node.declare_parameter('top_k', 0)
+    node.declare_parameter('min_p', 0.0)
+    node.declare_parameter('presence_penalty', 0.0)
+    node.declare_parameter('repetition_penalty', 1.0)
     node.declare_parameter('think', False)
     node.declare_parameter('response_max_tokens', 192)
     node.declare_parameter('intent_max_tokens', 256)
@@ -354,6 +363,13 @@ def load_backend_config(node) -> ChatbotConfig:
         knowledge_max_chars=max(
             128,
             int(node.get_parameter('knowledge_max_chars').value),
+        ),
+        top_k=max(0, int(node.get_parameter('top_k').value)),
+        min_p=max(0.0, float(node.get_parameter('min_p').value)),
+        presence_penalty=float(node.get_parameter('presence_penalty').value),
+        repetition_penalty=max(
+            0.0,
+            float(node.get_parameter('repetition_penalty').value),
         ),
     )
 
