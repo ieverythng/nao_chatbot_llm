@@ -93,6 +93,7 @@ _PLANNER_COMPLETION_KEYS = (
     'text_hint',
     'requested_intents',
     'result_payload',
+    'plan_outcome_summary',
 )
 _PLANNER_DIALOGUE_KEYS = (
     'act',
@@ -242,6 +243,9 @@ def _extract_planner_completion_context(payload: str) -> dict:
         else [],
         'result_payload': context.get('result_payload', {})
         if isinstance(context.get('result_payload', {}), dict)
+        else {},
+        'plan_outcome_summary': context.get('plan_outcome_summary', {})
+        if isinstance(context.get('plan_outcome_summary', {}), dict)
         else {},
     }
     if not any(normalized.get(key) for key in _PLANNER_COMPLETION_KEYS):

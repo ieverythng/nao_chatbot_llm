@@ -74,8 +74,8 @@ Defaults live in `config/00-defaults.yml`.
 - `think`: forwarded as Ollama `think=false/true`; default is `false`.
 - `response_max_tokens`: forwarded to Ollama as `num_predict` for the response
   stage; default is `64`.
-- `intent_max_tokens`: forwarded to Ollama as `num_predict` for the intent
-  stage; default is `64`.
+- `intent_max_tokens`: output budget for the structured intent and bounded
+  target-selection payload; default is `256`.
 - `planner_mode_enabled`
 - `planner_request_topic`
 - `planner_request_intent`

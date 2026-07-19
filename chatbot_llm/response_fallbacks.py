@@ -171,9 +171,26 @@ def _coerce_user_intent(user_intent) -> dict:
             if parsed_targets:
                 cleaned['scene_targets'] = parsed_targets
         elif isinstance(scene_targets, (list, tuple)):
-            parsed_targets = [str(item).strip() for item in scene_targets if str(item).strip()]
+            parsed_targets = []
+            for item in scene_targets:
+                if isinstance(item, dict):
+                    target = str(
+                        item.get('id')
+                        or item.get('entity_id')
+                        or item.get('target')
+                        or item.get('label')
+                        or ''
+                    ).strip()
+                else:
+                    target = str(item).strip()
+                if target and target not in parsed_targets:
+                    parsed_targets.append(target)
             if parsed_targets:
                 cleaned['scene_targets'] = parsed_targets
+
+        target_selection = user_intent.get('target_selection')
+        if isinstance(target_selection, dict):
+            cleaned['target_selection'] = dict(target_selection)
 
         intent_sequence = user_intent.get('intent_sequence')
         if isinstance(intent_sequence, str):
@@ -319,9 +336,6 @@ def _fallback_planner_completion_ack(completion_context: dict) -> str:
         summary_text = str(result_payload.get('summary_text', '')).strip()
         if summary_text:
             return summary_text
-    goal_text = str(completion_context.get('goal_text', '')).strip()
-    if goal_text:
-        return 'I completed the requested task.'
     return ''
 
 
@@ -351,6 +365,10 @@ def _fallback_execution_report_ack(report_context: dict) -> str:
         if isinstance(step, dict) and str(step.get('status', '')).strip().lower() == 'succeeded'
     ]
     latest_summary = str(report_context.get('latest_result_summary', '')).strip()
+    if _report_outcome_has_failures(report_context):
+        if _report_outcome_is_delivery(report_context):
+            return 'I could not complete the full delivery.'
+        return 'I could not complete the requested task.'
     if str(report_context.get('report_role', '')).strip().lower() == 'intermediate':
         if latest_summary:
             return latest_summary
@@ -366,7 +384,9 @@ def _fallback_execution_report_ack(report_context: dict) -> str:
         if _report_outcome_mode(report_context) == 'delivery' or _is_delivery_report_context(
             report_context
         ):
-            return 'I completed the delivery.'
+            delivery_report = _delivery_report_from_evidence(report_context)
+            if delivery_report:
+                return delivery_report
         summaries = [
             str(step.get('result_summary', '')).strip()
             for step in successful_steps
@@ -392,8 +412,6 @@ def _fallback_execution_report_ack(report_context: dict) -> str:
         if len(step_names) == 1:
             return 'I %s.' % step_names[0]
         return 'I %s and then %s.' % (step_names[0], step_names[1])
-    if str(report_context.get('goal_text', '')).strip():
-        return 'I completed the requested task.'
     return ''
 
 
@@ -404,12 +422,86 @@ def _report_outcome_mode(report_context: dict) -> str:
     return ''
 
 
+def _report_outcome_has_failures(report_context: dict) -> bool:
+    report_outcome = report_context.get('report_outcome', {})
+    return bool(
+        isinstance(report_outcome, dict)
+        and isinstance(report_outcome.get('failures'), list)
+        and report_outcome['failures']
+    )
+
+
+def _report_outcome_is_delivery(report_context: dict) -> bool:
+    report_outcome = report_context.get('report_outcome', {})
+    if not isinstance(report_outcome, dict):
+        return False
+    if _report_outcome_mode(report_context) == 'delivery':
+        return True
+    if report_outcome.get('recipients'):
+        return True
+    return any(
+        isinstance(item, dict)
+        and str(item.get('skill', '')).strip().lower()
+        in {'bring_object', 'deliver_object', 'place_object'}
+        for item in report_outcome.get('failures', [])
+    )
+
+
+def _delivery_report_from_evidence(report_context: dict) -> str:
+    report_outcome = report_context.get('report_outcome', {})
+    objects: list[str] = []
+    recipient = ''
+    if isinstance(report_outcome, dict):
+        for item in report_outcome.get('reportable_objects', []):
+            if not isinstance(item, dict):
+                continue
+            status = str(item.get('status', 'completed')).strip().lower()
+            if status not in {'completed', 'succeeded', 'success'}:
+                continue
+            label = str(item.get('label') or item.get('id') or '').strip()
+            friendly = _friendly_target_label(label) if label else ''
+            if friendly and friendly not in objects:
+                objects.append(friendly)
+        recipients = report_outcome.get('recipients', [])
+        if isinstance(recipients, list):
+            for item in recipients:
+                if not isinstance(item, dict):
+                    continue
+                label = str(item.get('label') or item.get('id') or '').strip()
+                if label:
+                    recipient = _friendly_recipient_label(label)
+                    break
+
+    if not objects:
+        objects = [
+            _friendly_target_label(item)
+            for item in _completed_delivery_objects(report_context)
+            if str(item or '').strip()
+        ]
+    if not recipient:
+        recipient_id = _latest_delivery_recipient(report_context)
+        if recipient_id:
+            recipient = _friendly_recipient_label(recipient_id)
+    if not objects:
+        return ''
+
+    delivered = _natural_join(objects)
+    if recipient:
+        return 'I delivered %s to %s.' % (delivered, recipient)
+    return 'I delivered %s.' % delivered
+
+
 def _postprocess_execution_report_ack(candidate: str, report_context: dict) -> str:
     """Reject report wording that duplicates or promises a future report."""
     clean = str(candidate or '').strip()
     if not clean:
         return ''
     lowered = clean.lower()
+    if _report_outcome_has_failures(report_context) and any(
+        marker in lowered
+        for marker in ('completed the delivery', 'completed the requested task')
+    ):
+        return ''
     if any(
         marker in lowered
         for marker in (

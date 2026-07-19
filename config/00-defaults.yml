@@ -16,7 +16,7 @@
     top_p: 0.9
     think: false
     response_max_tokens: 192
-    intent_max_tokens: 64
+    intent_max_tokens: 256
     fallback_response: 'I am having trouble reaching my language model right now.'
     max_history_messages: 20
     scene_memory_turns: 4

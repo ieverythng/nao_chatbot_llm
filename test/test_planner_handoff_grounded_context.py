@@ -71,6 +71,23 @@ def test_scene_summary_payload_uses_explicit_people_entries() -> None:
     assert 'look_at_candidates' not in payload
 
 
+def test_scene_summary_payload_drops_stale_tracked_people() -> None:
+    raw_payload = _scene_summary_fixture()
+    raw_payload['people'] = [
+        {'id': 'person_old', 'type': 'Human', 'last_seen_sec': 1777039990.0},
+        {'id': 'person_current', 'type': 'Human', 'last_seen_sec': 1777040000.3},
+        {'id': 'person_without_timestamp', 'type': 'Human'},
+    ]
+
+    payload = _scene_summary_payload(json.dumps(raw_payload))
+
+    assert [person['id'] for person in payload['people']] == [
+        'person_current',
+        'person_without_timestamp',
+        'person_1',
+    ]
+
+
 def test_knowledge_snapshot_payload_exposes_structured_entities() -> None:
     scene_summary = _scene_summary_payload(json.dumps(_scene_summary_fixture()))
 
@@ -195,3 +212,46 @@ def test_handoff_grounded_context_forwards_knowledge_rows() -> None:
             ],
         }
     ]
+
+
+def test_handoff_filters_inactive_anonymous_people_after_tracker_update() -> None:
+    from types import SimpleNamespace
+
+    from chatbot_llm.planner_handoff import PlannerHandoff
+
+    class Node:
+        def create_publisher(self, *args, **kwargs):
+            return object()
+
+        def create_subscription(self, *args, **kwargs):
+            return object()
+
+    config = SimpleNamespace(
+        planner_request_topic='/planner/request',
+        planner_scene_summary_topic='/scene/summary',
+    )
+    handoff = PlannerHandoff(Node(), config, trace=lambda *args, **kwargs: None)
+    handoff._on_tracked_persons(
+        SimpleNamespace(ids=['anonymous_person_current', 'sim_person_current'])
+    )
+
+    compact = handoff.grounded_context(
+        '',
+        knowledge_rows=[
+            {'entity': 'anonymous_person_old', 'predicate': 'rdf:type', 'object': 'Human'},
+            {'entity': 'sim_person_old', 'predicate': 'rdf:type', 'object': 'Human'},
+            {
+                'entity': 'anonymous_person_current',
+                'predicate': 'rdf:type',
+                'object': 'Human',
+            },
+            {'entity': 'sim_person_current', 'predicate': 'rdf:type', 'object': 'Human'},
+            {'entity': 'fixture_person', 'predicate': 'rdf:type', 'object': 'Human'},
+        ],
+    )
+
+    assert {item['id'] for item in compact['entities']} == {
+        'anonymous_person_current',
+        'fixture_person',
+        'sim_person_current',
+    }

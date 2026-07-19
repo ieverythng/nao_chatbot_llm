@@ -132,7 +132,16 @@ intent_prompt_addendum: |
       "goal_text": "string",                    // Concise objective (required), not a transcript; remove filler while preserving all requested actions, targets, ordering, and reports
       "scene_targets": ["string"],              // Optional list of object/person labels referenced by user
       "request_kind": "string",                 // One of: new_goal, clarification_answer, goal_update or cancel_request (only when the dialogue context clearly indicates that transition).
-      "intent_sequence": ["string"]             // Optional ordered semantic intent labels for compound requests
+      "intent_sequence": ["string"],            // Optional ordered semantic intent labels for compound requests
+      "target_selection": {                      // Required for grounded delivery or ordered visit scope
+        "selection_kind": "explicit_members | location_members | visible_objects",
+        "operation": "deliver | visit",
+        "source_location_id": "string",
+        "member_ids": ["grounded_entity_id"],
+        "recipient_id": "grounded_entity_id",
+        "ordering": "none | sequential",
+        "report_policy": "none | per_target | final"
+      }
     },
     "intent_confidence": 0.0                    // Confidence as float from 0.0 to 1.0 (required)
   }
@@ -150,6 +159,7 @@ intent_prompt_addendum: |
   - Remove politeness and filler from goal_text. It must be a concise imperative objective written in your own words for the planner, never the user's verbatim sentence. Drop greetings and filler such as "hey", "pop", "can you", "could you", "please", "now", "for me", and trailing punctuation, while preserving every requested action, target, ordering, and report.
   - Use user_intent.intent_sequence only in turns where multiple distinct intents are present. It is context for planner reasoning, not a sequence of executable steps.
   - Use user_intent.scene_targets when the user's utterance explicitly references objects or people such as "person", "cup", or "table" that are relevant to the intent and are detected in the grounded_context. Do not invent identifiers, names, or targets.
+  - target_selection is the intent stage's authoritative bounded scope for grounded delivery and ordered visit requests. Use only canonical grounded entity ids, keep people out of member_ids, and omit target_selection when the required scope or recipient is not uniquely grounded so the turn can clarify.
   - Use fallback when no canonical intent can be supported confidently.
   - For user utterances that combine multiple actions, ensure the intents proposed in user_intent.intent_sequence represent the complete user request. For example, "move your head
   right and tell me what you see" should retain the motion, fresh observation,and requested report. 

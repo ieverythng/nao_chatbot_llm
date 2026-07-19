@@ -28,6 +28,22 @@ def test_openai_chat_url_uses_openai_payload_shape():
     }
 
 
+def test_openai_chat_url_disables_thinking_for_namespaced_qwen_model():
+    payload = _chat_payload(
+        server_url='http://10.7.138.215:8004/v1/chat/completions',
+        model='cyankiwi/Qwen3.5-35B-A3B-AWQ-4bit',
+        messages=[{'role': 'user', 'content': 'hello'}],
+        temperature=0.2,
+        top_p=0.9,
+        think=False,
+        context_window_tokens=4096,
+        max_tokens=32,
+        response_format={'type': 'object'},
+    )
+
+    assert payload['chat_template_kwargs'] == {'enable_thinking': False}
+
+
 def test_ollama_chat_url_keeps_ollama_payload_shape():
     payload = _chat_payload(
         server_url='http://127.0.0.1:11434/api/chat',

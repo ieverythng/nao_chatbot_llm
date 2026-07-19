@@ -7,6 +7,7 @@ from chatbot_llm.knowledge_snapshot import KnowledgeSnapshotSettings
 from chatbot_llm.knowledge_snapshot import format_knowledge_snapshot
 from chatbot_llm.knowledge_snapshot import resolve_knowledge_snapshot_settings
 from chatbot_llm.knowledge_snapshot_client import _annotate_constant_subject_rows
+from chatbot_llm.knowledge_snapshot_client import KnowledgeSnapshotClient
 from chatbot_llm.knowledge_snapshot_client import _subject_query_groups
 
 
@@ -133,6 +134,52 @@ def test_constant_subject_rows_are_annotated_for_grounded_projection():
     assert rows == [
         {'entity': 'codex_arch_marker', 'predicate': 'dbp:name', 'object': 'NOVA'}
     ]
+
+
+def test_snapshot_queries_unseen_spatial_targets_for_location_metadata():
+    class FakeQueryClient:
+        service_name = '/kb/query'
+
+        def __init__(self):
+            self.calls = []
+
+        def query_rows(self, *, patterns, query_vars, **_kwargs):
+            self.calls.append((patterns, query_vars))
+            if patterns == ['myself sees ?entity', '?entity oro:isAt ?object']:
+                return [{'entity': 'cup_1', 'object': 'codex_iiia_kitchen'}]
+            if patterns == ['codex_iiia_kitchen ?predicate ?object']:
+                return [
+                    {'predicate': 'dbp:name', 'object': 'kitchen'},
+                    {'predicate': 'rdf:type', 'object': 'Room'},
+                ]
+            return []
+
+    client = KnowledgeSnapshotClient.__new__(KnowledgeSnapshotClient)
+    client._query_client = FakeQueryClient()
+    client.last_rows = ()
+    settings = KnowledgeSnapshotSettings(
+        enabled=True,
+        query_groups=[['myself sees ?entity', '?entity oro:isAt ?object']],
+        patterns=[],
+        query_vars=['?entity', '?predicate', '?object'],
+        models=['default'],
+        max_results=20,
+        max_chars=2000,
+    )
+
+    client.fetch_snapshot(settings, user_text='Bring every object from the kitchen.')
+
+    assert client._query_client.calls == [
+        (
+            ['myself sees ?entity', '?entity oro:isAt ?object'],
+            ['?entity', '?object'],
+        ),
+        (
+            ['codex_iiia_kitchen ?predicate ?object'],
+            ['?predicate', '?object'],
+        ),
+    ]
+    assert {'entity': 'codex_iiia_kitchen', 'predicate': 'dbp:name', 'object': 'kitchen'} in client.last_rows
 
 
 def test_format_knowledge_snapshot_formats_triples_and_truncates():
@@ -490,15 +537,24 @@ def test_build_scene_digest_filters_meta_support_and_people_from_location_member
                         {'predicate': 'oro:isAt', 'object': 'codex_work_table'},
                     ],
                 },
+                {
+                    'id': 'codex_lab_bench',
+                    'label': 'bench',
+                    'kind': 'object',
+                    'class': 'Bench',
+                    'visible': True,
+                },
             ],
         }
     )
 
-    assert 'Objects (1): book x1 [on codex work table]' in digest
+    assert 'Objects (3): table x1; book x1' in digest
+    assert 'bench x1' in digest
+    assert 'codex work table' in digest
     assert 'Locations: work table contains manual' in digest
     assert 'spatial thing localized' not in digest.lower()
     assert 'localized marker' not in digest
-    assert 'work table x' not in digest.lower()
+    assert 'work table contains' in digest.lower()
     assert 'contains ALEX' not in digest
 
 

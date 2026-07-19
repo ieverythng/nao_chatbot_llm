@@ -238,6 +238,19 @@ def _is_non_immediate_action_discussion(user_text: str) -> bool:
     )
 
 
+def _is_explicit_non_action_instruction(user_text: str) -> bool:
+    """Return whether the user explicitly prohibits immediate execution."""
+    clean = ' '.join(str(user_text or '').strip().lower().split())
+    if not clean:
+        return False
+    return bool(
+        re.search(
+            r"\b(?:do not|don't|dont|without)\s+(?:act|acting|execute|executing|perform|performing)\b",
+            clean,
+        )
+    )
+
+
 def _is_social_turn(user_text: str) -> bool:
     clean = ' '.join(str(user_text or '').strip().lower().split())
     if not clean:

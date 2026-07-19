@@ -9,7 +9,9 @@ from dataclasses import dataclass
 from chatbot_llm.backend_config import ChatbotConfig
 
 
-_DIGEST_SUPPORT_CLASSES = frozenset(('counter', 'desk', 'shelf', 'surface', 'table'))
+_DIGEST_SUPPORT_CLASSES = frozenset(
+    ('bench', 'counter', 'desk', 'shelf', 'surface', 'table', 'workbench')
+)
 _DIGEST_PLACE_CLASSES = frozenset(
     ('corridor', 'kitchen', 'lab', 'location', 'park', 'place', 'robot station', 'room', 'station')
 )
@@ -24,7 +26,6 @@ _DIGEST_NON_USER_OBJECT_CLASSES = frozenset(
         'spatial thing',
         'spatial thing localized',
         'support surface',
-        'table',
     )
 )
 _DIGEST_GENERIC_OBJECT_CLASSES = frozenset(('tableware',))
@@ -573,7 +574,7 @@ def _add_digest_location_member(group: dict, entity: dict, relation: str) -> Non
     member_id = str(entity.get('id', '')).strip()
     if not member_id or member_id == str(group.get('id', '')).strip():
         return
-    if not _is_user_facing_digest_object(entity):
+    if not _is_digest_location_member(entity):
         return
     member = {
         'id': member_id,
@@ -600,7 +601,7 @@ def _filter_digest_location(location: dict) -> dict:
         return filtered
     filtered['contains'] = [
         dict(member) for member in members
-        if isinstance(member, dict) and _is_user_facing_digest_object(member)
+        if isinstance(member, dict) and _is_digest_location_member(member)
     ]
     return filtered
 
@@ -644,7 +645,7 @@ def _is_user_facing_digest_object(entity: dict) -> bool:
     class_token = _digest_class_token(entity.get('class', ''))
     if class_token in _DIGEST_NON_USER_OBJECT_CLASSES:
         return False
-    if class_token in _DIGEST_SUPPORT_CLASSES or class_token in _DIGEST_PLACE_CLASSES:
+    if class_token in _DIGEST_PLACE_CLASSES:
         return False
     if _is_digest_user_object_type(class_token):
         return True
@@ -661,7 +662,27 @@ def _is_user_facing_digest_object(entity: dict) -> bool:
     for relation_class in rdf_type_tokens:
         if relation_class in _DIGEST_NON_USER_OBJECT_CLASSES:
             return False
-        if relation_class in _DIGEST_SUPPORT_CLASSES or relation_class in _DIGEST_PLACE_CLASSES:
+        if relation_class in _DIGEST_PLACE_CLASSES:
+            return False
+    return True
+
+
+def _is_digest_location_member(entity: dict) -> bool:
+    """Exclude physical support anchors from their derived member list."""
+    if not _is_user_facing_digest_object(entity):
+        return False
+    class_token = _digest_class_token(entity.get('class', ''))
+    if class_token in _DIGEST_SUPPORT_CLASSES:
+        return False
+    for relation in entity.get('relations', []):
+        if not isinstance(relation, dict):
+            continue
+        predicate = str(
+            relation.get('predicate', relation.get('p', ''))
+        ).strip().lower()
+        if predicate != 'rdf:type':
+            continue
+        if _digest_class_token(relation.get('object', relation.get('o', ''))) in _DIGEST_SUPPORT_CLASSES:
             return False
     return True
 
@@ -672,7 +693,7 @@ def _is_digest_user_object_type(class_token: str) -> bool:
         return False
     if token in _DIGEST_NON_USER_OBJECT_CLASSES:
         return False
-    if token in _DIGEST_SUPPORT_CLASSES or token in _DIGEST_PLACE_CLASSES:
+    if token in _DIGEST_PLACE_CLASSES:
         return False
     return True
 

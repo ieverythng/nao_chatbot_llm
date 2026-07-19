@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 from typing import Any, Callable
 
@@ -29,6 +30,12 @@ except ImportError:  # pragma: no cover - import-light unit tests
         def __init__(self) -> None:
             self.data = ''
 
+
+try:  # pragma: no cover - ROS runtime dependency
+    from hri_msgs.msg import IdsList
+except ImportError:  # pragma: no cover - import-light unit tests
+    IdsList = None
+
 from chatbot_llm.backend_config import ChatbotConfig
 from chatbot_llm.planner_request_adapter import build_planner_request_intent_from_payload
 from chatbot_llm.planner_request_adapter import build_planner_request_payload
@@ -37,6 +44,42 @@ from chatbot_llm.planner_request_adapter import should_route_intents_through_pla
 TraceFn = Callable[..., None]
 GoalIdCallback = Callable[[Any, str], None]
 _PERSON_LIKE_TOKENS = ('person', 'people', 'human', 'face', 'speaker', 'visitor', 'user')
+_SCENE_PERSON_FRESHNESS_SEC = 5.0
+
+
+def _planner_handoff_observability(result, planner_payload: dict) -> dict:
+    """Project route and intent lineage for non-blocking turn diagnostics."""
+    raw_intents = planner_payload.get('normalized_intents', [])
+    if not isinstance(raw_intents, (list, tuple)):
+        raw_intents = []
+    normalized_intents = [
+        str(intent).strip() for intent in raw_intents if str(intent).strip()
+    ]
+    route = str(getattr(result, 'route', '') or '').strip()
+    intent = str(getattr(result, 'intent', '') or '').strip()
+    intent_source = str(getattr(result, 'intent_source', '') or '').strip()
+    return {
+        'route': route,
+        'intent': intent,
+        'intent_source': intent_source,
+        'route_repaired': 'route_repair' in intent_source.lower(),
+        'normalized_intents': normalized_intents,
+        'intent_gap': route == 'execution' and not normalized_intents,
+        'goal_id': str(planner_payload.get('goal_id', '') or '').strip(),
+        'dialogue_turn_id': str(
+            planner_payload.get('dialogue_turn_id', '') or ''
+        ).strip(),
+    }
+
+
+def _grounded_context_or_refresh(
+    grounded_context: dict | None,
+    refresh,
+) -> dict:
+    """Use a turn projection only when it contains grounded entities."""
+    if isinstance(grounded_context, dict) and grounded_context.get('entities'):
+        return grounded_context
+    return refresh()
 
 
 class PlannerHandoff:
@@ -56,6 +99,7 @@ class PlannerHandoff:
         self._on_planner_goal_id = on_planner_goal_id
         self._lock = threading.Lock()
         self._scene_summary_payload: dict = {}
+        self._tracked_person_ids: set[str] | None = None
 
         self._publisher = node.create_publisher(
             Intent,
@@ -68,12 +112,20 @@ class PlannerHandoff:
             self._on_scene_summary,
             10,
         )
+        self._tracked_persons_sub = None
+        if IdsList is not None:
+            self._tracked_persons_sub = node.create_subscription(
+                IdsList,
+                '/humans/persons/tracked',
+                self._on_tracked_persons,
+                10,
+            )
 
     def destroy(self) -> None:
         if getattr(self, '_publisher', None) is not None:
             self._node.destroy_publisher(self._publisher)
             self._publisher = None  # type: ignore[assignment]
-        for attr in ('_scene_summary_sub',):
+        for attr in ('_scene_summary_sub', '_tracked_persons_sub'):
             sub = getattr(self, attr, None)
             if sub is not None:
                 self._node.destroy_subscription(sub)
@@ -87,6 +139,11 @@ class PlannerHandoff:
     ) -> dict:
         with self._lock:
             scene = dict(self._scene_summary_payload)
+            active_person_ids = (
+                None
+                if self._tracked_person_ids is None
+                else set(self._tracked_person_ids)
+            )
         source_context = {
             'knowledge_snapshot': _knowledge_snapshot_payload(
                 knowledge_context=knowledge_context,
@@ -98,6 +155,7 @@ class PlannerHandoff:
         return project_llm_grounded_context(
             source_context,
             knowledge_rows=list(knowledge_rows or ()),
+            active_person_ids=active_person_ids,
         )
 
     def publish_execution_turn_if_needed(
@@ -111,6 +169,7 @@ class PlannerHandoff:
         grounded_context: dict | None = None,
         result,
         direct_intents: list[Intent],
+        pending_execution_context: dict | None = None,
     ) -> bool:
         """Publish a planner request when routing rules match; return True if published."""
         if self._publisher is None:
@@ -123,6 +182,8 @@ class PlannerHandoff:
             turn_result=result,
             user_text=user_text,
             multi_step_heuristics=self._config.planner_multi_step_heuristics,
+            pending_execution_context=pending_execution_context,
+            grounded_context=grounded_context,
         ):
             return False
 
@@ -132,9 +193,13 @@ class PlannerHandoff:
                 user_text=user_text,
                 turn_result=result,
                 knowledge_context=knowledge_context,
-                grounded_context=grounded_context or self.grounded_context(knowledge_context),
+                grounded_context=_grounded_context_or_refresh(
+                    grounded_context,
+                    lambda: self.grounded_context(knowledge_context),
+                ),
                 multi_step_heuristics=self._config.planner_multi_step_heuristics,
                 active_goal_id=session.active_planner_goal_id,
+                pending_execution_context=pending_execution_context,
             )
             planner_msg = build_planner_request_intent_from_payload(
                 payload=planner_payload,
@@ -148,26 +213,79 @@ class PlannerHandoff:
             self._trace(turn_id, 'PLANNER_REQUEST', 'publish failed: %s' % err, level='warn')
             return False
 
+        if pending_execution_context:
+            session.pending_execution_context = {}
+
         planner_goal_id = str(planner_payload.get('goal_id', '')).strip()
         if planner_goal_id and self._on_planner_goal_id is not None:
             self._on_planner_goal_id(session, planner_goal_id)
 
+        handoff_evidence = _planner_handoff_observability(result, planner_payload)
+        normalized_intents = json.dumps(
+            handoff_evidence['normalized_intents'],
+            separators=(',', ':'),
+        )
+        handoff_message = (
+            'route=%s intent=%s intent_source=%s route_repaired=%s '
+            'normalized_intents=%s goal_id=%s dialogue_turn_id=%s'
+            % (
+                handoff_evidence['route'] or '-',
+                handoff_evidence['intent'] or '-',
+                handoff_evidence['intent_source'] or '-',
+                str(handoff_evidence['route_repaired']).lower(),
+                normalized_intents,
+                handoff_evidence['goal_id'] or '-',
+                handoff_evidence['dialogue_turn_id'] or '-',
+            )
+        )
+        self._trace(turn_id, 'ROUTE_INTENT_HANDOFF', handoff_message)
         self._trace(
             turn_id,
             'PLANNER_REQUEST',
-            'published planner request on %s goal_id=%s kind=%s'
+            'published planner request on %s goal_id=%s kind=%s %s'
             % (
                 self._config.planner_request_topic,
-                planner_payload.get('goal_id', ''),
+                handoff_evidence['goal_id'],
                 planner_payload.get('request_kind', ''),
+                handoff_message,
             ),
         )
+        if handoff_evidence['intent_gap']:
+            self._trace(
+                turn_id,
+                'ROUTE_INTENT_GAP',
+                'execution admitted without normalized_intents goal_id=%s '
+                'intent_source=%s route_repaired=%s dialogue_turn_id=%s'
+                % (
+                    handoff_evidence['goal_id'] or '-',
+                    handoff_evidence['intent_source'] or '-',
+                    str(handoff_evidence['route_repaired']).lower(),
+                    handoff_evidence['dialogue_turn_id'] or '-',
+                ),
+                level='warn',
+            )
         return True
 
     def _on_scene_summary(self, msg: String) -> None:
         payload = _scene_summary_payload(msg.data)
         with self._lock:
             self._scene_summary_payload = payload
+
+    def _on_tracked_persons(self, msg: IdsList) -> None:
+        tracked_ids = {
+            str(person_id).strip()
+            for person_id in getattr(msg, 'ids', [])
+            if str(person_id).strip()
+        }
+        with self._lock:
+            self._tracked_person_ids = tracked_ids
+        self._trace(
+            '',
+            'TRACKED_PERSON_STATE',
+            'authoritative_count=%d ids=%s'
+            % (len(tracked_ids), ','.join(sorted(tracked_ids)) or 'none'),
+            level='debug',
+        )
 
 
 def _scene_summary_payload(raw_payload) -> dict:
@@ -192,6 +310,7 @@ def _scene_summary_payload(raw_payload) -> dict:
         _normalized_people_payload(raw_data.get('people', [])),
         _people_from_scene_objects(raw_objects),
     )
+    people = _fresh_scene_people(people)
     payload = {
         'schema_version': 'scene_summary_v2',
         'observer': summary.observer,
@@ -341,6 +460,22 @@ def _merged_people_payload(primary: list[dict], secondary: list[dict]) -> list[d
         seen_ids.add(person_id)
         merged.append(dict(candidate))
     return merged
+
+
+def _fresh_scene_people(people: list[dict]) -> list[dict]:
+    latest_seen = max(
+        (_coerce_float(person.get('last_seen_sec', 0.0)) for person in people),
+        default=0.0,
+    )
+    if latest_seen <= 0.0:
+        return people
+    return [
+        person
+        for person in people
+        if _coerce_float(person.get('last_seen_sec', 0.0)) <= 0.0
+        or latest_seen - _coerce_float(person.get('last_seen_sec', 0.0))
+        <= _SCENE_PERSON_FRESHNESS_SEC
+    ]
 
 
 def _state_people_entries(normalized_people) -> list[dict]:

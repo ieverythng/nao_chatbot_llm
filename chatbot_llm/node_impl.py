@@ -33,7 +33,6 @@ from chatbot_llm.skill_catalog import build_skill_catalog_text_from_shared_regis
 from chatbot_llm.turn_engine import DialogueTurnEngine
 from chatbot_llm.turn_engine import _extract_ack_text
 from chatbot_llm.turn_engine import _looks_like_json_payload
-from hri_actions_msgs.msg import Intent
 from std_msgs.msg import String
 
 try:  # pragma: no cover - optional dependency
@@ -71,6 +70,7 @@ class DialogueSession:
     request_count: int = 0
     last_user_id: str = 'anonymous_user'
     active_planner_goal_id: str = ''
+    pending_execution_context: dict = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -271,6 +271,14 @@ class LLMChatbot(Node):
             tracked = self._dialogue_sessions.get(dialogue_id)
             if tracked is not None:
                 tracked.history = list(result.updated_history)
+                route_conflict = result.user_intent.get('route_conflict', {})
+                pending_execution = (
+                    route_conflict.get('pending_execution', {})
+                    if isinstance(route_conflict, dict)
+                    else {}
+                )
+                if isinstance(pending_execution, dict) and pending_execution:
+                    tracked.pending_execution_context = dict(pending_execution)
                 tracked.recent_scene_memory = self._remember_scene_memory(
                     tracked.recent_scene_memory,
                     current_snapshot,
@@ -307,6 +315,7 @@ class LLMChatbot(Node):
                 result=result,
                 direct_intents=direct_intents,
                 grounded_context=grounded_context,
+                pending_execution_context=session.pending_execution_context,
             )
         ):
             planner_handoff_published = True

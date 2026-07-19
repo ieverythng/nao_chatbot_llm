@@ -24,6 +24,15 @@ _SUBJECT_QUERY_CUES = (
     'colour',
 )
 _MAX_SUBJECT_QUERY_GROUPS = 4
+_MAX_RELATED_SPATIAL_TARGETS = 6
+_SPATIAL_QUERY_PREDICATES = (
+    'oro:contains',
+    'oro:isAt',
+    'oro:isIn',
+    'oro:isOn',
+    'oro:isUnder',
+    'oro:placeOf',
+)
 
 
 def _query_vars_for_group(group_patterns: list[str], configured_vars: list[str]) -> list[str]:
@@ -85,6 +94,7 @@ class KnowledgeSnapshotClient:
             return ''
 
         all_rows: list[dict] = []
+        spatial_targets: list[str] = []
         groups = list(settings.query_groups or [list(settings.patterns)])
         groups.extend(_subject_query_groups(user_text))
         for group in groups:
@@ -104,6 +114,27 @@ class KnowledgeSnapshotClient:
             if subject_entity:
                 rows = _annotate_constant_subject_rows(rows, subject_entity)
             all_rows.extend(rows)
+            if _is_spatial_query_group(clean_group):
+                spatial_targets.extend(_row_objects(rows))
+
+        visible_entity_ids = {
+            str(row.get('entity', '')).strip()
+            for row in all_rows if isinstance(row, dict)
+            if str(row.get('entity', '')).strip()
+        }
+        for target_id in _unique_tokens(spatial_targets):
+            if target_id in visible_entity_ids:
+                continue
+            group = [f'{target_id} ?predicate ?object']
+            rows = self._query_client.query_rows(
+                patterns=group,
+                query_vars=_query_vars_for_group(group, list(settings.query_vars)),
+                models=list(settings.models),
+                turn_id=turn_id,
+                trace=trace,
+                trace_stage='KB_SNAPSHOT_RELATED_TARGET',
+            )
+            all_rows.extend(_annotate_constant_subject_rows(rows, target_id))
 
         deduped_rows = KnowledgeCoreQueryClient.dedupe_rows(all_rows)
         self.last_rows = tuple(dict(item) for item in deduped_rows)
@@ -134,6 +165,26 @@ class KnowledgeSnapshotClient:
         """Forward trace hooks without forcing callers to provide one."""
         if callable(trace):
             trace(turn_id, stage, message, level=level)
+
+
+def _is_spatial_query_group(patterns: list[str]) -> bool:
+    return any(
+        predicate in pattern
+        for pattern in patterns
+        for predicate in _SPATIAL_QUERY_PREDICATES
+    )
+
+
+def _row_objects(rows: list[dict]) -> list[str]:
+    return [
+        str(row.get('object', '')).strip()
+        for row in rows if isinstance(row, dict)
+        if str(row.get('object', '')).strip()
+    ]
+
+
+def _unique_tokens(values: list[str]) -> list[str]:
+    return list(dict.fromkeys(values))[:_MAX_RELATED_SPATIAL_TARGETS]
 
 
 def _subject_query_groups(user_text: str) -> list[list[str]]:
