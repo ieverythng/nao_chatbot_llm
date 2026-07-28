@@ -18,6 +18,7 @@ from planner_common import is_perform_motion_object_label
 from planner_common import make_goal_id
 from planner_common import normalize_grounded_context
 from planner_common import project_llm_grounded_context
+from planner_common import validate_target_selection
 
 try:  # pragma: no cover - ROS runtime dependency
     from hri_actions_msgs.msg import Intent
@@ -245,13 +246,37 @@ def build_planner_request_payload(
         'dialogue_turn_id': str(user_intent.get('dialogue_turn_id', turn_id)).strip()
         or str(turn_id).strip(),
     }
-    if isinstance(user_intent.get('target_selection'), dict):
-        payload['target_selection'] = user_intent['target_selection']
-    elif _target_selection_salvage_allowed(
+    salvage_allowed = _target_selection_salvage_allowed(
         turn_result,
         request_kind=request_kind,
         has_pending_execution=bool(pending_execution),
-    ):
+    )
+    authored_selection = user_intent.get('target_selection')
+    if isinstance(authored_selection, dict):
+        expected_operation = (
+            'deliver'
+            if str(user_intent.get('type', '')).strip().lower() == 'bring_object'
+            else ''
+        )
+        validation = validate_target_selection(
+            authored_selection,
+            grounded_payload,
+            expected_operation=expected_operation,
+        )
+        has_grounded_selection_evidence = bool(
+            grounded_payload.get('entities') or grounded_payload.get('locations')
+        )
+        if (
+            validation.valid
+            or not salvage_allowed
+            or not has_grounded_selection_evidence
+        ):
+            payload['target_selection'] = authored_selection
+        else:
+            target_selection = _derive_target_selection(payload, user_intent)
+            if target_selection:
+                payload['target_selection'] = target_selection
+    elif salvage_allowed:
         target_selection = _derive_target_selection(payload, user_intent)
         if target_selection:
             payload['target_selection'] = target_selection
@@ -537,7 +562,8 @@ def _derive_target_selection(payload: dict, user_intent: dict) -> dict:
     intents = set(payload.get('normalized_intents', []))
     report_policy = _selection_report_policy(user_intent, intents, goal_text=goal_text)
 
-    if 'bring_object' in intents:
+    primary_intent = str(user_intent.get('type', '')).strip().lower()
+    if 'bring_object' in intents or primary_intent == 'bring_object':
         if not recipient:
             return {}
         recipient_id = str(recipient.get('id', '')).strip()
