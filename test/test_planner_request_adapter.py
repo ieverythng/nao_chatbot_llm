@@ -621,6 +621,55 @@ def test_build_planner_request_payload_preserves_authoritative_target_selection(
     }
 
 
+def test_build_planner_request_payload_repairs_invalid_retry_exhausted_selection() -> None:
+    payload = build_planner_request_payload(
+        turn_id='turn_retry_exhausted_delivery',
+        user_text='Bring every object from the kitchen to ALEX and report back.',
+        turn_result=_make_result(
+            intent='bring_object',
+            intent_source='llm_response_route+llm_intent_retry_exhausted',
+            user_intent={
+                'type': 'bring_object',
+                'goal_text': 'bring every object from the kitchen to ALEX and report back',
+                'target_selection': {
+                    'selection_kind': 'location_members',
+                    'operation': 'deliver',
+                    'source_location_id': 'kitchen',
+                    'member_ids': ['cup_1', 'kitchen_table'],
+                    'recipient_id': 'person_alex',
+                    'ordering': 'sequential',
+                    'report_policy': 'final',
+                },
+            },
+        ),
+        knowledge_context='',
+        grounded_context={
+            'entities': [
+                {'id': 'cup_1', 'label': 'cup', 'kind': 'object'},
+                {'id': 'kitchen_table', 'label': 'table', 'kind': 'object'},
+                {'id': 'person_alex', 'label': 'ALEX', 'kind': 'person'},
+            ],
+            'locations': [
+                {
+                    'id': 'kitchen',
+                    'label': 'kitchen',
+                    'contains': [{'id': 'cup_1', 'kind': 'object'}],
+                },
+            ],
+        },
+    )
+
+    assert payload['target_selection'] == {
+        'selection_kind': 'location_members',
+        'operation': 'deliver',
+        'source_location_id': 'kitchen',
+        'member_ids': ['cup_1'],
+        'recipient_id': 'person_alex',
+        'ordering': 'none',
+        'report_policy': 'final',
+    }
+
+
 def test_build_planner_request_payload_derives_grouped_delivery_from_structured_fields() -> None:
     result = _make_result(
         intent='bring_object',
